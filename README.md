@@ -54,6 +54,12 @@ npm run db:migrate
 
 The runtime Prisma connection uses `DATABASE_URL`; Prisma CLI migrations use `DIRECT_URL`.
 
+After creating synthetic users in Supabase Auth, the controlled role seed can create/update their application roles. Set the `SEED_*` values locally, then run:
+
+```bash
+npm run db:seed
+```
+
 ## Environment variables
 
 See [`.env.example`](.env.example). The most important values are:

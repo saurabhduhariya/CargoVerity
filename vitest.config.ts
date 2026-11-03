@@ -9,6 +9,8 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["tests/unit/**/*.test.ts"],
+    include: process.env.RUN_INTEGRATION_TESTS === "1"
+      ? ["tests/unit/**/*.test.ts", "tests/integration/**/*.test.ts"]
+      : ["tests/unit/**/*.test.ts"],
   },
 });

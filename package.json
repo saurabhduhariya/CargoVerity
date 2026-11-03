@@ -14,10 +14,12 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:integration": "RUN_INTEGRATION_TESTS=1 vitest run tests/integration",
     "test:e2e": "playwright test",
     "db:generate": "prisma generate",
     "db:validate": "prisma validate",
     "db:migrate": "prisma migrate deploy",
+    "db:seed": "node scripts/seed-demo-users.mjs",
     "db:studio": "prisma studio",
     "postinstall": "prisma generate"
   },

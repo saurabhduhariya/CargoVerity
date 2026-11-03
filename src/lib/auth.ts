@@ -35,6 +35,11 @@ export async function requireAppUser() {
   return { authUser, appUser };
 }
 
+export async function requireUser() {
+  const { authUser } = await requireAppUser();
+  return authUser;
+}
+
 export async function requireRole(role: AppRole) {
   const current = await requireAppUser();
 

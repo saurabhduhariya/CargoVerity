@@ -4,6 +4,7 @@ import { ExtractionService } from "@/lib/ai/extraction.service";
 import { createGroqVisionContent } from "@/lib/ai/groq.provider";
 import { createOpenRouterChatRequest } from "@/lib/ai/openrouter.provider";
 import { validateAndNormalizeResponse } from "@/lib/ai/response-validator";
+import { ProviderError } from "@/lib/errors";
 import type { AIProvider, ExtractionInput, ExtractionResult } from "@/lib/ai/types";
 
 const page = (pageNumber: number) => ({
@@ -73,6 +74,30 @@ describe("provider-independent extraction", () => {
       quantity: "10",
       quantityUnit: "pcs",
     }));
+  });
+
+  it("rejects invalid provider JSON without trusting it", () => {
+    expect(() => validateAndNormalizeResponse({
+      documentType: "INVOICE",
+      provider: "groq",
+      model: "qwen/qwen3.8-27b",
+      content: "not-json",
+    })).toThrow("The AI provider returned invalid JSON.");
+  });
+
+  it("retries a mocked timeout once and then preserves the safe provider error", async () => {
+    let calls = 0;
+    const provider: AIProvider = {
+      name: "groq",
+      model: "qwen/qwen3.8-27b",
+      async extractDocument() {
+        calls += 1;
+        throw new ProviderError("Synthetic timeout", "TIMEOUT");
+      },
+    };
+
+    await expect(new ExtractionService(provider).extract({ documentType: "INVOICE", pages: [page(1)] })).rejects.toThrow("Synthetic timeout");
+    expect(calls).toBe(2);
   });
 
   it("batches pages without changing the provider contract", async () => {

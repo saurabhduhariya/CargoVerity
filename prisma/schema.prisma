@@ -76,11 +76,25 @@ model User {
   exportEvents   ExportEvent[]
 }
 
+model Supplier {
+  id             String     @id @default(uuid()) @db.Uuid
+  name           String
+  normalizedName String     @unique
+  countryCode    String?
+  shipments      Shipment[]
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  @@index([name])
+}
+
 model Shipment {
   id             String          @id @default(uuid()) @db.Uuid
   reference      String          @unique
   importerName   String?
   exporterName   String?
+  supplierId     String?         @db.Uuid
+  supplier       Supplier?       @relation(fields: [supplierId], references: [id])
   status         ShipmentStatus  @default(DRAFT)
   currentRevision Int            @default(1)
   createdById    String          @db.Uuid
@@ -95,6 +109,7 @@ model Shipment {
 
   @@index([status])
   @@index([createdById])
+  @@index([supplierId])
 }
 
 model Document {
