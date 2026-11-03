@@ -1,0 +1,269 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  EXECUTIVE
+  MANAGER
+}
+
+enum ShipmentStatus {
+  DRAFT
+  IN_REVIEW
+  APPROVED
+  EXPORTED
+}
+
+enum DocumentType {
+  INVOICE
+  PACKING_LIST
+  BILL_OF_LADING
+}
+
+enum DocumentStatus {
+  UPLOADED
+  PROCESSING
+  EXTRACTED
+  REVIEW_REQUIRED
+  FAILED
+}
+
+enum ExtractionStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum ReviewStatus {
+  PENDING
+  CONFIRMED
+  CORRECTED
+  MANUAL_ENTRY
+}
+
+enum CrossCheckStatus {
+  PASS
+  MISMATCH
+  INCOMPLETE
+  NOT_APPLICABLE
+}
+
+enum ResolutionType {
+  SOURCE_CORRECTED
+  DOCUMENT_REPLACEMENT
+  ACCEPTED_EXCEPTION
+}
+
+model User {
+  id             String          @id @db.Uuid
+  email          String          @unique
+  fullName       String?
+  role           UserRole        @default(EXECUTIVE)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  shipments      Shipment[]      @relation("ShipmentCreator")
+  uploadedDocs   Document[]      @relation("DocumentUploader")
+  corrections    FieldCorrection[]
+  resolutions    CrossCheckResolution[]
+  approvals      Approval[]
+  auditEvents    AuditEvent[]
+  exportEvents   ExportEvent[]
+}
+
+model Shipment {
+  id             String          @id @default(uuid()) @db.Uuid
+  reference      String          @unique
+  importerName   String?
+  exporterName   String?
+  status         ShipmentStatus  @default(DRAFT)
+  currentRevision Int            @default(1)
+  createdById    String          @db.Uuid
+  createdBy      User            @relation("ShipmentCreator", fields: [createdById], references: [id])
+  documents      Document[]
+  crossChecks    CrossCheckResult[]
+  approvals      Approval[]
+  auditEvents    AuditEvent[]
+  exportEvents   ExportEvent[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([status])
+  @@index([createdById])
+}
+
+model Document {
+  id             String          @id @default(uuid()) @db.Uuid
+  shipmentId     String          @db.Uuid
+  shipment       Shipment        @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  type           DocumentType
+  fileName       String
+  storagePath    String
+  mimeType       String
+  fileSize       Int
+  pageCount      Int?
+  status         DocumentStatus  @default(UPLOADED)
+  uploadedById   String          @db.Uuid
+  uploadedBy     User            @relation("DocumentUploader", fields: [uploadedById], references: [id])
+  extractionRuns ExtractionRun[]
+  fields         ExtractedField[]
+  lineItems      LineItem[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([shipmentId])
+  @@index([status])
+}
+
+model ExtractionRun {
+  id             String          @id @default(uuid()) @db.Uuid
+  documentId     String          @db.Uuid
+  document       Document        @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  provider       String
+  model          String
+  promptVersion  String
+  status         ExtractionStatus @default(QUEUED)
+  pageCount      Int
+  errorCode      String?
+  errorMessage   String?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  fields         ExtractedField[]
+  lineItems      LineItem[]
+  createdAt      DateTime        @default(now())
+
+  @@index([documentId, createdAt])
+}
+
+model ExtractedField {
+  id             String          @id @default(uuid()) @db.Uuid
+  documentId     String          @db.Uuid
+  document       Document        @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  extractionRunId String         @db.Uuid
+  extractionRun  ExtractionRun   @relation(fields: [extractionRunId], references: [id], onDelete: Cascade)
+  fieldKey       String
+  modelValue     String?
+  currentValue   String?
+  unit           String?
+  modelConfidence Decimal?       @db.Decimal(5, 4)
+  sourceQuote    String?
+  pageNumber     Int?
+  reviewStatus   ReviewStatus    @default(PENDING)
+  corrections    FieldCorrection[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@unique([extractionRunId, fieldKey])
+  @@index([documentId, fieldKey])
+}
+
+model LineItem {
+  id             String          @id @default(uuid()) @db.Uuid
+  documentId     String          @db.Uuid
+  document       Document        @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  extractionRunId String         @db.Uuid
+  extractionRun  ExtractionRun   @relation(fields: [extractionRunId], references: [id], onDelete: Cascade)
+  batchNumber    Int             @default(0)
+  lineNumber     Int
+  description    String?
+  hsnCode        String?
+  quantity       Decimal?        @db.Decimal(18, 6)
+  quantityUnit   String?
+  unitPrice      Decimal?        @db.Decimal(18, 6)
+  currency       String?
+  lineTotal      Decimal?        @db.Decimal(18, 6)
+  modelConfidence Decimal?       @db.Decimal(5, 4)
+  sourceQuote    String?
+  pageNumber     Int?
+  createdAt      DateTime        @default(now())
+
+  @@unique([extractionRunId, batchNumber, lineNumber])
+  @@index([documentId])
+}
+
+model FieldCorrection {
+  id             String          @id @default(uuid()) @db.Uuid
+  fieldId        String          @db.Uuid
+  field          ExtractedField  @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  previousValue  String?
+  newValue       String?
+  reason         String
+  correctedById  String          @db.Uuid
+  correctedBy    User            @relation(fields: [correctedById], references: [id])
+  createdAt      DateTime        @default(now())
+
+  @@index([fieldId, createdAt])
+}
+
+model CrossCheckResult {
+  id             String          @id @default(uuid()) @db.Uuid
+  shipmentId     String          @db.Uuid
+  shipment       Shipment        @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  revision       Int
+  ruleKey        String
+  status         CrossCheckStatus
+  details        Json
+  createdAt      DateTime        @default(now())
+  resolutions    CrossCheckResolution[]
+
+  @@index([shipmentId, revision, createdAt])
+}
+
+model CrossCheckResolution {
+  id             String          @id @default(uuid()) @db.Uuid
+  crossCheckId   String          @db.Uuid
+  crossCheck     CrossCheckResult @relation(fields: [crossCheckId], references: [id], onDelete: Cascade)
+  type           ResolutionType
+  reason         String
+  evidence       String?
+  resolvedById   String          @db.Uuid
+  resolvedBy     User            @relation(fields: [resolvedById], references: [id])
+  managerApprovedAt DateTime?
+  createdAt      DateTime        @default(now())
+}
+
+model Approval {
+  id             String          @id @default(uuid()) @db.Uuid
+  shipmentId     String          @db.Uuid
+  shipment       Shipment         @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  revision       Int
+  approvedById   String          @db.Uuid
+  approvedBy     User             @relation(fields: [approvedById], references: [id])
+  approvedAt     DateTime         @default(now())
+
+  @@unique([shipmentId, revision])
+}
+
+model AuditEvent {
+  id             String          @id @default(uuid()) @db.Uuid
+  shipmentId     String?         @db.Uuid
+  shipment       Shipment?       @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  actorId        String?         @db.Uuid
+  actor          User?           @relation(fields: [actorId], references: [id])
+  action         String
+  entityType     String
+  entityId       String?
+  metadata       Json?
+  createdAt      DateTime        @default(now())
+
+  @@index([shipmentId, createdAt])
+  @@index([actorId, createdAt])
+}
+
+model ExportEvent {
+  id             String          @id @default(uuid()) @db.Uuid
+  shipmentId     String          @db.Uuid
+  shipment       Shipment         @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  exportedById   String          @db.Uuid
+  exportedBy     User             @relation(fields: [exportedById], references: [id])
+  profileId      String
+  revision       Int
+  createdAt      DateTime         @default(now())
+
+  @@index([shipmentId, createdAt])
+}
