@@ -5,13 +5,9 @@ import { requireAppUser } from "@/lib/auth";
 import { getPrisma } from "@/lib/db";
 import { getEnv } from "@/lib/env";
 import { canExport, selectLatestCrossChecks } from "@/lib/export/guard";
+import { buildDemoV1Export } from "@/lib/export/csv";
 
-function csvCell(value: unknown) {
-  const text = value === null || value === undefined ? "" : String(value);
-  return `"${text.replaceAll('"', '""')}"`;
-}
-
-export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
+export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const { appUser } = await requireAppUser();
     const { id } = await context.params;
@@ -40,17 +36,26 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     });
     if (!guard.allowed) throw new Error(`Export blocked: ${guard.reasons.join(", ")}.`);
 
-    const rows: Array<Array<unknown>> = [["shipment_reference", "document_type", "field_key", "value", "unit", "source_quote", "page_number"]];
-    for (const document of shipment.documents) {
-      const run = document.extractionRuns[0];
-      if (!run) continue;
-      for (const field of run.fields) rows.push([shipment.reference, document.type, field.fieldKey, field.currentValue, field.unit, field.sourceQuote, field.pageNumber]);
-      for (const item of run.lineItems) rows.push([shipment.reference, document.type, `line_item_${item.lineNumber}`, item.description, item.quantityUnit, item.sourceQuote, item.pageNumber]);
+    const exportData = buildDemoV1Export(
+      shipment.reference,
+      shipment.documents.flatMap((document) => {
+        const run = document.extractionRuns[0];
+        return run ? [{ type: document.type, fields: run.fields, lineItems: run.lineItems }] : [];
+      }),
+    );
+
+    if (new URL(request.url).searchParams.get("preview") === "1") {
+      return NextResponse.json({
+        fileName: `${shipment.reference}-${getEnv().EXPORT_PROFILE_ID}.csv`,
+        headers: exportData.headers,
+        rows: exportData.rows,
+      });
     }
+
     await prisma.exportEvent.create({ data: { shipmentId: id, exportedById: appUser.id, profileId: getEnv().EXPORT_PROFILE_ID, revision: shipment.currentRevision } });
     await prisma.shipment.update({ where: { id }, data: { status: "EXPORTED" } });
 
-    return new NextResponse(rows.map((row) => row.map(csvCell).join(",")).join("\n"), {
+    return new NextResponse(exportData.csv, {
       headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="${shipment.reference}-${getEnv().EXPORT_PROFILE_ID}.csv"` },
     });
   } catch (error) {
