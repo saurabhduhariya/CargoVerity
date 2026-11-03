@@ -42,7 +42,7 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# local environment files and secrets
+# local environment files and secrets; keep only the empty template tracked
 .env
 .env.*
 !.env.example
@@ -53,3 +53,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Prisma client generated from the schema
+/src/generated/
