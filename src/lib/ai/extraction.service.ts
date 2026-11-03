@@ -1,0 +1,87 @@
+import { getEnv } from "@/lib/env";
+import { ProviderError } from "@/lib/errors";
+import { createAIProvider } from "@/lib/ai/provider-factory";
+import type {
+  AIProvider,
+  ExtractionInput,
+  ExtractionResult,
+  NormalizedField,
+  NormalizedLineItem,
+} from "@/lib/ai/types";
+
+function chooseField(current: NormalizedField | undefined, next: NormalizedField) {
+  if (!current || current.value === null) return next;
+  if (next.value === null) return current;
+  if ((next.modelConfidence ?? 0) > (current.modelConfidence ?? 0)) return next;
+  return current;
+}
+
+function lineItemKey(item: NormalizedLineItem) {
+  return [
+    item.description?.trim().toLowerCase() ?? "",
+    item.hsnCode ?? "",
+    item.quantity ?? "",
+    item.lineTotal ?? "",
+  ].join("|");
+}
+
+function mergeResults(results: ExtractionResult[]): ExtractionResult {
+  const first = results[0];
+  const fields = new Map<string, NormalizedField>();
+  const lineItems = new Map<string, NormalizedLineItem>();
+
+  for (const result of results) {
+    for (const field of result.fields) fields.set(field.fieldKey, chooseField(fields.get(field.fieldKey), field));
+    for (const line of result.lineItems) {
+      const key = lineItemKey(line);
+      const existing = lineItems.get(key);
+      if (!existing || (line.modelConfidence ?? 0) > (existing.modelConfidence ?? 0)) {
+        lineItems.set(key, line);
+      }
+    }
+  }
+
+  return {
+    ...first,
+    fields: [...fields.values()],
+    lineItems: [...lineItems.values()].sort((a, b) => a.lineNumber - b.lineNumber),
+    warnings: [...new Set(results.flatMap((result) => result.warnings))],
+  };
+}
+
+async function withRetry(provider: AIProvider, input: ExtractionInput) {
+  const maxRetries = getEnv().MAX_AI_RETRIES;
+  let attempt = 0;
+
+  while (true) {
+    try {
+      return await provider.extractDocument(input);
+    } catch (error) {
+      const retryable = error instanceof ProviderError && ["RATE_LIMIT", "TIMEOUT", "UNAVAILABLE"].includes(error.code);
+      if (!retryable || attempt >= maxRetries) throw error;
+      attempt += 1;
+    }
+  }
+}
+
+export class ExtractionService {
+  constructor(private readonly provider: AIProvider = createAIProvider()) {}
+
+  async extract(input: ExtractionInput) {
+    const maxImages = Math.min(getEnv().MAX_AI_IMAGES_PER_REQUEST, 3);
+
+    if (input.pages.length === 0) throw new Error("At least one rendered page is required.");
+
+    const batches: ExtractionInput[] = [];
+    for (let index = 0; index < input.pages.length; index += maxImages) {
+      batches.push({
+        documentType: input.documentType,
+        pages: input.pages.slice(index, index + maxImages),
+      });
+    }
+
+    const results: ExtractionResult[] = [];
+    for (const batch of batches) results.push(await withRetry(this.provider, batch));
+    return mergeResults(results);
+  }
+}
