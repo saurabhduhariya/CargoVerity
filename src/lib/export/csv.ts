@@ -20,7 +20,7 @@ type ExportLineItem = {
 };
 
 export type ExportDocument = {
-  type: string;
+  docType: string;
   fields: ExportField[];
   lineItems: ExportLineItem[];
 };
@@ -58,7 +58,7 @@ export function buildDemoV1Export(reference: string, documents: ExportDocument[]
     for (const field of document.fields) {
       rows.push([
         reference,
-        document.type,
+        document.docType,
         field.fieldKey,
         field.currentValue,
         field.unit,
@@ -77,7 +77,7 @@ export function buildDemoV1Export(reference: string, documents: ExportDocument[]
     for (const item of document.lineItems) {
       rows.push([
         reference,
-        document.type,
+        document.docType,
         `line_item_${item.lineNumber}`,
         item.description,
         item.quantityUnit,

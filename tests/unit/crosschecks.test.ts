@@ -7,17 +7,17 @@ describe("deterministic cross-checks", () => {
   it("detects invoice arithmetic and weight mismatches without guessing a cause", () => {
     const results = runCrossChecks([
       {
-        type: "INVOICE",
+        docType: "INVOICE",
         fields: { invoiceTotal: { value: "100" }, currency: { value: "USD" }, exporter: { value: "Exporter" } },
         lineItems: [{ description: "Widget", quantity: "1", quantityUnit: "pcs", lineTotal: "90", currency: "USD" }],
       },
       {
-        type: "PACKING_LIST",
+        docType: "PACKING_LIST",
         fields: { grossWeight: { value: "45", unit: "kg" }, netWeight: { value: "50", unit: "kg" }, packageCount: { value: "2" }, exporter: { value: "Exporter" } },
         lineItems: [{ description: "Widget", quantity: "1", quantityUnit: "pcs", lineTotal: null, currency: null }],
       },
       {
-        type: "BILL_OF_LADING",
+        docType: "BILL_OF_LADING",
         fields: { grossWeight: { value: "40", unit: "kg" }, packageCount: { value: "2" }, exporter: { value: "Exporter" } },
         lineItems: [],
       },
@@ -34,8 +34,8 @@ describe("deterministic cross-checks", () => {
   });
 
   it("uses the newest document of each type for cross-checks", () => {
-    const invoice = { type: "INVOICE" as const, fields: {}, lineItems: [] };
-    const packingList = { type: "PACKING_LIST" as const, fields: {}, lineItems: [] };
+    const invoice = { docType: "INVOICE" as const, fields: {}, lineItems: [] };
+    const packingList = { docType: "PACKING_LIST" as const, fields: {}, lineItems: [] };
 
     expect(selectLatestCrossCheckDocuments([invoice, packingList, { ...invoice, fields: { invoiceTotal: { value: "400" } } }])).toEqual([invoice, packingList]);
   });

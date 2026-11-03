@@ -30,7 +30,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     const { data, error } = await createSupabaseAdminClient()
       .storage
       .from(getEnv().SUPABASE_STORAGE_BUCKET)
-      .createSignedUrl(document.storagePath, 300);
+      .createSignedUrl(document.storageKey, 300);
     if (error) throw new Error("Could not create a document preview URL.");
 
     return NextResponse.json(

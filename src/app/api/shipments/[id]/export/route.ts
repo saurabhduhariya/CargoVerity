@@ -16,6 +16,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       where: { id, ...(appUser.role === "MANAGER" ? {} : { createdById: appUser.id }) },
       include: {
         documents: {
+          where: { isCurrent: true },
           include: {
             extractionRuns: { orderBy: { createdAt: "desc" }, take: 1, include: { fields: true, lineItems: true } },
           },
@@ -40,7 +41,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       shipment.reference,
       shipment.documents.flatMap((document) => {
         const run = document.extractionRuns[0];
-        return run ? [{ type: document.type, fields: run.fields, lineItems: run.lineItems }] : [];
+        return run ? [{ docType: document.docType, fields: run.fields, lineItems: run.lineItems }] : [];
       }),
     );
 

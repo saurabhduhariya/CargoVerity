@@ -18,7 +18,7 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
     where: { id, ...(appUser.role === "MANAGER" ? {} : { createdById: appUser.id }) },
     include: {
       supplier: true,
-      documents: { orderBy: { createdAt: "desc" }, select: { id: true, type: true, status: true, fileName: true } },
+      documents: { where: { isCurrent: true }, orderBy: { createdAt: "desc" }, select: { id: true, docType: true, extractionStatus: true, originalFileName: true, documentVersion: true } },
     },
   });
 
@@ -41,8 +41,8 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
           <CardContent className="space-y-3">
             {shipment.documents.length === 0 ? <p className="text-sm text-slate-500">No documents uploaded yet.</p> : shipment.documents.map((document) => (
               <div key={document.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 p-3">
-                <div><p className="font-medium text-slate-900">{document.type.replaceAll("_", " ")}</p><p className="text-xs text-slate-500">{document.fileName}</p></div>
-                <div className="flex items-center gap-3"><Badge>{document.status.replaceAll("_", " ")}</Badge>{document.status === "REVIEW_REQUIRED" ? <Link className="text-sm font-medium text-blue-700" href={`/review/${document.id}`}>Open review →</Link> : null}</div>
+                <div><p className="font-medium text-slate-900">{document.docType.replaceAll("_", " ")}</p><p className="text-xs text-slate-500">v{document.documentVersion} · {document.originalFileName}</p></div>
+                <div className="flex items-center gap-3"><Badge>{document.extractionStatus.replaceAll("_", " ")}</Badge>{document.extractionStatus === "REVIEW_REQUIRED" ? <Link className="text-sm font-medium text-blue-700" href={`/review/${document.id}`}>Open review →</Link> : null}</div>
               </div>
             ))}
           </CardContent>

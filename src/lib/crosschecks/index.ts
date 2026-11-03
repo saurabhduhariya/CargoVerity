@@ -17,7 +17,7 @@ export type CrossCheckLineItem = {
 };
 
 export type CrossCheckDocument = {
-  type: CrossCheckDocumentType;
+  docType: CrossCheckDocumentType;
   fields: Record<string, CrossCheckField | undefined>;
   lineItems: CrossCheckLineItem[];
 };
@@ -35,7 +35,7 @@ export type CrossCheckResult = {
 export function selectLatestCrossCheckDocuments(documents: CrossCheckDocument[]) {
   const latestByType = new Map<CrossCheckDocumentType, CrossCheckDocument>();
   for (const document of documents) {
-    if (!latestByType.has(document.type)) latestByType.set(document.type, document);
+    if (!latestByType.has(document.docType)) latestByType.set(document.docType, document);
   }
   return [...latestByType.values()];
 }
@@ -79,9 +79,9 @@ function compareDecimal(
 }
 
 export function runCrossChecks(documents: CrossCheckDocument[]): CrossCheckResult[] {
-  const invoice = documents.find((document) => document.type === "INVOICE");
-  const packingList = documents.find((document) => document.type === "PACKING_LIST");
-  const billOfLading = documents.find((document) => document.type === "BILL_OF_LADING");
+  const invoice = documents.find((document) => document.docType === "INVOICE");
+  const packingList = documents.find((document) => document.docType === "PACKING_LIST");
+  const billOfLading = documents.find((document) => document.docType === "BILL_OF_LADING");
   const results: CrossCheckResult[] = [];
 
   if (!invoice) {

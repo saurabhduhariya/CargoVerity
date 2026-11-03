@@ -6,6 +6,7 @@ import { getEnv } from "@/lib/env";
 import { getPrisma } from "@/lib/db";
 import { createSupabaseAdminClient } from "@/lib/supabase/server";
 import { documentUploadMetadataSchema, validateUploadedFile } from "@/lib/documents/validation";
+import { createDocumentVersion } from "@/lib/documents/service";
 
 export async function POST(request: Request) {
   try {
@@ -40,16 +41,15 @@ export async function POST(request: Request) {
 
     if (storageError) throw new Error("Document storage upload failed.");
 
-    const document = await prisma.document.create({
-      data: {
-        shipmentId: shipment.id,
-        type: metadata.documentType,
-        fileName: fileInfo.fileName,
-        storagePath: path,
-        mimeType: fileInfo.mimeType,
-        fileSize: fileInfo.fileSize,
-        uploadedById: appUser.id,
-      },
+    const document = await createDocumentVersion(prisma, {
+      shipmentId: shipment.id,
+      selectedDocType: metadata.documentType,
+      storageKey: path,
+      originalFileName: fileInfo.fileName,
+      mimeType: fileInfo.mimeType,
+      sizeBytes: fileInfo.sizeBytes,
+      sha256: fileInfo.sha256,
+      uploadedById: appUser.id,
     });
     await prisma.shipment.update({
       where: { id: shipment.id },

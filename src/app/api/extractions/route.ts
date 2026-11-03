@@ -37,7 +37,8 @@ export async function POST(request: Request) {
     const document = await prisma.document.findFirst({
       where: {
         id: input.documentId,
-        type: input.documentType,
+        selectedDocType: input.documentType,
+        isCurrent: true,
         shipment:
           appUser.role === "MANAGER" ? undefined : { createdById: appUser.id },
       },
@@ -66,7 +67,7 @@ export async function POST(request: Request) {
     extractionRunId = run.id;
     await prisma.document.update({
       where: { id: document.id },
-      data: { status: "PROCESSING", pageCount: input.pages.length },
+      data: { extractionStatus: "PROCESSING", pageCount: input.pages.length },
     });
 
     const result = await new ExtractionService(provider).extract({
@@ -113,7 +114,7 @@ export async function POST(request: Request) {
         });
         await transaction.document.update({
           where: { id: document.id },
-          data: { status: "REVIEW_REQUIRED" },
+          data: { extractionStatus: "REVIEW_REQUIRED" },
         });
       } else {
         await transaction.extractionRun.update({

@@ -113,26 +113,49 @@ model Shipment {
 }
 
 model Document {
-  id             String          @id @default(uuid()) @db.Uuid
-  shipmentId     String          @db.Uuid
-  shipment       Shipment        @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
-  type           DocumentType
-  fileName       String
-  storagePath    String
-  mimeType       String
-  fileSize       Int
-  pageCount      Int?
-  status         DocumentStatus  @default(UPLOADED)
-  uploadedById   String          @db.Uuid
-  uploadedBy     User            @relation("DocumentUploader", fields: [uploadedById], references: [id])
+  id                String          @id @default(uuid()) @db.Uuid
+  shipmentId        String          @db.Uuid
+  shipment          Shipment        @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  docType           DocumentType
+  selectedDocType   DocumentType
+  detectedDocType   DocumentType?
+  typeMismatch      Boolean         @default(false)
+  documentVersion   Int             @default(1)
+  isCurrent         Boolean         @default(true)
+  storageKey        String
+  originalFileName  String
+  mimeType          String
+  sizeBytes         Int
+  sha256            String?
+  pageCount         Int?
+  extractionStatus  DocumentStatus   @default(UPLOADED)
+  uploadedById      String          @db.Uuid
+  uploadedBy        User            @relation("DocumentUploader", fields: [uploadedById], references: [id])
+  pages             DocumentPage[]
   extractionRuns ExtractionRun[]
   fields         ExtractedField[]
   lineItems      LineItem[]
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
 
-  @@index([shipmentId])
-  @@index([status])
+  @@index([shipmentId, selectedDocType, isCurrent])
+  @@index([shipmentId, selectedDocType, documentVersion])
+  @@index([extractionStatus])
+}
+
+model DocumentPage {
+  id                  String   @id @default(uuid()) @db.Uuid
+  documentId          String   @db.Uuid
+  document            Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  pageNumber          Int
+  isReadable          Boolean  @default(true)
+  manualEntryRequired Boolean  @default(false)
+  reviewNote          String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([documentId, pageNumber])
+  @@index([documentId])
 }
 
 model ExtractionRun {

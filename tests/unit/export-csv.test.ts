@@ -6,7 +6,7 @@ describe("demo-v1 CSV export", () => {
   it("exports line-item details in dedicated columns while preserving evidence", () => {
     const csv = buildDemoV1Csv("SHP-DEMO-002", [
       {
-        type: "INVOICE",
+        docType: "INVOICE",
         fields: [],
         lineItems: [
           {
@@ -40,7 +40,7 @@ describe("demo-v1 CSV export", () => {
   it("quotes multiline evidence and embedded quotes as valid CSV cells", () => {
     const csv = buildDemoV1Csv("SHP-DEMO-002", [
       {
-        type: "INVOICE",
+        docType: "INVOICE",
         fields: [{ fieldKey: "exporter", currentValue: "Demo", unit: null, sourceQuote: 'Exporter\n"Demo"', pageNumber: 1 }],
         lineItems: [],
       },
@@ -51,7 +51,7 @@ describe("demo-v1 CSV export", () => {
 
   it("returns a preview with string cells before download", () => {
     const preview = buildDemoV1Export("SHP-DEMO-002", [
-      { type: "INVOICE", fields: [], lineItems: [] },
+      { docType: "INVOICE", fields: [], lineItems: [] },
     ]);
 
     expect(preview.headers.at(-1)).toBe("line_total");

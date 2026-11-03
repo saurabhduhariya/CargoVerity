@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { createHash } from "node:crypto";
 
 import { getEnv } from "@/lib/env";
 import { documentTypes } from "@/lib/ai/types";
@@ -22,7 +23,8 @@ export async function validateUploadedFile(file: File) {
     throw new Error(`The file must be between 1 byte and ${maxBytes} bytes.`);
   }
 
-  const header = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+  const content = new Uint8Array(await file.arrayBuffer());
+  const header = content.slice(0, 12);
   const isPdf = file.type === "application/pdf" && new TextDecoder().decode(header.slice(0, 5)) === "%PDF-";
   const isPng = file.type === "image/png" && header.slice(0, 8).every((value, index) => value === [137, 80, 78, 71, 13, 10, 26, 10][index]);
   const isJpeg = file.type === "image/jpeg" && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
@@ -34,6 +36,7 @@ export async function validateUploadedFile(file: File) {
   return {
     mimeType: file.type,
     fileName: file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 180) || "document",
-    fileSize: file.size,
+    sizeBytes: file.size,
+    sha256: createHash("sha256").update(content).digest("hex"),
   };
 }

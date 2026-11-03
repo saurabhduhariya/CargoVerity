@@ -28,7 +28,7 @@ export async function GET(request: Request) {
       where: buildShipmentWhere(filters, appUser),
       include: {
         supplier: { select: { id: true, name: true } },
-        documents: { select: { id: true, type: true, status: true, fileName: true } },
+        documents: { where: { isCurrent: true }, select: { id: true, docType: true, extractionStatus: true, originalFileName: true, documentVersion: true, isCurrent: true } },
       },
       orderBy: { updatedAt: "desc" },
     });

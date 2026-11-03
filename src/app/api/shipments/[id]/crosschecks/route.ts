@@ -15,6 +15,7 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
       where: { id, ...(appUser.role === "MANAGER" ? {} : { createdById: appUser.id }) },
       include: {
         documents: {
+          where: { isCurrent: true },
           orderBy: { createdAt: "desc" },
           include: {
             extractionRuns: {
@@ -34,7 +35,7 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
       const run = document.extractionRuns[0];
       if (!run) return [];
       return [{
-        type: document.type,
+        docType: document.docType,
         fields: Object.fromEntries(run.fields.map((field) => [field.fieldKey, { value: field.currentValue, unit: field.unit }])),
         lineItems: run.lineItems.map((item) => ({
           description: item.description,
