@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { connection } from "next/server";
 
 import { DashboardShell } from "@/features/dashboard/dashboard-shell";
 import { getAuthenticatedSupabaseUser } from "@/lib/auth";
@@ -7,6 +8,9 @@ import { getSupabaseBrowserConfig } from "@/lib/supabase/browser-config";
 export const instant = false;
 
 export default async function DashboardPage() {
+  // Supabase session validation is request-time work and may read the current time.
+  await connection();
+
   if (!getSupabaseBrowserConfig()) {
     return <SetupRequired />;
   }

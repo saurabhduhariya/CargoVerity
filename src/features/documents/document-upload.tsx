@@ -26,6 +26,13 @@ async function renderFilePages(file: File) {
   }
 
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  // PDF.js 6 no longer guesses the worker URL in a bundled browser app.
+  // Let Next.js bundle the matching worker instead of falling back to a
+  // relative URL that does not exist in the app's generated assets.
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+    "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
+    import.meta.url,
+  ).toString();
   const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
   if (pdf.numPages > 50) throw new Error("This demo accepts at most 50 PDF pages.");
   const pages: Array<{ pageNumber: number; imageBase64: string; mimeType: "image/jpeg" }> = [];

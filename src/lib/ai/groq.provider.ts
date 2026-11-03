@@ -85,12 +85,21 @@ export class GroqProvider implements AIProvider {
         throw new ProviderError("Groq returned an empty response.", "INVALID_RESPONSE");
       }
 
-      return validateAndNormalizeResponse({
-        documentType: input.documentType,
-        content: responseContent,
-        provider: this.name,
-        model: response.model || this.model,
-      });
+      try {
+        return validateAndNormalizeResponse({
+          documentType: input.documentType,
+          content: responseContent,
+          provider: this.name,
+          model: response.model || this.model,
+        });
+      } catch (validationError) {
+        throw new ProviderError(
+          validationError instanceof Error
+            ? `Groq returned an invalid extraction response: ${validationError.message}`
+            : "Groq returned an invalid extraction response.",
+          "INVALID_RESPONSE",
+        );
+      }
     } catch (error) {
       if (error instanceof ProviderError) throw error;
       throw providerError(error);

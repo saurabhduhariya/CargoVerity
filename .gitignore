@@ -18,6 +18,9 @@
 # local project notes and plans
 /plan
 
+# local synthetic documents for manual demo uploads
+/sample-docs
+
 # next.js
 /.next/
 /out/

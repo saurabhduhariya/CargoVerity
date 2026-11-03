@@ -47,6 +47,32 @@ describe("provider-independent extraction", () => {
     expect(result.warnings).toContain("Low model confidence for invoiceTotal.");
   });
 
+  it("normalizes common line-item aliases returned by vision models", () => {
+    const result = validateAndNormalizeResponse({
+      documentType: "PACKING_LIST",
+      provider: "groq",
+      model: "qwen/qwen3.8-27b",
+      content: JSON.stringify({
+        lineItems: [
+          {
+            lineNumber: "1",
+            description: "Precision Sensor",
+            quantity: "10",
+            unit: "pcs",
+            sourceQuote: "Precision Sensor 10 pcs",
+            pageNumber: 1,
+          },
+        ],
+      }),
+    });
+
+    expect(result.lineItems[0]).toEqual(expect.objectContaining({
+      lineNumber: 1,
+      quantity: "10",
+      quantityUnit: "pcs",
+    }));
+  });
+
   it("batches pages without changing the provider contract", async () => {
     const calls: ExtractionInput[] = [];
     const provider: AIProvider = {

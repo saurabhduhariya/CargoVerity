@@ -43,6 +43,55 @@ const fieldKeysByDocumentType: Record<DocumentType, string[]> = {
   ],
 };
 
+type JsonRecord = Record<string, unknown>;
+
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function numericValue(value: unknown) {
+  if (typeof value !== "string" || value.trim() === "") return value;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : value;
+}
+
+function normalizeLineItem(item: unknown) {
+  if (!isJsonRecord(item)) return item;
+
+  const {
+    unit,
+    quantity_unit: quantityUnitAlias,
+    hsn_code: hsnCodeAlias,
+    unit_price: unitPriceAlias,
+    line_total: lineTotalAlias,
+    source_quote: sourceQuoteAlias,
+    page_number: pageNumberAlias,
+    line_number: lineNumberAlias,
+    ...canonicalItem
+  } = item;
+
+  return {
+    ...canonicalItem,
+    lineNumber: numericValue(canonicalItem.lineNumber ?? lineNumberAlias),
+    hsnCode: canonicalItem.hsnCode ?? hsnCodeAlias,
+    quantityUnit: canonicalItem.quantityUnit ?? unit ?? quantityUnitAlias,
+    unitPrice: canonicalItem.unitPrice ?? unitPriceAlias,
+    lineTotal: canonicalItem.lineTotal ?? lineTotalAlias,
+    sourceQuote: canonicalItem.sourceQuote ?? sourceQuoteAlias,
+    pageNumber: numericValue(canonicalItem.pageNumber ?? pageNumberAlias),
+    confidence: numericValue(canonicalItem.confidence),
+  };
+}
+
+function normalizeResponsePayload(payload: unknown) {
+  if (!isJsonRecord(payload) || !Array.isArray(payload.lineItems)) return payload;
+
+  return {
+    ...payload,
+    lineItems: payload.lineItems.map(normalizeLineItem),
+  };
+}
+
 function parseJsonContent(content: string) {
   const withoutFence = content
     .trim()
@@ -86,7 +135,7 @@ export function validateAndNormalizeResponse(input: {
   provider: "groq" | "openrouter";
   model: string;
 }): ExtractionResult {
-  const parsed = parseJsonContent(input.content);
+  const parsed = normalizeResponsePayload(parseJsonContent(input.content));
   const schema = schemas[input.documentType];
   const result = schema.safeParse(parsed);
 
