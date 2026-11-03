@@ -4,7 +4,7 @@ import { apiError } from "@/lib/api-response";
 import { requireAppUser } from "@/lib/auth";
 import { getPrisma } from "@/lib/db";
 import { getEnv } from "@/lib/env";
-import { canExport } from "@/lib/export/guard";
+import { canExport, selectLatestCrossChecks } from "@/lib/export/guard";
 
 function csvCell(value: unknown) {
   const text = value === null || value === undefined ? "" : String(value);
@@ -30,11 +30,12 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
 
     const approval = await prisma.approval.findUnique({ where: { shipmentId_revision: { shipmentId: id, revision: shipment.currentRevision } } });
     const checks = await prisma.crossCheckResult.findMany({ where: { shipmentId: id, revision: shipment.currentRevision } });
+    const latestChecks = selectLatestCrossChecks(checks);
     const guard = canExport({
       hasManagerApproval: Boolean(approval),
       approvedRevision: approval?.revision ?? null,
       currentRevision: shipment.currentRevision,
-      unresolvedStatuses: checks.filter((check) => ["MISMATCH", "INCOMPLETE"].includes(check.status)).map((check) => check.status as "MISMATCH" | "INCOMPLETE"),
+      unresolvedStatuses: latestChecks.filter((check) => ["MISMATCH", "INCOMPLETE"].includes(check.status)).map((check) => check.status as "MISMATCH" | "INCOMPLETE"),
       profileId: getEnv().EXPORT_PROFILE_ID,
     });
     if (!guard.allowed) throw new Error(`Export blocked: ${guard.reasons.join(", ")}.`);

@@ -57,6 +57,7 @@ describe("provider-independent extraction", () => {
           {
             lineNumber: "1",
             description: "Precision Sensor",
+            hsCode: "9026.10",
             quantity: "10",
             unit: "pcs",
             sourceQuote: "Precision Sensor 10 pcs",
@@ -68,6 +69,7 @@ describe("provider-independent extraction", () => {
 
     expect(result.lineItems[0]).toEqual(expect.objectContaining({
       lineNumber: 1,
+      hsnCode: "9026.10",
       quantity: "10",
       quantityUnit: "pcs",
     }));

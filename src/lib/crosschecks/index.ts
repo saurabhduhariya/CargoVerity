@@ -28,6 +28,18 @@ export type CrossCheckResult = {
   details: Record<string, unknown>;
 };
 
+/**
+ * The API supplies documents newest first. Ignore older retries of the same
+ * document type so a failed upload cannot hide a completed extraction.
+ */
+export function selectLatestCrossCheckDocuments(documents: CrossCheckDocument[]) {
+  const latestByType = new Map<CrossCheckDocumentType, CrossCheckDocument>();
+  for (const document of documents) {
+    if (!latestByType.has(document.type)) latestByType.set(document.type, document);
+  }
+  return [...latestByType.values()];
+}
+
 function field(document: CrossCheckDocument | undefined, key: string) {
   return document?.fields[key]?.value ?? null;
 }

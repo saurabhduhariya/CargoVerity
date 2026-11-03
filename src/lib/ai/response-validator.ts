@@ -61,6 +61,7 @@ function normalizeLineItem(item: unknown) {
   const {
     unit,
     quantity_unit: quantityUnitAlias,
+    hsCode: hsCodeAlias,
     hsn_code: hsnCodeAlias,
     unit_price: unitPriceAlias,
     line_total: lineTotalAlias,
@@ -73,7 +74,7 @@ function normalizeLineItem(item: unknown) {
   return {
     ...canonicalItem,
     lineNumber: numericValue(canonicalItem.lineNumber ?? lineNumberAlias),
-    hsnCode: canonicalItem.hsnCode ?? hsnCodeAlias,
+    hsnCode: canonicalItem.hsnCode ?? hsCodeAlias ?? hsnCodeAlias,
     quantityUnit: canonicalItem.quantityUnit ?? unit ?? quantityUnitAlias,
     unitPrice: canonicalItem.unitPrice ?? unitPriceAlias,
     lineTotal: canonicalItem.lineTotal ?? lineTotalAlias,

@@ -33,7 +33,10 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       .createSignedUrl(document.storagePath, 300);
     if (error) throw new Error("Could not create a document preview URL.");
 
-    return NextResponse.json({ document, signedUrl: data.signedUrl });
+    return NextResponse.json(
+      { document, signedUrl: data.signedUrl },
+      { headers: { "Cache-Control": "no-store, max-age=0" } },
+    );
   } catch (error) {
     return apiError(error);
   }

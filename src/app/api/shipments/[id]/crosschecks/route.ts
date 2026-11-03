@@ -4,7 +4,7 @@ import { Prisma } from "@/generated/prisma/client";
 import { apiError } from "@/lib/api-response";
 import { requireAppUser } from "@/lib/auth";
 import { getPrisma } from "@/lib/db";
-import { runCrossChecks, type CrossCheckDocument } from "@/lib/crosschecks";
+import { runCrossChecks, selectLatestCrossCheckDocuments } from "@/lib/crosschecks";
 
 export async function POST(_request: Request, context: { params: Promise<{ id: string }> }) {
   try {
@@ -15,8 +15,10 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
       where: { id, ...(appUser.role === "MANAGER" ? {} : { createdById: appUser.id }) },
       include: {
         documents: {
+          orderBy: { createdAt: "desc" },
           include: {
             extractionRuns: {
+              where: { status: "COMPLETED" },
               orderBy: { createdAt: "desc" },
               take: 1,
               include: { fields: true, lineItems: true },
@@ -28,7 +30,7 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
 
     if (!shipment) throw new Error("Shipment not found or inaccessible.");
 
-    const documents: CrossCheckDocument[] = shipment.documents.flatMap((document) => {
+    const documents = selectLatestCrossCheckDocuments(shipment.documents.flatMap((document) => {
       const run = document.extractionRuns[0];
       if (!run) return [];
       return [{
@@ -42,7 +44,7 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
           currency: item.currency,
         })),
       }];
-    });
+    }));
     const results = runCrossChecks(documents);
 
     await prisma.crossCheckResult.createMany({

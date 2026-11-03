@@ -21,7 +21,7 @@ export function ReviewPanel({ documentId }: { documentId: string }) {
   const [checks, setChecks] = useState<Array<{ ruleKey: string; status: string }>>([]);
 
   async function load() {
-    const response = await fetch(`/api/documents/${documentId}`);
+    const response = await fetch(`/api/documents/${documentId}`, { cache: "no-store" });
     const data = await response.json();
     if (!response.ok) { setMessage(data.error ?? "Could not load document."); return; }
     setDocument({ ...data.document, signedUrl: data.signedUrl, fields: data.document.extractionRuns?.[0]?.fields ?? [], lineItems: data.document.extractionRuns?.[0]?.lineItems ?? [] });
@@ -29,7 +29,7 @@ export function ReviewPanel({ documentId }: { documentId: string }) {
 
   useEffect(() => {
     let active = true;
-    void fetch(`/api/documents/${documentId}`)
+    void fetch(`/api/documents/${documentId}`, { cache: "no-store" })
       .then(async (response) => ({ response, data: await response.json() }))
       .then(({ response, data }) => {
         if (!active) return;
@@ -49,7 +49,10 @@ export function ReviewPanel({ documentId }: { documentId: string }) {
     const response = await fetch(`/api/fields/${field.id}/review`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status, value: values[field.id] ?? field.currentValue, reason: reason[field.id] ?? (status === "CONFIRMED" ? undefined : "Reviewer correction") }) });
     const data = await response.json();
     if (!response.ok) setMessage(data.error ?? "Could not save review.");
-    else await load();
+    else {
+      await load();
+      setMessage(status === "CONFIRMED" ? "Field confirmed." : "Correction saved.");
+    }
     setBusy(false);
   }
 

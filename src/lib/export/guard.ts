@@ -6,6 +6,21 @@ export type ExportGuardInput = {
   profileId: string;
 };
 
+export type RevisionCrossCheck = {
+  ruleKey: string;
+  status: string;
+  createdAt: Date;
+};
+
+export function selectLatestCrossChecks<T extends RevisionCrossCheck>(checks: T[]) {
+  const latestByRule = new Map<string, T>();
+  for (const check of checks) {
+    const existing = latestByRule.get(check.ruleKey);
+    if (!existing || check.createdAt > existing.createdAt) latestByRule.set(check.ruleKey, check);
+  }
+  return [...latestByRule.values()];
+}
+
 export function canExport(input: ExportGuardInput) {
   const reasons: string[] = [];
 
