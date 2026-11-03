@@ -8,6 +8,9 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    env:
+      # Prisma 7 loads prisma.config.ts during install/generate. No database connection is made in CI.
+      DIRECT_URL: postgresql://postgres:postgres@127.0.0.1:5432/cargoverity
     steps:
       - uses: actions/checkout@v5
 
@@ -19,5 +22,6 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
+      - run: npm run db:validate
       - run: npm test
       - run: npm run build
