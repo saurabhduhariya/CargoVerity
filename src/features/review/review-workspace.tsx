@@ -21,6 +21,7 @@ import {
   RotateCw,
   Save,
   Scale,
+  Send,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -357,6 +358,8 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
   const [showHistoryForCheckId, setShowHistoryForCheckId] = useState<string | null>(null);
 
   const [busy, setBusy] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitBlockers, setSubmitBlockers] = useState<string[] | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   const activeDoc = documents.find((d) => d.docType === activeDocType);
@@ -790,6 +793,37 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
     }
   }
 
+  async function handleSubmitForApproval() {
+    setSubmitting(true);
+    setStatusMessage(null);
+    setSubmitBlockers(null);
+
+    try {
+      const response = await fetch(`/api/shipments/${shipment.id}/submit`, {
+        method: "POST",
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        if (response.status === 422 && Array.isArray(data.blockingReasons)) {
+          setSubmitBlockers(data.blockingReasons);
+          setStatusMessage("Submission blocked by validation gates. Please review the issues below.");
+          return;
+        }
+        throw new Error(data.error || "Failed to submit shipment for approval.");
+      }
+
+      setShipmentStatus("READY_FOR_APPROVAL");
+      setStatusMessage("Shipment successfully submitted for manager approval!");
+      setSubmitBlockers(null);
+    } catch (err) {
+      setStatusMessage(err instanceof Error ? err.message : "Submission failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   const activePageData = activeDoc?.pages.find((p) => p.pageNumber === currentPage);
   const isPageUnreadable = activePageData && (!activePageData.isReadable || activePageData.manualEntryRequired);
 
@@ -878,11 +912,28 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
               size="sm"
               variant="outline"
               className="h-7 text-xs border-slate-300"
-              disabled={busy}
+              disabled={busy || submitting}
               onClick={() => void triggerCrossChecks()}
             >
               <RefreshCw className="size-3 mr-1" /> Re-check
             </Button>
+            {shipmentStatus !== "READY_FOR_APPROVAL" &&
+            shipmentStatus !== "APPROVED" &&
+            shipmentStatus !== "EXPORTED" ? (
+              <Button
+                size="sm"
+                className="h-7 text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-medium"
+                disabled={busy || submitting}
+                onClick={() => void handleSubmitForApproval()}
+              >
+                <Send className="size-3 mr-1" />
+                {submitting ? "Submitting..." : "Submit to Manager"}
+              </Button>
+            ) : shipmentStatus === "READY_FOR_APPROVAL" ? (
+              <Badge className="bg-amber-100 text-amber-900 border-amber-300 text-xs px-2.5 py-1">
+                Awaiting Manager Approval
+              </Badge>
+            ) : null}
           </div>
         </div>
       </header>
@@ -960,6 +1011,34 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
             </button>
           </div>
         </div>
+
+        {submitBlockers && submitBlockers.length > 0 ? (
+          <div
+            role="alert"
+            className="mb-4 rounded-lg border border-rose-300 bg-rose-50 p-4 text-xs text-rose-950 shadow-sm"
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-rose-200">
+              <div className="flex items-center gap-2 font-semibold text-rose-900">
+                <AlertCircle className="size-4 text-rose-600 shrink-0" />
+                <span>Submission Blocked ({submitBlockers.length} issues to resolve before manager approval)</span>
+              </div>
+              <button
+                type="button"
+                className="hover:opacity-75 font-bold ml-2 text-rose-700"
+                onClick={() => setSubmitBlockers(null)}
+              >
+                ✕
+              </button>
+            </div>
+            <ul className="mt-2 list-disc list-inside space-y-1 text-slate-800">
+              {submitBlockers.map((reason, idx) => (
+                <li key={idx} className="font-medium text-rose-950">
+                  {reason}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
 
         {isReadOnly ? (
           <div
