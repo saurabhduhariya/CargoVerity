@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -67,9 +68,9 @@ describe("Synthetic Documents Generation & Manifest (Week 2 Step 4)", () => {
     expect(validatedPageCount).toBe(1);
   });
 
-  it("generates all 15 PDF files into public/sample-docs/", async () => {
-    const outputDir = join(process.cwd(), "public", "sample-docs");
-    const paths = await generateAllSampleDocs(outputDir);
+  it("generates all 15 PDF files into a target directory", async () => {
+    const tempDir = join(tmpdir(), `sample-docs-test-${Date.now()}`);
+    const paths = await generateAllSampleDocs(tempDir);
 
     expect(paths.length).toBe(15);
     for (const p of paths) {
@@ -78,6 +79,17 @@ describe("Synthetic Documents Generation & Manifest (Week 2 Step 4)", () => {
       expect(content.byteLength).toBeGreaterThan(500);
 
       // Verify PDF magic bytes %PDF-
+      expect(content.subarray(0, 5).toString("ascii")).toBe("%PDF-");
+    }
+  });
+
+  it("verifies all 15 committed fixture files exist in public/sample-docs/", () => {
+    const publicDir = join(process.cwd(), "public", "sample-docs");
+    for (const fixture of sampleFixtures) {
+      const p = join(publicDir, fixture.fileName);
+      expect(existsSync(p)).toBe(true);
+      const content = readFileSync(p);
+      expect(content.byteLength).toBeGreaterThan(500);
       expect(content.subarray(0, 5).toString("ascii")).toBe("%PDF-");
     }
   });

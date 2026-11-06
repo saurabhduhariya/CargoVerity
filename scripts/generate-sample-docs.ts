@@ -85,6 +85,9 @@ function drawWatermark(page: PDFPage, fontBold: PDFFont) {
 
 export async function createSamplePdf(config: SampleDocConfig): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.create();
+  // Set fixed timestamps to ensure reproducible, deterministic byte generation
+  pdfDoc.setCreationDate(new Date("2026-11-04T00:00:00Z"));
+  pdfDoc.setModificationDate(new Date("2026-11-04T00:00:00Z"));
   const page = pdfDoc.addPage([595.28, 841.89]); // A4
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
