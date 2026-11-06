@@ -2,6 +2,10 @@ export class ConfigurationError extends Error {
   readonly code = "CONFIGURATION_ERROR";
 }
 
+export class ConflictError extends Error {
+  readonly code = "CONFLICT";
+}
+
 export class ProviderError extends Error {
   constructor(
     message: string,

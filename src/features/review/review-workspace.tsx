@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   AlertCircle,
@@ -13,6 +13,7 @@ import {
   Eye,
   FileSpreadsheet,
   FileText,
+  Lock,
   Package,
   PlusCircle,
   RefreshCw,
@@ -192,10 +193,36 @@ export function calculateNextRotation(current: number): number {
   return (current + 90) % 360;
 }
 
+export function isAllowedPreApprovalStatus(status: string): boolean {
+  return status !== "APPROVED" && status !== "EXPORTED";
+}
+
+export function validateFieldCorrection(
+  action: "CONFIRMED" | "CORRECTED" | "MANUAL_ENTRY",
+  value: string | null | undefined,
+  currentValue: string | null | undefined,
+  reason: string | null | undefined,
+): { valid: boolean; error?: string; isMaterialChange: boolean } {
+  const isMaterialChange = action !== "CONFIRMED" && value !== currentValue;
+  if (action !== "CONFIRMED") {
+    if (!reason || reason.trim().length < 3) {
+      return {
+        valid: false,
+        error: "A meaningful reason (at least 3 characters) is required.",
+        isMaterialChange,
+      };
+    }
+  }
+  return { valid: true, isMaterialChange };
+}
+
 export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceInitialData }) {
   const { shipment } = initialData;
   const [documents, setDocuments] = useState<ReviewWorkspaceDocument[]>(initialData.documents);
   const [crossChecks, setCrossChecks] = useState<ReviewWorkspaceCrossCheck[]>(initialData.crossChecks);
+  const [shipmentRevision, setShipmentRevision] = useState<number>(shipment.currentRevision);
+  const [shipmentStatus, setShipmentStatus] = useState<string>(shipment.status);
+  const isReadOnly = !isAllowedPreApprovalStatus(shipmentStatus);
 
   // Active Document Tab
   const availableDocTypes: Array<"INVOICE" | "PACKING_LIST" | "BILL_OF_LADING"> = [
@@ -261,7 +288,7 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
   }
 
   // Navigate to next uncertain field (Rule 12 & Step 7 readiness)
-  function goToNextUncertainField() {
+  const goToNextUncertainField = useCallback(() => {
     const currentFields = activeDoc?.fields ?? [];
     const uncertainFields = currentFields.filter(isFieldUncertain);
     if (uncertainFields.length === 0) {
@@ -281,11 +308,16 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
           if (el) {
             el.scrollIntoView({ behavior: "smooth", block: "center" });
           }
-        }, 50);
+          const inputEl = document.getElementById(`field-input-${nextField.id}`) as HTMLInputElement | null;
+          if (inputEl) {
+            inputEl.focus();
+            inputEl.select();
+          }
+        }, 80);
       }
       setStatusMessage(`Navigated to uncertain field: ${formatFieldLabel(nextField.fieldKey)}`);
     }
-  }
+  }, [activeDoc?.fields]);
 
   // Keyboard navigation shortcuts
   useEffect(() => {
@@ -300,7 +332,10 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
         return;
       }
 
-      if (e.key === "[" || e.key === "PageUp") {
+      if (e.key === "n" || (e.altKey && e.key.toLowerCase() === "n")) {
+        e.preventDefault();
+        goToNextUncertainField();
+      } else if (e.key === "[" || e.key === "PageUp") {
         e.preventDefault();
         setCurrentPage((prev) => Math.max(prev - 1, 1));
       } else if (e.key === "]" || e.key === "PageDown") {
@@ -323,13 +358,31 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [maxPages]);
+  }, [goToNextUncertainField, maxPages]);
 
   // Save Field Action (Confirm, Manual, Correct)
   async function saveFieldAction(
     field: ReviewWorkspaceField,
     action: "CONFIRMED" | "CORRECTED" | "MANUAL_ENTRY",
   ) {
+    if (isReadOnly) {
+      setStatusMessage("Cannot edit fields on an approved or exported shipment.");
+      return;
+    }
+
+    const targetVal = editedValues[field.id] ?? field.currentValue;
+    const reasonText = reasons[field.id]?.trim();
+    const validation = validateFieldCorrection(action, targetVal, field.currentValue, reasonText);
+
+    if (!validation.valid) {
+      setStatusMessage(validation.error ?? "Invalid field review action.");
+      if (typeof document !== "undefined") {
+        const rInput = document.getElementById(`field-reason-${field.id}`) as HTMLInputElement | null;
+        if (rInput) rInput.focus();
+      }
+      return;
+    }
+
     setBusy(true);
     setStatusMessage(null);
     try {
@@ -338,14 +391,19 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           status: action,
-          value: editedValues[field.id] ?? field.currentValue,
-          reason: reasons[field.id] ?? (action === "CONFIRMED" ? undefined : "Verified in review workspace"),
+          value: targetVal,
+          reason: reasonText ?? (action === "CONFIRMED" ? undefined : "Verified in review workspace"),
+          expectedRevision: shipmentRevision,
         }),
       });
 
       const data = await response.json();
       if (!response.ok) {
-        setStatusMessage(data.error ?? "Failed to save field review.");
+        if (response.status === 409) {
+          setStatusMessage(`Conflict (409): ${data.error ?? "Stale shipment revision. Refresh to see the latest version."}`);
+        } else {
+          setStatusMessage(data.error ?? "Failed to save field review.");
+        }
       } else {
         // Update local field state
         setDocuments((prevDocs) =>
@@ -357,9 +415,9 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                     f.id === field.id
                       ? {
                           ...f,
-                          currentValue: editedValues[field.id] ?? field.currentValue,
+                          currentValue: targetVal,
                           reviewStatus: action,
-                          reviewReason: null,
+                          reviewReason: action === "CONFIRMED" ? null : reasonText,
                         }
                       : f,
                   ),
@@ -367,7 +425,16 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
               : doc,
           ),
         );
-        setStatusMessage(`Field "${field.fieldKey}" updated successfully (${action.toLowerCase()}).`);
+        if (data.revision) {
+          setShipmentRevision(data.revision);
+        }
+        if (data.shipmentStatus) {
+          setShipmentStatus(data.shipmentStatus);
+        }
+        if (data.crossChecks) {
+          setCrossChecks(data.crossChecks);
+        }
+        setStatusMessage(`Field "${formatFieldLabel(field.fieldKey)}" updated successfully (${action.toLowerCase()}).`);
       }
     } catch {
       setStatusMessage("Network error saving field.");
@@ -379,6 +446,10 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
   // Mark page as unreadable / manual fallback
   async function markPageUnreadable(pageNum: number) {
     if (!activeDoc) return;
+    if (isReadOnly) {
+      setStatusMessage("Cannot edit page readability on an approved or exported shipment.");
+      return;
+    }
     setBusy(true);
     setStatusMessage(null);
     try {
@@ -425,6 +496,10 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
       setStatusMessage("Field key and reason are required for manual fallback entry.");
       return;
     }
+    if (isReadOnly) {
+      setStatusMessage("Cannot add fields to an approved or exported shipment.");
+      return;
+    }
     setBusy(true);
     setStatusMessage(null);
     try {
@@ -435,13 +510,27 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
           fieldKey: newFieldKey.trim(),
           value: newFieldValue.trim() || null,
           reason: newFieldReason.trim(),
+          expectedRevision: shipmentRevision,
         }),
       });
 
+      const data = await response.json();
       if (!response.ok) {
-        const data = await response.json();
-        setStatusMessage(data.error ?? "Failed to add manual field.");
+        if (response.status === 409) {
+          setStatusMessage(`Conflict (409): ${data.error ?? "Stale revision. Refresh to see the latest data."}`);
+        } else {
+          setStatusMessage(data.error ?? "Failed to add manual field.");
+        }
       } else {
+        if (data.revision) {
+          setShipmentRevision(data.revision);
+        }
+        if (data.shipmentStatus) {
+          setShipmentStatus(data.shipmentStatus);
+        }
+        if (data.crossChecks) {
+          setCrossChecks(data.crossChecks);
+        }
         setStatusMessage(`Manual field "${newFieldKey}" added.`);
         setNewFieldKey("");
         setNewFieldValue("");
@@ -520,18 +609,18 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                   {shipment.reference}
                 </h1>
                 <Badge className="bg-slate-100 text-slate-700 border-slate-300">
-                  Rev {shipment.currentRevision}
+                  Rev {shipmentRevision}
                 </Badge>
                 <Badge
                   className={
-                    shipment.status === "APPROVED"
+                    shipmentStatus === "APPROVED"
                       ? "bg-emerald-100 text-emerald-800"
-                      : shipment.status === "NEEDS_REVIEW"
+                      : shipmentStatus === "NEEDS_REVIEW"
                         ? "bg-amber-100 text-amber-900"
                         : "bg-blue-100 text-blue-800"
                   }
                 >
-                  {shipment.status.replaceAll("_", " ")}
+                  {shipmentStatus.replaceAll("_", " ")}
                 </Badge>
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
@@ -652,15 +741,36 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
           </div>
         </div>
 
+        {isReadOnly ? (
+          <div
+            role="status"
+            className="mb-4 rounded-lg border border-slate-300 bg-slate-100 px-4 py-2.5 text-xs font-medium text-slate-800 flex items-center gap-2"
+          >
+            <Lock className="size-4 text-slate-500 shrink-0" />
+            <span>
+              This shipment is in {shipmentStatus.replaceAll("_", " ")} status. Field edits and corrections are locked in read-only mode.
+            </span>
+          </div>
+        ) : null}
+
         {statusMessage ? (
           <div
             role="alert"
-            className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs font-medium text-blue-900 flex items-center justify-between"
+            className={`mb-4 rounded-lg border px-4 py-2.5 text-xs font-medium flex items-center justify-between ${
+              statusMessage.includes("Conflict") || statusMessage.includes("409")
+                ? "border-amber-300 bg-amber-50 text-amber-950"
+                : statusMessage.includes("Error") ||
+                    statusMessage.includes("Failed") ||
+                    statusMessage.includes("required") ||
+                    statusMessage.includes("Cannot")
+                  ? "border-rose-300 bg-rose-50 text-rose-950"
+                  : "border-emerald-300 bg-emerald-50 text-emerald-950"
+            }`}
           >
             <span>{statusMessage}</span>
             <button
               type="button"
-              className="text-blue-700 hover:text-blue-900"
+              className="hover:opacity-75 font-bold ml-2"
               onClick={() => setStatusMessage(null)}
             >
               ✕
@@ -995,6 +1105,19 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                           </div>
                         </div>
 
+                        {/* Original AI Value Display (Rule 2) */}
+                        {field.modelValue !== null && field.currentValue !== field.modelValue ? (
+                          <div className="mt-1 flex items-center gap-1.5 text-[11px] text-slate-500">
+                            <span className="font-semibold text-slate-600">Original AI Value:</span>
+                            <span className="font-mono bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded text-[10px] line-through">
+                              {field.modelValue}
+                            </span>
+                            <Badge className="bg-blue-50 text-blue-700 border-blue-200 text-[9px] py-0 h-4">
+                              Modified
+                            </Badge>
+                          </div>
+                        ) : null}
+
                         {/* Review Reason Alert */}
                         {field.reviewReason ? (
                           <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-amber-800 font-mono">
@@ -1006,7 +1129,9 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                         {/* Value Input and Actions */}
                         <div className="mt-2.5 flex flex-wrap items-center gap-2">
                           <Input
-                            className="h-8 flex-1 min-w-[140px] text-xs font-mono bg-white"
+                            id={`field-input-${field.id}`}
+                            disabled={isReadOnly || busy}
+                            className="h-8 flex-1 min-w-[140px] text-xs font-mono bg-white disabled:bg-slate-100 disabled:text-slate-500"
                             value={editedValues[field.id] ?? field.currentValue ?? ""}
                             onChange={(e) =>
                               setEditedValues((prev) => ({
@@ -1014,32 +1139,59 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                                 [field.id]: e.target.value,
                               }))
                             }
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                if (
+                                  editedValues[field.id] === undefined ||
+                                  editedValues[field.id] === field.currentValue
+                                ) {
+                                  void saveFieldAction(field, "CONFIRMED");
+                                } else {
+                                  const rInput = document.getElementById(
+                                    `field-reason-${field.id}`,
+                                  ) as HTMLInputElement | null;
+                                  if (rInput) {
+                                    rInput.focus();
+                                  } else {
+                                    setReasons((prev) => ({ ...prev, [field.id]: "" }));
+                                    setTimeout(() => {
+                                      const el = document.getElementById(`field-reason-${field.id}`);
+                                      if (el) el.focus();
+                                    }, 50);
+                                  }
+                                }
+                              }
+                            }}
                           />
                           <Button
                             size="sm"
                             variant="outline"
-                            className="h-8 text-xs border-emerald-300 text-emerald-800 hover:bg-emerald-50"
-                            disabled={busy}
+                            className="h-8 text-xs border-emerald-300 text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
+                            disabled={isReadOnly || busy}
                             onClick={() => void saveFieldAction(field, "CONFIRMED")}
                           >
                             Confirm
                           </Button>
                           <Button
                             size="sm"
-                            className="h-8 text-xs bg-slate-900 hover:bg-slate-800 text-white"
-                            disabled={busy}
+                            className="h-8 text-xs bg-slate-900 hover:bg-slate-800 text-white disabled:opacity-50"
+                            disabled={isReadOnly || busy}
                             onClick={() => void saveFieldAction(field, "CORRECTED")}
                           >
                             Correct
                           </Button>
                         </div>
 
-                        {/* Optional Correction Reason when modified */}
-                        {editedValues[field.id] !== undefined &&
-                        editedValues[field.id] !== (field.currentValue ?? "") ? (
+                        {/* Correction Reason when modified or has reason */}
+                        {((editedValues[field.id] !== undefined &&
+                          editedValues[field.id] !== (field.currentValue ?? "")) ||
+                          reasons[field.id] !== undefined) &&
+                        !isReadOnly ? (
                           <div className="mt-1.5 flex items-center gap-1.5">
                             <Input
-                              placeholder="Reason for change (e.g. verified against invoice header)"
+                              id={`field-reason-${field.id}`}
+                              placeholder="Reason for correction (required, min 3 chars)"
                               className="h-7 text-[11px] font-sans bg-white border-amber-200"
                               value={reasons[field.id] ?? ""}
                               onChange={(e) =>
@@ -1048,6 +1200,12 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                                   [field.id]: e.target.value,
                                 }))
                               }
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  void saveFieldAction(field, "CORRECTED");
+                                }
+                              }}
                             />
                           </div>
                         ) : null}

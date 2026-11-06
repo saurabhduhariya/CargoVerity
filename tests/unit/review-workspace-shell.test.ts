@@ -4,8 +4,10 @@ import {
   calculateNextZoom,
   categorizeFieldKey,
   formatFieldLabel,
+  isAllowedPreApprovalStatus,
   isFieldUncertain,
   ReviewWorkspaceInitialData,
+  validateFieldCorrection,
 } from "@/features/review/review-workspace";
 
 describe("Review Workspace Shell (Week 4 Step 6)", () => {
@@ -254,5 +256,42 @@ describe("Review Workspace Shell (Week 4 Step 6)", () => {
         sourceQuote: "Total: $500",
       }),
     ).toBe(false);
+  });
+
+  it("checks allowed pre-approval statuses correctly (Week 4 Step 7 Rule 1)", () => {
+    expect(isAllowedPreApprovalStatus("DRAFT")).toBe(true);
+    expect(isAllowedPreApprovalStatus("IN_REVIEW")).toBe(true);
+    expect(isAllowedPreApprovalStatus("NEEDS_REVIEW")).toBe(true);
+    expect(isAllowedPreApprovalStatus("READY_FOR_APPROVAL")).toBe(true);
+    expect(isAllowedPreApprovalStatus("APPROVED")).toBe(false);
+    expect(isAllowedPreApprovalStatus("EXPORTED")).toBe(false);
+  });
+
+  it("validates field correction actions and reason requirement (Week 4 Step 7 Rules 3 & 4)", () => {
+    // Confirmation without value change: valid and not material
+    expect(validateFieldCorrection("CONFIRMED", "500", "500", undefined)).toEqual({
+      valid: true,
+      isMaterialChange: false,
+    });
+
+    // Correction without reason: invalid
+    expect(validateFieldCorrection("CORRECTED", "550", "500", "")).toEqual({
+      valid: false,
+      error: "A meaningful reason (at least 3 characters) is required.",
+      isMaterialChange: true,
+    });
+
+    // Correction with short reason (< 3 chars): invalid
+    expect(validateFieldCorrection("CORRECTED", "550", "500", "ok")).toEqual({
+      valid: false,
+      error: "A meaningful reason (at least 3 characters) is required.",
+      isMaterialChange: true,
+    });
+
+    // Correction with valid reason: valid and material
+    expect(validateFieldCorrection("CORRECTED", "550", "500", "Read from invoice total")).toEqual({
+      valid: true,
+      isMaterialChange: true,
+    });
   });
 });

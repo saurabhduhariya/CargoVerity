@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
 
-import { ConfigurationError, ProviderError } from "@/lib/errors";
+import { ConfigurationError, ConflictError, ProviderError } from "@/lib/errors";
 
 export function apiError(error: unknown) {
   const message = error instanceof Error ? error.message : "Unexpected server error.";
+
+  if (error instanceof ConflictError || /stale shipment revision/i.test(message)) {
+    return NextResponse.json({ error: message, code: "CONFLICT" }, { status: 409 });
+  }
 
   if (
     typeof error === "object" &&
