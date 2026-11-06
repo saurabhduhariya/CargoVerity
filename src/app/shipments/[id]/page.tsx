@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { connection } from "next/server";
 
 import { Badge } from "@/components/ui/badge";
@@ -12,7 +12,13 @@ export const instant = false;
 
 export default async function ShipmentPage({ params }: { params: Promise<{ id: string }> }) {
   await connection();
-  const { appUser } = await requireAppUser();
+  let appUser;
+  try {
+    const auth = await requireAppUser();
+    appUser = auth.appUser;
+  } catch {
+    redirect("/login");
+  }
   const { id } = await params;
   const prisma = getPrisma();
   const shipment = await prisma.shipment.findFirst({

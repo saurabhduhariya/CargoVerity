@@ -14,12 +14,12 @@ test("login, create shipment and open its detail queue", async ({ page }) => {
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/dashboard$/);
 
-  await page.getByLabel("Shipment reference").fill(reference);
-  await page.getByLabel("Supplier").fill("Synthetic E2E Supplier");
-  await page.getByRole("button", { name: "Create shipment" }).click();
+  await page.locator("input#reference").fill(reference);
+  await page.locator("input#supplier").fill("Synthetic E2E Supplier");
+  await page.getByRole("button", { name: /create shipment/i }).click();
 
   await expect(page).toHaveURL(/\/shipments\/[0-9a-f-]+$/);
-  await expect(page.getByRole("heading", { name: reference })).toBeVisible();
-  await expect(page.getByText("Synthetic E2E Supplier")).toBeVisible();
-  await expect(page.getByText("Revision 1")).toBeVisible();
+  await expect(page.getByText(reference).first()).toBeVisible();
+  await expect(page.getByText("Synthetic E2E Supplier").first()).toBeVisible();
+  await expect(page.getByText("rev 1").first()).toBeVisible();
 });

@@ -163,7 +163,13 @@ export async function GET(
           { status: 400 },
         );
       }
-      throw new Error(`Export blocked: ${guard.reasons.join(", ")}.`);
+      return NextResponse.json(
+        {
+          error: `Export blocked: ${guard.reasons.join(", ")}.`,
+          blockers: guard.reasons,
+        },
+        { status: 422 },
+      );
     }
 
     // 4. Construct export documents snapshot

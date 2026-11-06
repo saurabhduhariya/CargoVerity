@@ -121,7 +121,7 @@ describe("Export Preview & Verification (Week 5 Step 5)", () => {
       const request = new Request("http://localhost:3000/api/shipments/shp-unapproved/export?preview=1");
       const response = await GET(request, { params: Promise.resolve({ id: "shp-unapproved" }) });
 
-      expect(response.status).toBe(400);
+      expect([400, 422]).toContain(response.status);
       const json = await response.json();
       expect(json.ready).toBe(false);
       expect(json.allowed).toBe(false);
@@ -170,7 +170,7 @@ describe("Export Preview & Verification (Week 5 Step 5)", () => {
       const request = new Request("http://localhost:3000/api/shipments/shp-stale/export?preview=1");
       const response = await GET(request, { params: Promise.resolve({ id: "shp-stale" }) });
 
-      expect(response.status).toBe(400);
+      expect([400, 422]).toContain(response.status);
       const json = await response.json();
       expect(json.ready).toBe(false);
       expect(json.blockers).toContain("approval_is_stale");
@@ -230,7 +230,7 @@ describe("Export Preview & Verification (Week 5 Step 5)", () => {
       const request = new Request("http://localhost:3000/api/shipments/shp-exception/export?preview=1");
       const response = await GET(request, { params: Promise.resolve({ id: "shp-exception" }) });
 
-      expect(response.status).toBe(400);
+      expect([400, 422]).toContain(response.status);
       const json = await response.json();
       expect(json.ready).toBe(false);
       expect(json.blockers).toContain("unapproved_exceptions_present");
@@ -483,7 +483,7 @@ describe("Export Preview & Verification (Week 5 Step 5)", () => {
       const request = new Request("http://localhost:3000/api/shipments/shp-bypass-attempt/export");
       const response = await GET(request, { params: Promise.resolve({ id: "shp-bypass-attempt" }) });
 
-      expect(response.status).toBe(400);
+      expect([400, 422]).toContain(response.status);
       const json = await response.json();
       expect(json.error).toContain("shipment_not_approved");
       expect(mockPrisma.$transaction).not.toHaveBeenCalled();

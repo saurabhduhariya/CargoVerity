@@ -7,10 +7,11 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import { buildShipmentWhere } from "@/lib/shipments";
 
-const enabled = process.env.RUN_INTEGRATION_TESTS === "1" && Boolean(process.env.DATABASE_URL);
+const connectionString = process.env.DIRECT_URL || process.env.DATABASE_URL;
+const enabled = process.env.RUN_INTEGRATION_TESTS === "1" && Boolean(connectionString);
 
 describe.skipIf(!enabled)("shipment database foundation", () => {
-  const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL! }) });
+  const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: connectionString! }) });
   const executiveId = randomUUID();
   const managerId = randomUUID();
   const supplierId = randomUUID();
