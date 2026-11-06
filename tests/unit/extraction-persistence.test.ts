@@ -521,5 +521,113 @@ describe("Extraction Persistence Service (Week 3 Step 2)", () => {
       expect(readiness.blockingReasons).toHaveLength(0);
     });
   });
+
+  describe("getExtractionRunResult (Idempotency cache retrieval)", () => {
+    it("returns fully structured ExtractionAdapterOutput with usage, fields, and line items", async () => {
+      const mockRun = {
+        id: runId,
+        provider: "groq",
+        model: "qwen/qwen3.8-27b",
+        promptVersion: "2026.11-v1",
+        latencyMs: 850,
+        rawResponse: {
+          usage: {
+            promptTokens: 1200,
+            completionTokens: 250,
+            totalTokens: 1450,
+            imageCount: 1,
+            requestCount: 1,
+          },
+          warnings: ["Low model confidence on packageCount."],
+        },
+        document: {
+          id: documentId,
+          selectedDocType: "INVOICE",
+          detectedDocType: "INVOICE",
+          typeMismatch: false,
+          pages: [
+            { pageNumber: 1, isReadable: true, reviewNote: null },
+          ],
+        },
+        fields: [
+          {
+            fieldKey: "invoiceTotal",
+            modelValue: "5000.00",
+            currentValue: "5000.00",
+            unit: "USD",
+            modelConfidence: 0.98,
+            sourceQuote: "Total: 5000.00",
+            pageNumber: 1,
+            reviewStatus: "PENDING",
+            reviewReason: null,
+          },
+        ],
+        lineItems: [
+          {
+            lineNumber: 1,
+            description: "Industrial Motor",
+            hsnCode: "8501.10",
+            quantity: 5,
+            quantityUnit: "pcs",
+            unitPrice: 1000,
+            currency: "USD",
+            lineTotal: 5000,
+            modelConfidence: 0.95,
+            sourceQuote: "Motor 5 1000 5000",
+            pageNumber: 1,
+            reviewReason: null,
+          },
+        ],
+      };
+
+      const mockPrisma = {
+        extractionRun: {
+          findUnique: vi.fn().mockResolvedValue(mockRun),
+        },
+      };
+
+      const service = new ExtractionPersistenceService(mockPrisma as never);
+      const result = await service.getExtractionRunResult(runId);
+
+      expect(result).not.toBeNull();
+      expect(result?.documentType).toBe("INVOICE");
+      expect(result?.detectedType).toBe("INVOICE");
+      expect(result?.typeMismatch).toBe(false);
+      expect(result?.provider).toBe("groq");
+      expect(result?.fields).toHaveLength(1);
+      expect(result?.fields[0]).toEqual({
+        fieldKey: "invoiceTotal",
+        value: "5000.00",
+        unit: "USD",
+        modelConfidence: 0.98,
+        sourceQuote: "Total: 5000.00",
+        pageNumber: 1,
+        reviewStatus: "PENDING",
+        reviewReason: null,
+      });
+      expect(result?.lineItems).toHaveLength(1);
+      expect(result?.lineItems[0].lineTotal).toBe("5000");
+      expect(result?.usage).toEqual({
+        promptTokens: 1200,
+        completionTokens: 250,
+        totalTokens: 1450,
+        imageCount: 1,
+        requestCount: 1,
+      });
+      expect(result?.warnings).toEqual(["Low model confidence on packageCount."]);
+    });
+
+    it("returns null when run is not found", async () => {
+      const mockPrisma = {
+        extractionRun: {
+          findUnique: vi.fn().mockResolvedValue(null),
+        },
+      };
+
+      const service = new ExtractionPersistenceService(mockPrisma as never);
+      const result = await service.getExtractionRunResult("non-existent-id");
+      expect(result).toBeNull();
+    });
+  });
 });
 

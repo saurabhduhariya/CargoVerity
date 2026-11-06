@@ -1,6 +1,12 @@
 import type { PrismaClient } from "@/generated/prisma/client";
-import { PROMPT_VERSION } from "@/lib/ai/extraction-prompts";
-import type { DocumentType, ExtractionAdapterOutput } from "@/lib/ai/types";
+import { PROMPT_VERSION, SCHEMA_VERSION } from "@/lib/ai/extraction-prompts";
+import type {
+  DocumentType,
+  ExtractionAdapterOutput,
+  NormalizedField,
+  NormalizedLineItem,
+  PageReadability,
+} from "@/lib/ai/types";
 
 export type CreateExtractionRunParams = {
   documentId: string;
@@ -286,12 +292,25 @@ export class ExtractionPersistenceService {
 
       // 5. Update ExtractionRun and Document status
       // Confidential-data retention: rawResponse is only stored if explicitly requested and sanitized
-      let rawResponseData = null;
+      let rawResponseData: Record<string, unknown> | null = null;
+      if (result.usage || result.providerMetadata) {
+        rawResponseData = {
+          usage: result.usage,
+          providerMetadata: result.providerMetadata,
+          warnings: result.warnings,
+        };
+      }
       if (storeRawResponse && rawResponseContent) {
         try {
-          rawResponseData = JSON.parse(rawResponseContent);
+          rawResponseData = {
+            ...rawResponseData,
+            rawContent: JSON.parse(rawResponseContent),
+          };
         } catch {
-          rawResponseData = { content: rawResponseContent.slice(0, 500) };
+          rawResponseData = {
+            ...rawResponseData,
+            rawContent: rawResponseContent.slice(0, 500),
+          };
         }
       }
 
@@ -301,7 +320,7 @@ export class ExtractionPersistenceService {
           status: isFinal ? "COMPLETED" : "PROCESSING",
           completedAt: isFinal ? new Date() : null,
           latencyMs: latencyMs ?? run.latencyMs,
-          rawResponse: rawResponseData,
+          rawResponse: rawResponseData as unknown as object,
         },
       });
 
@@ -333,6 +352,82 @@ export class ExtractionPersistenceService {
 
       return updatedRun;
     });
+  }
+
+  /**
+   * Retrieves an ExtractionAdapterOutput from a completed ExtractionRun,
+   * satisfying idempotency requirements by returning existing results
+   * without incurring duplicate AI provider calls.
+   */
+  async getExtractionRunResult(runId: string): Promise<ExtractionAdapterOutput | null> {
+    const run = await this.prisma.extractionRun.findUnique({
+      where: { id: runId },
+      include: {
+        document: {
+          include: { pages: { orderBy: { pageNumber: "asc" } } },
+        },
+        fields: true,
+        lineItems: { orderBy: { lineNumber: "asc" } },
+      },
+    });
+
+    if (!run || !run.document) return null;
+
+    const rawResponse = (run.rawResponse as Record<string, unknown> | null) ?? null;
+    const usage = rawResponse?.usage as ExtractionAdapterOutput["usage"] | undefined;
+    const warnings = Array.isArray(rawResponse?.warnings) ? (rawResponse.warnings as string[]) : [];
+
+    const fields: NormalizedField[] = run.fields.map((f) => ({
+      fieldKey: f.fieldKey,
+      value: f.currentValue,
+      unit: f.unit,
+      modelConfidence: f.modelConfidence !== null ? Number(f.modelConfidence) : null,
+      sourceQuote: f.sourceQuote,
+      pageNumber: f.pageNumber,
+      reviewStatus: f.reviewStatus as NormalizedField["reviewStatus"],
+      reviewReason: f.reviewReason,
+    }));
+
+    const lineItems: NormalizedLineItem[] = run.lineItems.map((item) => ({
+      lineNumber: item.lineNumber,
+      description: item.description,
+      hsnCode: item.hsnCode,
+      quantity: item.quantity !== null ? String(item.quantity) : null,
+      quantityUnit: item.quantityUnit,
+      unitPrice: item.unitPrice !== null ? String(item.unitPrice) : null,
+      currency: item.currency,
+      lineTotal: item.lineTotal !== null ? String(item.lineTotal) : null,
+      modelConfidence: item.modelConfidence !== null ? Number(item.modelConfidence) : null,
+      sourceQuote: item.sourceQuote,
+      pageNumber: item.pageNumber,
+      reviewReason: item.reviewReason,
+    }));
+
+    const pageReadability: PageReadability[] = run.document.pages.map((p) => ({
+      pageNumber: p.pageNumber,
+      isReadable: p.isReadable,
+      reviewNote: p.reviewNote,
+    }));
+
+    return {
+      documentType: run.document.selectedDocType as DocumentType,
+      detectedType: (run.document.detectedDocType as DocumentType) ?? null,
+      typeMismatch: run.document.typeMismatch,
+      pageReadability,
+      provider: run.provider as "groq" | "openrouter",
+      model: run.model,
+      fields,
+      lineItems,
+      usage,
+      providerMetadata: {
+        provider: run.provider as "groq" | "openrouter",
+        model: run.model,
+        promptVersion: run.promptVersion,
+        schemaVersion: SCHEMA_VERSION,
+        latencyMs: run.latencyMs ?? undefined,
+      },
+      warnings,
+    };
   }
 
   /**

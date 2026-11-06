@@ -6,6 +6,7 @@ import { PROMPT_VERSION, SCHEMA_VERSION } from "@/lib/ai/extraction-prompts";
 import type {
   DocumentType,
   ExtractionAdapterOutput,
+  ExtractionUsage,
   NormalizedField,
   NormalizedLineItem,
   PageReadability,
@@ -253,6 +254,10 @@ export function validateAndNormalizeResponse(input: {
   provider: "groq" | "openrouter";
   model: string;
   latencyMs?: number;
+  usage?: ExtractionUsage;
+  rawRequestId?: string;
+  promptVersion?: string;
+  schemaVersion?: string;
 }): ExtractionAdapterOutput {
   const parsed = normalizeResponsePayload(parseJsonContent(input.content));
   const schema = schemas[input.documentType];
@@ -326,12 +331,14 @@ export function validateAndNormalizeResponse(input: {
     model: input.model,
     fields,
     lineItems,
+    usage: input.usage,
     providerMetadata: {
       provider: input.provider,
       model: input.model,
-      promptVersion: PROMPT_VERSION,
-      schemaVersion: SCHEMA_VERSION,
+      promptVersion: input.promptVersion ?? PROMPT_VERSION,
+      schemaVersion: input.schemaVersion ?? SCHEMA_VERSION,
       latencyMs: input.latencyMs,
+      rawRequestId: input.rawRequestId,
     },
     warnings: [],
   };
