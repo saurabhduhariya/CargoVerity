@@ -8,11 +8,15 @@ import { ProviderError } from "@/lib/errors";
 import { ExtractionService } from "@/lib/ai/extraction.service";
 import { createAIProvider } from "@/lib/ai/provider-factory";
 import { documentTypes } from "@/lib/ai/types";
+import { PROMPT_VERSION } from "@/lib/ai/extraction-prompts";
+import { ExtractionPersistenceService } from "@/lib/ai/persistence.service";
 
 const extractionRequestSchema = z.object({
   documentId: z.string().uuid(),
   documentType: z.enum(documentTypes),
   runId: z.string().uuid().optional(),
+  idempotencyKey: z.string().optional(),
+  retryOfRunId: z.string().uuid().optional(),
   batchNumber: z.number().int().nonnegative().default(0),
   isFinal: z.boolean().default(true),
   pages: z
@@ -29,11 +33,13 @@ const extractionRequestSchema = z.object({
 
 export async function POST(request: Request) {
   let extractionRunId: string | undefined;
+  const prisma = getPrisma();
+  const persistenceService = new ExtractionPersistenceService(prisma);
 
   try {
     const { appUser } = await requireAppUser();
     const input = extractionRequestSchema.parse(await request.json());
-    const prisma = getPrisma();
+
     const document = await prisma.document.findFirst({
       where: {
         id: input.documentId,
@@ -47,100 +53,52 @@ export async function POST(request: Request) {
     if (!document) throw new Error("Document not found or inaccessible.");
 
     const provider = createAIProvider();
-    const run = input.runId
-      ? await prisma.extractionRun.findFirst({
-          where: { id: input.runId, documentId: document.id },
-        })
-      : await prisma.extractionRun.create({
-          data: {
-            documentId: document.id,
-            provider: provider.name,
-            model: provider.model,
-            promptVersion: "customs-v1",
-            status: "PROCESSING",
-            pageCount: input.pages.length,
-            startedAt: new Date(),
-          },
-        });
 
-    if (!run) throw new Error("Extraction run not found.");
-    extractionRunId = run.id;
-    await prisma.document.update({
-      where: { id: document.id },
-      data: { extractionStatus: "PROCESSING", pageCount: input.pages.length },
-    });
+    // 1. Create or retrieve extraction run
+    let runId = input.runId;
+    if (!runId) {
+      const { run } = await persistenceService.createOrGetExtractionRun({
+        documentId: document.id,
+        requestedById: appUser.id,
+        provider: provider.name,
+        model: provider.model,
+        promptVersion: PROMPT_VERSION,
+        pageCount: input.pages.length,
+        idempotencyKey: input.idempotencyKey,
+        retryOfRunId: input.retryOfRunId,
+      });
+      runId = run.id;
+    }
+    extractionRunId = runId;
 
+    // 2. Perform AI extraction
+    const startTime = Date.now();
     const result = await new ExtractionService(provider).extract({
       documentType: input.documentType,
       pages: input.pages,
     });
+    const latencyMs = Date.now() - startTime;
 
-    await prisma.$transaction(async (transaction) => {
-      for (const field of result.fields) {
-        const existing = await transaction.extractedField.findUnique({
-          where: { extractionRunId_fieldKey: { extractionRunId: run.id, fieldKey: field.fieldKey } },
-        });
-        const shouldReplace = !existing ||
-          existing.currentValue === null ||
-          (field.modelConfidence ?? 0) > Number(existing.modelConfidence ?? 0);
-        if (!existing) {
-          await transaction.extractedField.create({ data: { documentId: document.id, extractionRunId: run.id, fieldKey: field.fieldKey, modelValue: field.value, currentValue: field.value, unit: field.unit, modelConfidence: field.modelConfidence, sourceQuote: field.sourceQuote, pageNumber: field.pageNumber } });
-        } else if (shouldReplace) {
-          await transaction.extractedField.update({ where: { id: existing.id }, data: { modelValue: field.value, currentValue: field.value, unit: field.unit, modelConfidence: field.modelConfidence, sourceQuote: field.sourceQuote, pageNumber: field.pageNumber } });
-        }
-      }
-      await transaction.lineItem.createMany({
-        data: result.lineItems.map((item) => ({
-          documentId: document.id,
-          extractionRunId: run.id,
-          batchNumber: input.batchNumber,
-          lineNumber: item.lineNumber,
-          description: item.description,
-          hsnCode: item.hsnCode,
-          quantity: item.quantity,
-          quantityUnit: item.quantityUnit,
-          unitPrice: item.unitPrice,
-          currency: item.currency,
-          lineTotal: item.lineTotal,
-          modelConfidence: item.modelConfidence,
-          sourceQuote: item.sourceQuote,
-          pageNumber: item.pageNumber,
-        })),
-      });
-      if (input.isFinal) {
-        await transaction.extractionRun.update({
-          where: { id: run.id },
-          data: { status: "COMPLETED", completedAt: new Date() },
-        });
-        await transaction.document.update({
-          where: { id: document.id },
-          data: { extractionStatus: "REVIEW_REQUIRED" },
-        });
-      } else {
-        await transaction.extractionRun.update({
-          where: { id: run.id },
-          data: { pageCount: { increment: input.pages.length } },
-        });
-      }
+    // 3. Atomically persist results
+    await persistenceService.saveExtractionResult({
+      runId,
+      result,
+      batchNumber: input.batchNumber,
+      isFinal: input.isFinal,
+      latencyMs,
     });
 
-    return NextResponse.json({ runId: run.id, result, isFinal: input.isFinal });
+    return NextResponse.json({ runId, result, isFinal: input.isFinal });
   } catch (error) {
     if (extractionRunId) {
       try {
-        await getPrisma().$transaction([
-          getPrisma().extractionRun.update({
-            where: { id: extractionRunId },
-            data: {
-              status: "FAILED",
-              errorCode: error instanceof ProviderError ? error.code : "EXTRACTION_FAILED",
-              errorMessage: error instanceof Error ? error.message : "Extraction failed.",
-              completedAt: new Date(),
-            },
-          }),
-        ]);
+        await persistenceService.recordExtractionFailure({
+          runId: extractionRunId,
+          errorCode: error instanceof ProviderError ? error.code : "EXTRACTION_FAILED",
+          errorMessage: error instanceof Error ? error.message : "Extraction failed.",
+        });
       } catch {
-        // Preserve the original extraction error; database failure is logged by platform tooling.
+        // Preserve original extraction error
       }
     }
     return apiError(error);
