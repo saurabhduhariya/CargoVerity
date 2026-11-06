@@ -1,16 +1,27 @@
 import { z } from "zod";
 
-import { baseDocumentSchema } from "@/lib/ai/schemas/common";
+import {
+  ExtractedValueSchema,
+  commonDocumentHeaderSchema,
+  lineItemSchema,
+} from "@/lib/ai/schemas/common";
 
-export const PackingListExtractionSchema = z.object({
-  exporter: baseDocumentSchema.exporter,
-  importer: baseDocumentSchema.importer,
-  documentNumber: baseDocumentSchema.documentNumber,
-  issueDate: baseDocumentSchema.issueDate,
-  packageCount: baseDocumentSchema.packageCount,
-  netWeight: baseDocumentSchema.netWeight,
-  grossWeight: baseDocumentSchema.grossWeight,
-  lineItems: baseDocumentSchema.lineItems,
-});
+/**
+ * Week 3 Step 1: Packing List Extraction Schema
+ * Tailored to packing lists: package counts, weights, item quantities, and breakdown.
+ */
+export const PackingListExtractionSchema = z
+  .object({
+    ...commonDocumentHeaderSchema,
+    exporter: ExtractedValueSchema.optional(),
+    importer: ExtractedValueSchema.optional(),
+    documentNumber: ExtractedValueSchema.optional(),
+    issueDate: ExtractedValueSchema.optional(),
+    packageCount: ExtractedValueSchema.optional(),
+    netWeight: ExtractedValueSchema.optional(),
+    grossWeight: ExtractedValueSchema.optional(),
+    lineItems: z.array(lineItemSchema).default([]),
+  })
+  .strict();
 
 export type PackingListExtraction = z.infer<typeof PackingListExtractionSchema>;

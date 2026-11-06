@@ -15,11 +15,6 @@ const executiveUser = {
   email: "exec@example.test",
   role: "EXECUTIVE" as const,
 };
-const otherExecutive = {
-  id: "44444444-4444-4444-8444-444444444444",
-  email: "other@example.test",
-  role: "EXECUTIVE" as const,
-};
 
 describe("Synthetic Sample Loader & Upload UI (Week 2 Step 5)", () => {
   beforeEach(() => {
@@ -160,14 +155,6 @@ describe("Synthetic Sample Loader & Upload UI (Week 2 Step 5)", () => {
     });
 
     it("rejects unauthorized user attempting to load samples into another user's shipment", async () => {
-      const mockShipment = {
-        id: shipmentId,
-        reference: "SHP-24811",
-        status: "DRAFT",
-        currentRevision: 1,
-        createdById: otherExecutive.id, // belongs to other user
-      };
-
       const mockPrisma = {
         shipment: {
           findFirst: vi.fn().mockResolvedValue(null), // simulate not found for executiveUser

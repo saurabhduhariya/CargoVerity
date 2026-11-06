@@ -41,8 +41,15 @@ function mergeResults(results: ExtractionResult[]): ExtractionResult {
     }
   }
 
+  const allPages = results.flatMap((r) => r.pageReadability ?? []);
+  const detectedType = results.find((r) => r.detectedType !== null)?.detectedType ?? null;
+  const typeMismatch = results.some((r) => r.typeMismatch);
+
   return {
     ...first,
+    detectedType,
+    typeMismatch,
+    pageReadability: allPages,
     fields: [...fields.values()],
     lineItems: [...lineItems.values()].sort((a, b) => a.lineNumber - b.lineNumber),
     warnings: [...new Set(results.flatMap((result) => result.warnings))],
