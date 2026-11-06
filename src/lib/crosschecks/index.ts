@@ -1,4 +1,3 @@
-import Decimal from "decimal.js";
 import { checkInvoiceArithmetic } from "./invoice-arithmetic";
 import {
   checkGrossNetSanity,
@@ -7,9 +6,11 @@ import {
   PackageCandidate,
   WeightFieldCandidate,
 } from "./weight-package-checks";
+import { matchLineItems } from "./line-item-matching";
 
 export * from "./invoice-arithmetic";
 export * from "./weight-package-checks";
+export * from "./line-item-matching";
 
 export type CrossCheckStatus = "PASS" | "MISMATCH" | "INCOMPLETE" | "NOT_APPLICABLE";
 export type CrossCheckDocumentType = "INVOICE" | "PACKING_LIST" | "BILL_OF_LADING";
@@ -26,6 +27,8 @@ export type CrossCheckLineItem = {
   id?: string;
   lineNumber?: number;
   description: string | null;
+  hsnCode?: string | null;
+  sku?: string | null;
   quantity: string | number | null;
   quantityUnit: string | null;
   unitPrice?: string | number | null;
@@ -60,18 +63,6 @@ export function selectLatestCrossCheckDocuments(documents: CrossCheckDocument[])
 
 function field(document: CrossCheckDocument | undefined, key: string) {
   return document?.fields[key]?.value ?? null;
-}
-
-function decimal(value: string | number | null | undefined) {
-  if (value === null || value === undefined) return null;
-  const str = String(value).trim();
-  if (str === "") return null;
-  try {
-    const parsed = new Decimal(str.replaceAll(",", ""));
-    return parsed.isFinite() ? parsed : null;
-  } catch {
-    return null;
-  }
 }
 
 function result(ruleKey: string, status: CrossCheckStatus, details: Record<string, unknown>): CrossCheckResult {
@@ -228,31 +219,43 @@ export function runCrossChecks(documents: CrossCheckDocument[]): CrossCheckResul
     details: packageCountResult.details,
   });
 
+  // 4. Line-Item Quantity Matching (CHK_LINE_QUANTITY)
   if (!invoice || !packingList) {
     results.push(result("invoice_quantity_vs_packing_list", "NOT_APPLICABLE", { reason: "required_documents_missing" }));
   } else {
-    const packingByDescription = new Map(
-      packingList.lineItems.map((item) => [item.description?.trim().toLowerCase(), item]),
-    );
-    const quantityResults = invoice.lineItems.map((item) => {
-      const match = item.description ? packingByDescription.get(item.description.trim().toLowerCase()) : undefined;
-      if (!match || !item.quantity || !match.quantity) return "INCOMPLETE";
-      if (item.quantityUnit && match.quantityUnit && item.quantityUnit !== match.quantityUnit) return "INCOMPLETE";
-      return decimal(item.quantity)?.eq(decimal(match.quantity) ?? new Decimal(-1)) ? "PASS" : "MISMATCH";
+    const lineMatchingResult = matchLineItems({
+      invoiceLines: invoice.lineItems.map((item, idx) => ({
+        id: item.id,
+        lineNumber: item.lineNumber ?? idx + 1,
+        description: item.description,
+        hsnCode: item.hsnCode,
+        sku: item.sku,
+        quantity: item.quantity,
+        quantityUnit: item.quantityUnit,
+        unitPrice: item.unitPrice,
+        lineTotal: item.lineTotal,
+        currency: item.currency,
+        sourceQuote: item.sourceQuote,
+      })),
+      packingListLines: packingList.lineItems.map((item, idx) => ({
+        id: item.id,
+        lineNumber: item.lineNumber ?? idx + 1,
+        description: item.description,
+        hsnCode: item.hsnCode,
+        sku: item.sku,
+        quantity: item.quantity,
+        quantityUnit: item.quantityUnit,
+        unitPrice: item.unitPrice,
+        lineTotal: item.lineTotal,
+        currency: item.currency,
+        sourceQuote: item.sourceQuote,
+      })),
     });
-    results.push(
-      quantityResults.length === 0
-        ? result("invoice_quantity_vs_packing_list", "INCOMPLETE", { reason: "line_items_missing" })
-        : result(
-            "invoice_quantity_vs_packing_list",
-            quantityResults.includes("MISMATCH")
-              ? "MISMATCH"
-              : quantityResults.includes("INCOMPLETE")
-                ? "INCOMPLETE"
-                : "PASS",
-            { lineResults: quantityResults },
-          ),
-    );
+    results.push({
+      ruleKey: lineMatchingResult.ruleKey,
+      status: lineMatchingResult.status,
+      details: lineMatchingResult.details,
+    });
   }
 
   // 5. Gross vs Net Weight Sanity (CHK_GROSS_NET_SANITY)

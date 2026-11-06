@@ -51,6 +51,7 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
           id: item.id,
           lineNumber: item.lineNumber,
           description: item.description,
+          hsnCode: item.hsnCode,
           quantity: item.quantity?.toString() ?? null,
           quantityUnit: item.quantityUnit,
           unitPrice: item.unitPrice?.toString() ?? null,
