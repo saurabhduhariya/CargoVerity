@@ -108,7 +108,7 @@ export class GroqProvider implements AIProvider {
           { role: "user", content },
         ],
         temperature: 0,
-        max_completion_tokens: 6_000,
+        max_completion_tokens: 1_000,
         response_format: { type: "json_object" },
       });
       const latencyMs = Date.now() - startTime;

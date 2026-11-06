@@ -16,6 +16,7 @@
     "test": "vitest run",
     "test:integration": "RUN_INTEGRATION_TESTS=1 vitest run tests/integration",
     "test:e2e": "playwright test",
+    "test:smoke": "node --env-file=.env scripts/run-real-ai-smoke.mjs",
     "db:generate": "prisma generate",
     "db:validate": "prisma validate",
     "db:migrate": "prisma migrate deploy",

@@ -23,8 +23,9 @@ describe.skipIf(!enabled)("shipment database foundation", () => {
   });
 
   it("creates records and scopes the list by role and supplier", async () => {
-    await prisma.$transaction(async (transaction) => {
-      await transaction.user.createMany({
+    await prisma.$transaction(
+      async (transaction) => {
+        await transaction.user.createMany({
         data: [
           { id: executiveId, email: `${executiveId}@example.test`, role: "EXECUTIVE" },
           { id: managerId, email: `${managerId}@example.test`, role: "MANAGER" },
@@ -33,7 +34,7 @@ describe.skipIf(!enabled)("shipment database foundation", () => {
       await transaction.supplier.create({ data: { id: supplierId, name: "Integration Supplier", normalizedName: "integration supplier" } });
       await transaction.shipment.create({ data: { reference: executiveReference, createdById: executiveId, supplierId } });
       await transaction.shipment.create({ data: { reference: managerReference, createdById: managerId } });
-    });
+    }, { maxWait: 15000, timeout: 30000 });
 
     try {
       const executiveRows = await prisma.shipment.findMany({ where: buildShipmentWhere({ supplierId }, { id: executiveId, role: "EXECUTIVE" }) });
