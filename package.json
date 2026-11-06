@@ -21,6 +21,7 @@
     "db:migrate": "prisma migrate deploy",
     "db:seed": "node scripts/seed-demo-users.mjs",
     "db:studio": "prisma studio",
+    "generate:sample-docs": "node --experimental-strip-types scripts/generate-sample-docs.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
@@ -34,6 +35,7 @@
     "groq-sdk": "^1.6.0",
     "lucide-react": "^1.67.0",
     "next": "16.4.4",
+    "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.5.438",
     "pg": "^8.23.1",
     "react": "19.3.0",
