@@ -53,6 +53,7 @@ export async function POST(request: Request) {
       mimeType: fileInfo.mimeType,
       sizeBytes: fileInfo.sizeBytes,
       sha256: fileInfo.sha256,
+      pageCount: fileInfo.pageCount,
       uploadedById: appUser.id,
     });
 

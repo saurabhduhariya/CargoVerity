@@ -11,6 +11,23 @@ const documentId = "22222222-2222-4222-8222-222222222222";
 const executiveUser = { id: "33333333-3333-4333-8333-333333333333", email: "exec@example.test", role: "EXECUTIVE" as const };
 const managerUser = { id: "55555555-5555-4555-8555-555555555555", email: "mgr@example.test", role: "MANAGER" as const };
 
+const minimalValidPdf = new Uint8Array([
+  ...new TextEncoder().encode(`%PDF-1.4
+1 0 obj <</Type /Catalog /Pages 2 0 R>> endobj
+2 0 obj <</Type /Pages /Kids [3 0 R] /Count 1>> endobj
+3 0 obj <</Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]>> endobj
+xref
+0 4
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+trailer <</Size 4 /Root 1 0 R>>
+startxref
+190
+%%EOF`),
+]);
+
 describe("Documents API Routes — Authorization & Security (Week 2 Step 2)", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -123,7 +140,7 @@ describe("Documents API Routes — Authorization & Security (Week 2 Step 2)", ()
       const formData = new FormData();
       formData.append("shipmentId", shipmentId);
       formData.append("documentType", "INVOICE");
-      formData.append("file", new File([new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d])], "invoice.pdf", { type: "application/pdf" }));
+      formData.append("file", new File([minimalValidPdf], "invoice.pdf", { type: "application/pdf" }));
 
       const request = new Request("http://localhost:3000/api/documents", {
         method: "POST",
