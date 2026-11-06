@@ -1,8 +1,8 @@
-import { Prisma } from "@/generated/prisma/client";
+import { Prisma, type ShipmentStatus } from "@/generated/prisma/client";
 
 export type ShipmentListFilters = {
   search?: string;
-  status?: "DRAFT" | "IN_REVIEW" | "APPROVED" | "EXPORTED";
+  status?: ShipmentStatus;
   supplierId?: string;
 };
 

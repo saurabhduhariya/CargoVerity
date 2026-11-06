@@ -15,6 +15,9 @@ enum UserRole {
 enum ShipmentStatus {
   DRAFT
   IN_REVIEW
+  EXTRACTING
+  NEEDS_REVIEW
+  READY_FOR_APPROVAL
   APPROVED
   EXPORTED
 }

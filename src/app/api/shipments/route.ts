@@ -15,7 +15,17 @@ const createShipmentSchema = z.object({
 
 const listQuerySchema = z.object({
   search: z.string().trim().max(80).optional(),
-  status: z.enum(["DRAFT", "IN_REVIEW", "APPROVED", "EXPORTED"]).optional(),
+  status: z
+    .enum([
+      "DRAFT",
+      "IN_REVIEW",
+      "EXTRACTING",
+      "NEEDS_REVIEW",
+      "READY_FOR_APPROVAL",
+      "APPROVED",
+      "EXPORTED",
+    ])
+    .optional(),
   supplierId: z.string().uuid().optional(),
 });
 

@@ -22,23 +22,81 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
       documents: {
         where: { isCurrent: true },
         orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          docType: true,
-          documentVersion: true,
-          originalFileName: true,
-          mimeType: true,
-          sizeBytes: true,
-          pageCount: true,
-          extractionStatus: true,
-          createdAt: true,
-          isCurrent: true,
+        include: {
+          extractionRuns: {
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            select: {
+              id: true,
+              status: true,
+              provider: true,
+              model: true,
+              errorCode: true,
+              errorMessage: true,
+              completedAt: true,
+            },
+          },
+          fields: {
+            select: {
+              id: true,
+              reviewStatus: true,
+            },
+          },
+          pages: {
+            select: {
+              id: true,
+              pageNumber: true,
+              isReadable: true,
+              manualEntryRequired: true,
+            },
+          },
         },
       },
     },
   });
 
   if (!shipment) notFound();
+
+  const initialDocuments = shipment.documents.map((d) => {
+    const latestRun = d.extractionRuns[0] ?? null;
+    const reviewRequiredCount = d.fields.filter(
+      (f) => f.reviewStatus === "REQUIRES_REVIEW",
+    ).length;
+    const unreadablePageCount = d.pages.filter(
+      (p) => !p.isReadable && !p.manualEntryRequired,
+    ).length;
+    const manualPagesCount = d.pages.filter((p) => p.manualEntryRequired).length;
+
+    return {
+      id: d.id,
+      docType: d.docType,
+      documentVersion: d.documentVersion,
+      originalFileName: d.originalFileName,
+      mimeType: d.mimeType,
+      sizeBytes: d.sizeBytes,
+      pageCount: d.pageCount,
+      extractionStatus: d.extractionStatus,
+      createdAt: d.createdAt.toISOString(),
+      isCurrent: d.isCurrent,
+      typeMismatch: d.typeMismatch,
+      detectedDocType: d.detectedDocType,
+      latestRun: latestRun
+        ? {
+            id: latestRun.id,
+            status: latestRun.status,
+            provider: latestRun.provider,
+            model: latestRun.model,
+            errorCode: latestRun.errorCode,
+            errorMessage: latestRun.errorMessage,
+            completedAt: latestRun.completedAt ? latestRun.completedAt.toISOString() : null,
+          }
+        : null,
+      extractedFieldCount: d.fields.length,
+      reviewRequiredCount,
+      unreadablePageCount,
+      manualPagesCount,
+    };
+  });
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8">
@@ -81,15 +139,13 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
           </CardContent>
         </Card>
 
-        {/* Week 2 Step 5: Three Document Slots and Synthetic Demo Loader */}
+        {/* Week 2 & 3: Three Document Slots, Synthetic Demo Loader, and Extraction Flow */}
         <ShipmentDocumentSlots
           shipmentId={shipment.id}
           shipmentReference={shipment.reference}
           initialRevision={shipment.currentRevision}
-          initialDocuments={shipment.documents.map((d) => ({
-            ...d,
-            createdAt: d.createdAt.toISOString(),
-          }))}
+          initialShipmentStatus={shipment.status}
+          initialDocuments={initialDocuments}
         />
       </div>
     </main>
