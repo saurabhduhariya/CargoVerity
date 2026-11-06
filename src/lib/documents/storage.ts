@@ -221,7 +221,7 @@ export async function getAuthorizedDocumentDownloadUrl(
  */
 export async function uploadDocumentBuffer(params: {
   storageKey: string;
-  fileBuffer: ArrayBuffer | Buffer;
+  fileBuffer: ArrayBuffer | Buffer | Uint8Array;
   mimeType: string;
   bucket?: string;
   supabaseAdmin?: SupabaseClient;
