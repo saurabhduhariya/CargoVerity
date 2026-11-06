@@ -60,6 +60,11 @@ enum CrossCheckStatus {
   NOT_APPLICABLE
 }
 
+enum CrossCheckSeverity {
+  BLOCKING
+  WARNING
+}
+
 enum ResolutionType {
   SOURCE_CORRECTED
   DOCUMENT_REPLACEMENT
@@ -81,6 +86,7 @@ model User {
   auditEvents    AuditEvent[]
   exportEvents   ExportEvent[]
   extractionRuns ExtractionRun[] @relation("ExtractionRunRequester")
+  crossCheckRunRequests CrossCheckRun[] @relation("CrossCheckRunRequester")
 }
 
 model Supplier {
@@ -107,6 +113,7 @@ model Shipment {
   createdById    String          @db.Uuid
   createdBy      User            @relation("ShipmentCreator", fields: [createdById], references: [id])
   documents      Document[]
+  crossCheckRuns CrossCheckRun[]
   crossChecks    CrossCheckResult[]
   approvals      Approval[]
   auditEvents    AuditEvent[]
@@ -259,18 +266,40 @@ model FieldCorrection {
   @@index([fieldId, createdAt])
 }
 
+model CrossCheckRun {
+  id            String              @id @default(uuid()) @db.Uuid
+  shipmentId    String              @db.Uuid
+  shipment      Shipment            @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  revision      Int
+  inputHash     String
+  inputSnapshot Json
+  triggeredBy   String?             @default("MANUAL")
+  requestedById String?             @db.Uuid
+  requestedBy   User?               @relation("CrossCheckRunRequester", fields: [requestedById], references: [id])
+  results       CrossCheckResult[]
+  createdAt     DateTime            @default(now())
+
+  @@index([shipmentId, revision, createdAt])
+  @@index([shipmentId, inputHash])
+}
+
 model CrossCheckResult {
-  id             String          @id @default(uuid()) @db.Uuid
-  shipmentId     String          @db.Uuid
-  shipment       Shipment        @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  id             String              @id @default(uuid()) @db.Uuid
+  shipmentId     String              @db.Uuid
+  shipment       Shipment            @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  runId          String?             @db.Uuid
+  run            CrossCheckRun?      @relation(fields: [runId], references: [id], onDelete: Cascade)
   revision       Int
   ruleKey        String
+  ruleCode       String?
+  severity       CrossCheckSeverity  @default(BLOCKING)
   status         CrossCheckStatus
   details        Json
-  createdAt      DateTime        @default(now())
+  createdAt      DateTime            @default(now())
   resolutions    CrossCheckResolution[]
 
   @@index([shipmentId, revision, createdAt])
+  @@index([runId])
 }
 
 model CrossCheckResolution {

@@ -116,7 +116,15 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
           <CardHeader>
             <CardTitle className="flex flex-wrap items-center justify-between gap-3">
               <span className="font-mono text-lg">{shipment.reference}</span>
-              <Badge>{shipment.status.replaceAll("_", " ")}</Badge>
+              <div className="flex items-center gap-2">
+                <Link
+                  href={`/review/${shipment.id}`}
+                  className="rounded-lg bg-blue-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-800"
+                >
+                  Review Workspace →
+                </Link>
+                <Badge>{shipment.status.replaceAll("_", " ")}</Badge>
+              </div>
             </CardTitle>
           </CardHeader>
           <CardContent className="grid gap-4 text-sm sm:grid-cols-4">

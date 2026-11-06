@@ -1,10 +1,179 @@
-import Link from "next/link";
-
-import { ReviewPanel } from "@/features/review/review-panel";
+import { notFound } from "next/navigation";
+import { connection } from "next/server";
+import { requireAppUser } from "@/lib/auth";
+import { getPrisma } from "@/lib/db";
+import {
+  ReviewWorkspace,
+  ReviewWorkspaceInitialData,
+} from "@/features/review/review-workspace";
+import { getAuthorizedDocumentDownloadUrl } from "@/lib/documents/storage";
+import { getLatestCrossCheckRun } from "@/lib/crosschecks/service";
 
 export const instant = false;
 
-export default async function ReviewPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function ReviewPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  await connection();
+  const { appUser } = await requireAppUser();
   const { id } = await params;
-  return <main className="min-h-screen bg-slate-50 px-6 py-8"><div className="mx-auto max-w-5xl"><Link className="text-sm font-medium text-blue-700" href="/dashboard">← Back to dashboard</Link><h1 className="mt-5 text-3xl font-semibold tracking-tight text-slate-950">Evidence review</h1><p className="mt-2 text-slate-600">Confirm or correct extracted values before a manager can approve an export.</p><div className="mt-8"><ReviewPanel documentId={id} /></div></div></main>;
+  const prisma = getPrisma();
+
+  // 1. Try resolving as Shipment ID
+  let shipment = await prisma.shipment.findFirst({
+    where: {
+      id,
+      ...(appUser.role === "MANAGER" ? {} : { createdById: appUser.id }),
+    },
+    include: {
+      supplier: true,
+      documents: {
+        where: { isCurrent: true },
+        orderBy: { createdAt: "desc" },
+        include: {
+          extractionRuns: {
+            where: { status: "COMPLETED" },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            include: { fields: true, lineItems: true },
+          },
+          pages: { orderBy: { pageNumber: "asc" } },
+        },
+      },
+    },
+  });
+
+  // 2. If not found, try resolving as Document ID (backward compatibility)
+  if (!shipment) {
+    const doc = await prisma.document.findUnique({
+      where: { id },
+      select: { shipmentId: true },
+    });
+    if (doc) {
+      shipment = await prisma.shipment.findFirst({
+        where: {
+          id: doc.shipmentId,
+          ...(appUser.role === "MANAGER" ? {} : { createdById: appUser.id }),
+        },
+        include: {
+          supplier: true,
+          documents: {
+            where: { isCurrent: true },
+            orderBy: { createdAt: "desc" },
+            include: {
+              extractionRuns: {
+                where: { status: "COMPLETED" },
+                orderBy: { createdAt: "desc" },
+                take: 1,
+                include: { fields: true, lineItems: true },
+              },
+              pages: { orderBy: { pageNumber: "asc" } },
+            },
+          },
+        },
+      });
+    }
+  }
+
+  if (!shipment) {
+    notFound();
+  }
+
+  // 3. Load latest cross-check run
+  const latestRun = await getLatestCrossCheckRun({
+    shipmentId: shipment.id,
+    revision: shipment.currentRevision,
+    prismaClient: prisma,
+  });
+
+  // 4. Resolve signed URLs and format documents
+  const documents = await Promise.all(
+    shipment.documents.map(async (doc) => {
+      let signedUrl = "";
+      try {
+        const authUrlResult = await getAuthorizedDocumentDownloadUrl(prisma, {
+          documentId: doc.id,
+          appUser,
+        });
+        if (authUrlResult?.signedUrl) signedUrl = authUrlResult.signedUrl;
+      } catch {
+        signedUrl = `/sample-docs/${doc.originalFileName}`;
+      }
+      if (!signedUrl) {
+        signedUrl = `/sample-docs/${doc.originalFileName}`;
+      }
+
+      const run = doc.extractionRuns[0] ?? null;
+
+      return {
+        id: doc.id,
+        docType: doc.docType as "INVOICE" | "PACKING_LIST" | "BILL_OF_LADING",
+        originalFileName: doc.originalFileName,
+        mimeType: doc.mimeType,
+        documentVersion: doc.documentVersion,
+        pageCount: doc.pageCount,
+        signedUrl,
+        extractionStatus: doc.extractionStatus,
+        latestRunId: run?.id ?? null,
+        pages: doc.pages.map((p) => ({
+          id: p.id,
+          pageNumber: p.pageNumber,
+          isReadable: p.isReadable,
+          manualEntryRequired: p.manualEntryRequired,
+          reviewNote: p.reviewNote,
+        })),
+        fields: (run?.fields ?? []).map((f) => ({
+          id: f.id,
+          fieldKey: f.fieldKey,
+          modelValue: f.modelValue,
+          currentValue: f.currentValue,
+          unit: f.unit,
+          modelConfidence: f.modelConfidence ? Number(f.modelConfidence) : null,
+          sourceQuote: f.sourceQuote,
+          pageNumber: f.pageNumber,
+          reviewStatus: f.reviewStatus,
+          reviewReason: f.reviewReason,
+        })),
+        lineItems: (run?.lineItems ?? []).map((item) => ({
+          id: item.id,
+          lineNumber: item.lineNumber,
+          description: item.description,
+          hsnCode: item.hsnCode,
+          quantity: item.quantity ? String(item.quantity) : null,
+          quantityUnit: item.quantityUnit,
+          unitPrice: item.unitPrice ? String(item.unitPrice) : null,
+          lineTotal: item.lineTotal ? String(item.lineTotal) : null,
+          currency: item.currency,
+          sourceQuote: item.sourceQuote,
+          pageNumber: item.pageNumber,
+        })),
+      };
+    }),
+  );
+
+  const initialData: ReviewWorkspaceInitialData = {
+    shipment: {
+      id: shipment.id,
+      reference: shipment.reference,
+      status: shipment.status,
+      currentRevision: shipment.currentRevision,
+      importerName: shipment.importerName,
+      exporterName: shipment.exporterName,
+      supplier: shipment.supplier,
+    },
+    documents,
+    crossChecks: (latestRun?.results ?? []).map((r) => ({
+      id: r.id,
+      ruleKey: r.ruleKey,
+      ruleCode: r.ruleCode ?? undefined,
+      status: r.status as "PASS" | "MISMATCH" | "INCOMPLETE" | "NOT_APPLICABLE",
+      severity: r.severity as "BLOCKING" | "WARNING",
+      effectiveStatus: r.effectiveStatus,
+      details: (r.details as Record<string, unknown>) ?? {},
+    })),
+  };
+
+  return <ReviewWorkspace initialData={initialData} />;
 }
