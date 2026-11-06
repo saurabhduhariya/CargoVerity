@@ -2,11 +2,14 @@ import { NextResponse } from "next/server";
 
 import { apiError } from "@/lib/api-response";
 import { requireAppUser } from "@/lib/auth";
-import { getEnv } from "@/lib/env";
 import { getPrisma } from "@/lib/db";
-import { createSupabaseAdminClient } from "@/lib/supabase/server";
 import { documentUploadMetadataSchema, validateUploadedFile } from "@/lib/documents/validation";
 import { createDocumentVersion } from "@/lib/documents/service";
+import {
+  authorizeShipmentAccess,
+  buildStorageKey,
+  uploadDocumentBuffer,
+} from "@/lib/documents/storage";
 
 export async function POST(request: Request) {
   try {
@@ -21,36 +24,38 @@ export async function POST(request: Request) {
     if (!(file instanceof File)) throw new Error("A document file is required.");
     const fileInfo = await validateUploadedFile(file);
     const prisma = getPrisma();
-    const shipment = await prisma.shipment.findFirst({
-      where: {
-        id: metadata.shipmentId,
-        ...(appUser.role === "MANAGER" ? {} : { createdById: appUser.id }),
-      },
+
+    // 1. Authorize shipment access before issuing or performing upload
+    const shipment = await authorizeShipmentAccess(prisma, metadata.shipmentId, appUser);
+
+    // 2. Generate document ID and safe storage key without original filename
+    const documentId = crypto.randomUUID();
+    const storageKey = buildStorageKey({
+      shipmentId: shipment.id,
+      documentId,
+      originalFileName: fileInfo.fileName,
     });
 
-    if (!shipment) throw new Error("Shipment not found or inaccessible.");
+    // 3. Upload to private Supabase storage
+    await uploadDocumentBuffer({
+      storageKey,
+      fileBuffer: await file.arrayBuffer(),
+      mimeType: fileInfo.mimeType,
+    });
 
-    const path = `${shipment.id}/${crypto.randomUUID()}-${fileInfo.fileName}`;
-    const storage = createSupabaseAdminClient();
-    const { error: storageError } = await storage.storage
-      .from(getEnv().SUPABASE_STORAGE_BUCKET)
-      .upload(path, await file.arrayBuffer(), {
-        contentType: fileInfo.mimeType,
-        upsert: false,
-      });
-
-    if (storageError) throw new Error("Document storage upload failed.");
-
+    // 4. Create document version record linked to the exact storage key and document ID
     const document = await createDocumentVersion(prisma, {
+      id: documentId,
       shipmentId: shipment.id,
       selectedDocType: metadata.documentType,
-      storageKey: path,
+      storageKey,
       originalFileName: fileInfo.fileName,
       mimeType: fileInfo.mimeType,
       sizeBytes: fileInfo.sizeBytes,
       sha256: fileInfo.sha256,
       uploadedById: appUser.id,
     });
+
     await prisma.shipment.update({
       where: { id: shipment.id },
       data: { status: "IN_REVIEW", currentRevision: { increment: 1 } },

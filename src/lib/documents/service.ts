@@ -4,6 +4,7 @@ import type { DocumentType } from "@/lib/ai/types";
 type DocumentDatabase = Pick<PrismaClient, "document">;
 
 export type NewDocumentVersion = {
+  id?: string;
   shipmentId: string;
   selectedDocType: DocumentType;
   storageKey: string;
@@ -64,6 +65,7 @@ export async function createDocumentVersion(
 
     return transaction.document.create({
       data: {
+        ...(input.id ? { id: input.id } : {}),
         shipmentId: input.shipmentId,
         docType: input.selectedDocType,
         selectedDocType: input.selectedDocType,
