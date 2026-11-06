@@ -171,3 +171,4 @@ export function compareWeights(
     rightKg: right.weightInKg,
   };
 }
+

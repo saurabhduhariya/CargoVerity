@@ -20,3 +20,4 @@ export const DEFAULT_TOLERANCES: ToleranceConfig = {
   partyNameSimilarityThreshold: 0.85, // 85% token similarity for company/party names
   itemDescriptionSimilarityThreshold: 0.80, // 80% token similarity for item descriptions
 };
+
