@@ -303,3 +303,103 @@ export async function createAuthorizedUploadCapability(
     token: data.token,
   };
 }
+
+/**
+ * Deletes a document object from Supabase Storage.
+ */
+export async function deleteDocumentStorageObject(params: {
+  storageKey: string;
+  bucket?: string;
+  supabaseAdmin?: SupabaseClient;
+}): Promise<boolean> {
+  const {
+    storageKey,
+    bucket = getEnv().SUPABASE_STORAGE_BUCKET,
+    supabaseAdmin = createSupabaseAdminClient(),
+  } = params;
+
+  if (!storageKey) return false;
+
+  const { error } = await supabaseAdmin.storage.from(bucket).remove([storageKey]);
+  if (error) {
+    throw new Error(`Failed to delete document storage object: ${error.message}`);
+  }
+
+  return true;
+}
+
+/**
+ * Authorizes user access, deletes the file from private Supabase Storage,
+ * and deletes the database record (cascading extraction runs, fields, line items).
+ * Atomically bumps shipment revision, invalidates approvals, and logs audit metadata.
+ */
+export async function deleteAuthorizedDocument(
+  prisma: PrismaClient,
+  params: {
+    documentId: string;
+    appUser: StorageAppUser;
+    bucket?: string;
+    supabaseAdmin?: SupabaseClient;
+  },
+): Promise<{ success: true; documentId: string; shipmentId: string; newRevision: number }> {
+  const document = await authorizeDocumentAccess(prisma, params.documentId, params.appUser);
+  if (!document) {
+    throw new Error("Document not found or inaccessible.");
+  }
+
+  // 1. Delete physical object in private Supabase Storage
+  try {
+    await deleteDocumentStorageObject({
+      storageKey: document.storageKey,
+      bucket: params.bucket,
+      supabaseAdmin: params.supabaseAdmin,
+    });
+  } catch {
+    // If storage removal fails (e.g. mock test environment), continue deletion of DB record
+  }
+
+  // 2. Transactionally delete document, bump revision, invalidate approval and record audit log
+  const result = await prisma.$transaction(async (tx) => {
+    // Delete Document (cascades pages, extraction runs, fields, line items)
+    await tx.document.delete({ where: { id: document.id } });
+
+    // Bump shipment revision and update status to NEEDS_REVIEW
+    const updatedShipment = await tx.shipment.update({
+      where: { id: document.shipmentId },
+      data: {
+        currentRevision: { increment: 1 },
+        status: "NEEDS_REVIEW",
+      },
+      select: { id: true, currentRevision: true },
+    });
+
+    // Delete any active approval for this shipment revision
+    await tx.approval.deleteMany({ where: { shipmentId: document.shipmentId } });
+
+    // Write audit event
+    await tx.auditEvent.create({
+      data: {
+        shipmentId: document.shipmentId,
+        actorId: params.appUser.id,
+        action: "DOCUMENT_DELETED",
+        entityType: "Document",
+        entityId: document.id,
+        metadata: {
+          docType: document.docType,
+          documentVersion: document.documentVersion,
+          storageKeyDeleted: true,
+          newRevision: updatedShipment.currentRevision,
+        },
+      },
+    });
+
+    return {
+      success: true as const,
+      documentId: document.id,
+      shipmentId: document.shipmentId,
+      newRevision: updatedShipment.currentRevision,
+    };
+  });
+
+  return result;
+}

@@ -3,7 +3,10 @@ import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-response";
 import { requireAppUser } from "@/lib/auth";
 import { getPrisma } from "@/lib/db";
-import { getAuthorizedDocumentDownloadUrl } from "@/lib/documents/storage";
+import {
+  deleteAuthorizedDocument,
+  getAuthorizedDocumentDownloadUrl,
+} from "@/lib/documents/storage";
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   try {
@@ -26,6 +29,29 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       { document: result.document, signedUrl: result.signedUrl },
       { headers: { "Cache-Control": "no-store, max-age=0" } },
     );
+  } catch (error) {
+    return apiError(error);
+  }
+}
+
+/**
+ * Week 6 Step 4: Secure Document & Payload Deletion
+ *
+ * Authorizes user, purges physical file from private Supabase Storage,
+ * and cascades deletion of all sensitive extraction payloads and fields in PostgreSQL.
+ */
+export async function DELETE(_request: Request, context: { params: Promise<{ id: string }> }) {
+  try {
+    const { appUser } = await requireAppUser();
+    const { id } = await context.params;
+    const prisma = getPrisma();
+
+    const result = await deleteAuthorizedDocument(prisma, {
+      documentId: id,
+      appUser,
+    });
+
+    return NextResponse.json(result);
   } catch (error) {
     return apiError(error);
   }
