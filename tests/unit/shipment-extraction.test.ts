@@ -4,7 +4,6 @@ import { POST as shipmentExtractPOST, GET as shipmentExtractGET } from "@/app/ap
 import { POST as documentExtractPOST } from "@/app/api/documents/[id]/extract/route";
 import * as authModule from "@/lib/auth";
 import * as dbModule from "@/lib/db";
-import * as providerFactoryModule from "@/lib/ai/provider-factory";
 
 const shipmentId = "11111111-1111-4111-8111-111111111111";
 const docIdCI = "22222222-2222-4222-8222-222222222222";
