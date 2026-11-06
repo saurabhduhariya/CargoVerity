@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { LogOut, Plus, RefreshCw, ShipWheel } from "lucide-react";
+import { BarChart3, LogOut, Plus, RefreshCw, ShipWheel } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -82,7 +82,26 @@ export function DashboardShell({ email }: { email: string }) {
 
   return (
     <main className="min-h-screen bg-slate-50">
-      <header className="border-b border-slate-200 bg-white"><div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4"><div><p className="text-sm font-semibold uppercase tracking-[0.18em] text-blue-700">CargoVerity</p><p className="mt-1 text-sm text-slate-500">Executive workbench · {email}</p></div><Button variant="ghost" size="sm" onClick={signOut}><LogOut className="size-4" /> Sign out</Button></div></header>
+      <header className="border-b border-slate-200 bg-white">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-blue-700">CargoVerity</p>
+            <p className="mt-1 text-sm text-slate-500">Executive workbench · {email}</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <Link
+              href="/reports"
+              className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
+            >
+              <BarChart3 className="size-3.5 text-indigo-600" />
+              Accuracy & Supplier Reports
+            </Link>
+            <Button variant="ghost" size="sm" onClick={signOut}>
+              <LogOut className="size-4" /> Sign out
+            </Button>
+          </div>
+        </div>
+      </header>
       <div className="mx-auto max-w-7xl space-y-6 px-6 py-8">
         <div><h1 className="text-3xl font-semibold tracking-tight text-slate-950">Shipment workbench</h1><p className="mt-2 text-slate-600">Create a synthetic shipment, upload source documents and review model evidence before any export.</p></div>
         {error ? <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p> : null}
