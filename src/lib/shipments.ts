@@ -4,6 +4,9 @@ export type ShipmentListFilters = {
   search?: string;
   status?: ShipmentStatus;
   supplierId?: string;
+  fromDate?: string;
+  toDate?: string;
+  sort?: "risk" | "date_desc" | "date_asc";
 };
 
 export function normalizeSupplierName(value: string) {
@@ -14,15 +17,27 @@ export function normalizeSupplierKey(value: string) {
   return normalizeSupplierName(value).toLocaleLowerCase();
 }
 
+/**
+ * Builds Prisma where clause supporting search, status, supplier, and date range filters (Rule 6 & 7).
+ */
 export function buildShipmentWhere(
   filters: ShipmentListFilters,
-  user: { id: string; role: "EXECUTIVE" | "MANAGER" },
+  user: { id: string; role: "EXECUTIVE" | "MANAGER" | "ADMIN" | "SPECIALIST" },
 ): Prisma.ShipmentWhereInput {
   const clauses: Prisma.ShipmentWhereInput[] = [];
 
-  if (user.role !== "MANAGER") clauses.push({ createdById: user.id });
-  if (filters.status) clauses.push({ status: filters.status });
-  if (filters.supplierId) clauses.push({ supplierId: filters.supplierId });
+  if (user.role !== "MANAGER") {
+    clauses.push({ createdById: user.id });
+  }
+
+  if (filters.status) {
+    clauses.push({ status: filters.status });
+  }
+
+  if (filters.supplierId) {
+    clauses.push({ supplierId: filters.supplierId });
+  }
+
   if (filters.search) {
     clauses.push({
       OR: [
@@ -34,5 +49,357 @@ export function buildShipmentWhere(
     });
   }
 
+  if (filters.fromDate) {
+    const from = new Date(filters.fromDate);
+    if (!Number.isNaN(from.getTime())) {
+      clauses.push({ createdAt: { gte: from } });
+    }
+  }
+
+  if (filters.toDate) {
+    const to = new Date(filters.toDate);
+    if (!Number.isNaN(to.getTime())) {
+      if (filters.toDate.length <= 10) {
+        to.setHours(23, 59, 59, 999);
+      }
+      clauses.push({ createdAt: { lte: to } });
+    }
+  }
+
   return clauses.length === 1 ? clauses[0] : { AND: clauses };
+}
+
+/* ========================================================================= */
+/* Week 5 Step 7: Enriched Shipment Status List & High-Risk Priority Helpers  */
+/* ========================================================================= */
+
+export type DocumentSlotInfo = {
+  present: boolean;
+  status: string | null;
+  documentId: string | null;
+  fileName: string | null;
+};
+
+export type DocumentSlotsSummary = {
+  invoice: DocumentSlotInfo;
+  packingList: DocumentSlotInfo;
+  billOfLading: DocumentSlotInfo;
+  allPresent: boolean;
+  presentCount: number;
+};
+
+export type CrossChecksSummary = {
+  total: number;
+  passed: number;
+  mismatch: number;
+  incomplete: number;
+  resolved: number;
+  blockingUnresolved: number;
+  hasBlockingMismatches: boolean;
+};
+
+export type ShipmentNextActionType =
+  | "upload"
+  | "extract"
+  | "review"
+  | "resolve"
+  | "submit"
+  | "approve"
+  | "export"
+  | "completed";
+
+export type ShipmentNextAction = {
+  type: ShipmentNextActionType;
+  label: string;
+  href: string;
+  description: string;
+  urgency: "high" | "medium" | "low" | "none";
+};
+
+export type RawDocumentInput = {
+  id: string;
+  docType: string;
+  extractionStatus: string;
+  originalFileName: string;
+  documentVersion?: number;
+  isCurrent?: boolean;
+  fields?: Array<{ reviewStatus: string }>;
+  pages?: Array<{ isReadable: boolean; manualEntryRequired: boolean }>;
+};
+
+export type RawCrossCheckInput = {
+  id: string;
+  ruleKey: string;
+  status: string;
+  severity: string;
+  createdAt: Date | string;
+  revision: number;
+  resolutions?: Array<{
+    id: string;
+    type: string;
+    managerApprovedAt: Date | string | null;
+  }>;
+};
+
+/**
+ * Derives CI/PL/BL slot presence and extraction status (Rule 2).
+ */
+export function deriveDocumentSlots(
+  documents: RawDocumentInput[],
+): DocumentSlotsSummary {
+  const currentDocs = documents.filter((d) => d.isCurrent !== false);
+
+  const findDoc = (type: string): DocumentSlotInfo => {
+    const doc = currentDocs.find((d) => d.docType === type);
+    return {
+      present: Boolean(doc),
+      status: doc?.extractionStatus ?? null,
+      documentId: doc?.id ?? null,
+      fileName: doc?.originalFileName ?? null,
+    };
+  };
+
+  const invoice = findDoc("INVOICE");
+  const packingList = findDoc("PACKING_LIST");
+  const billOfLading = findDoc("BILL_OF_LADING");
+
+  const presentCount =
+    (invoice.present ? 1 : 0) +
+    (packingList.present ? 1 : 0) +
+    (billOfLading.present ? 1 : 0);
+
+  return {
+    invoice,
+    packingList,
+    billOfLading,
+    allPresent: presentCount === 3,
+    presentCount,
+  };
+}
+
+/**
+ * Computes deterministic cross-checks summary for current revision (Rule 3).
+ */
+export function deriveCrossChecksSummary(
+  checks: RawCrossCheckInput[],
+  currentRevision: number,
+): CrossChecksSummary {
+  const revisionChecks = checks.filter((c) => c.revision === currentRevision);
+
+  // Group latest check by ruleKey
+  const latestByRule = new Map<string, RawCrossCheckInput>();
+  for (const check of revisionChecks) {
+    const existing = latestByRule.get(check.ruleKey);
+    const existingTime = existing ? new Date(existing.createdAt).getTime() : 0;
+    const checkTime = new Date(check.createdAt).getTime();
+    if (!existing || checkTime > existingTime) {
+      latestByRule.set(check.ruleKey, check);
+    }
+  }
+
+  const latestChecks = Array.from(latestByRule.values());
+
+  let passed = 0;
+  let mismatch = 0;
+  let incomplete = 0;
+  let resolved = 0;
+  let blockingUnresolved = 0;
+
+  for (const check of latestChecks) {
+    const resolutions = check.resolutions ?? [];
+    const activeRes = resolutions[0];
+    const isResolved =
+      Boolean(activeRes) &&
+      (activeRes.type !== "ACCEPTED_EXCEPTION" || activeRes.managerApprovedAt !== null);
+
+    if (check.status === "PASS") {
+      passed++;
+    } else if (check.status === "MISMATCH") {
+      mismatch++;
+      if (isResolved) resolved++;
+      else blockingUnresolved++;
+    } else if (check.status === "INCOMPLETE") {
+      incomplete++;
+      if (isResolved) resolved++;
+      else blockingUnresolved++;
+    }
+  }
+
+  return {
+    total: latestChecks.length,
+    passed,
+    mismatch,
+    incomplete,
+    resolved,
+    blockingUnresolved,
+    hasBlockingMismatches: blockingUnresolved > 0,
+  };
+}
+
+/**
+ * Derives the deterministic Next Action for a shipment (Rule 5).
+ */
+export function deriveNextAction(params: {
+  id: string;
+  status: string;
+  slots: DocumentSlotsSummary;
+  checks: CrossChecksSummary;
+  reviewRequiredCount: number;
+  userRole?: string;
+}): ShipmentNextAction {
+  const { id, status, slots, checks, reviewRequiredCount, userRole } = params;
+
+  if (status === "EXPORTED") {
+    return {
+      type: "completed",
+      label: "View Exported CSV",
+      href: `/review/${id}`,
+      description: "Shipment exported successfully. Audit event recorded.",
+      urgency: "none",
+    };
+  }
+
+  if (status === "APPROVED") {
+    return {
+      type: "export",
+      label: "Export Customs CSV",
+      href: `/review/${id}`,
+      description: "Manager approval complete. Ready for official CSV generation.",
+      urgency: "medium",
+    };
+  }
+
+  if (status === "READY_FOR_APPROVAL") {
+    if (userRole === "MANAGER") {
+      return {
+        type: "approve",
+        label: "Manager Review & Decision",
+        href: `/review/${id}`,
+        description: "Awaiting your managerial approval or rejection decision.",
+        urgency: "high",
+      };
+    }
+    return {
+      type: "review",
+      label: "Awaiting Manager Decision",
+      href: `/review/${id}`,
+      description: "Submitted for manager review. Pending decision.",
+      urgency: "medium",
+    };
+  }
+
+  if (!slots.allPresent) {
+    return {
+      type: "upload",
+      label: "Upload Missing Documents",
+      href: `/shipments/${id}`,
+      description: `Missing ${3 - slots.presentCount} required document slot(s).`,
+      urgency: "medium",
+    };
+  }
+
+  if (
+    slots.invoice.status === "PROCESSING" ||
+    slots.packingList.status === "PROCESSING" ||
+    slots.billOfLading.status === "PROCESSING" ||
+    slots.invoice.status === "QUEUED" ||
+    slots.packingList.status === "QUEUED" ||
+    slots.billOfLading.status === "QUEUED"
+  ) {
+    return {
+      type: "extract",
+      label: "Extraction In Progress",
+      href: `/shipments/${id}`,
+      description: "AI extraction is currently analyzing uploaded documents.",
+      urgency: "medium",
+    };
+  }
+
+  if (checks.blockingUnresolved > 0) {
+    return {
+      type: "resolve",
+      label: "Resolve Discrepancies",
+      href: `/review/${id}`,
+      description: `${checks.blockingUnresolved} cross-check discrepancies require resolution.`,
+      urgency: "high",
+    };
+  }
+
+  if (reviewRequiredCount > 0) {
+    return {
+      type: "review",
+      label: "Review Extracted Fields",
+      href: `/review/${id}`,
+      description: `${reviewRequiredCount} fields require reviewer verification.`,
+      urgency: "high",
+    };
+  }
+
+  // All documents present, extraction complete, checks clear, fields reviewed
+  return {
+    type: "submit",
+    label: "Submit for Approval",
+    href: `/review/${id}`,
+    description: "All guards verified. Ready for manager submission.",
+    urgency: "high",
+  };
+}
+
+/**
+ * Calculates a deterministic priority risk score (0 to 100) based on stored data (Rule 8).
+ */
+export function calculateShipmentRiskScore(params: {
+  status: string;
+  blockingUnresolved: number;
+  reviewRequiredCount: number;
+  allDocumentsPresent: boolean;
+}): number {
+  const { status, blockingUnresolved, reviewRequiredCount, allDocumentsPresent } = params;
+
+  if (status === "READY_FOR_APPROVAL") return 100;
+  if (blockingUnresolved > 0) return 90;
+  if (reviewRequiredCount > 0) return 80;
+  if (!allDocumentsPresent && status !== "APPROVED" && status !== "EXPORTED") return 70;
+  if (status === "APPROVED") return 40;
+  if (status === "EXPORTED") return 10;
+  return 50;
+}
+
+export type EnrichedShipment = {
+  id: string;
+  reference: string;
+  status: string;
+  currentRevision: number;
+  importerName: string | null;
+  exporterName: string | null;
+  createdAt: string;
+  updatedAt: string;
+  supplier: { id: string; name: string } | null;
+  documentSlots: DocumentSlotsSummary;
+  checksSummary: CrossChecksSummary;
+  reviewRequiredCount: number;
+  nextAction: ShipmentNextAction;
+  riskScore: number;
+};
+
+/**
+ * Sorts enriched shipments according to requested sort order (Rule 8).
+ */
+export function sortShipments(
+  shipments: EnrichedShipment[],
+  sortMode: "risk" | "date_desc" | "date_asc" = "risk",
+): EnrichedShipment[] {
+  return [...shipments].sort((a, b) => {
+    if (sortMode === "date_asc") {
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    }
+    if (sortMode === "date_desc") {
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    }
+    // "risk" default: high risk first, tiebreak by updatedAt desc
+    if (b.riskScore !== a.riskScore) {
+      return b.riskScore - a.riskScore;
+    }
+    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+  });
 }
