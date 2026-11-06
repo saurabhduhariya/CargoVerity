@@ -6,6 +6,7 @@ import {
   AlertCircle,
   AlertTriangle,
   ArrowLeft,
+  Check,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -80,6 +81,21 @@ export type ReviewWorkspaceDocument = {
   latestRunId?: string | null;
 };
 
+export type CrossCheckResolutionData = {
+  id: string;
+  type: "SOURCE_CORRECTED" | "DOCUMENT_REPLACEMENT" | "ACCEPTED_EXCEPTION";
+  reason: string;
+  evidence?: string | null;
+  managerApprovedAt?: string | Date | null;
+  createdAt?: string | Date;
+  resolvedBy?: {
+    id: string;
+    email?: string;
+    fullName?: string | null;
+    role?: string;
+  };
+};
+
 export type ReviewWorkspaceCrossCheck = {
   id?: string;
   ruleKey: string;
@@ -87,6 +103,8 @@ export type ReviewWorkspaceCrossCheck = {
   status: "PASS" | "MISMATCH" | "INCOMPLETE" | "NOT_APPLICABLE";
   severity?: "BLOCKING" | "WARNING";
   effectiveStatus?: string;
+  activeResolution?: CrossCheckResolutionData | null;
+  resolutions?: CrossCheckResolutionData[];
   details: {
     message?: string;
     note?: string;
@@ -216,6 +234,82 @@ export function validateFieldCorrection(
   return { valid: true, isMaterialChange };
 }
 
+export function deriveEffectiveCheckStatus(
+  status: "PASS" | "MISMATCH" | "INCOMPLETE" | "NOT_APPLICABLE",
+  activeResolution?: CrossCheckResolutionData | null,
+): { label: string; badgeClass: string; isHumanCleared: boolean; isPendingApproval: boolean } {
+  if (status === "PASS") {
+    return {
+      label: "PASS",
+      badgeClass: "bg-emerald-100 text-emerald-800 border-emerald-300",
+      isHumanCleared: false,
+      isPendingApproval: false,
+    };
+  }
+
+  if (activeResolution) {
+    if (activeResolution.type === "ACCEPTED_EXCEPTION") {
+      if (activeResolution.managerApprovedAt) {
+        return {
+          label: "HUMAN CLEARED (Exception Approved)",
+          badgeClass: "bg-purple-100 text-purple-900 border-purple-300",
+          isHumanCleared: true,
+          isPendingApproval: false,
+        };
+      }
+      return {
+        label: "PENDING MANAGER APPROVAL",
+        badgeClass: "bg-amber-100 text-amber-900 border-amber-300 animate-pulse",
+        isHumanCleared: false,
+        isPendingApproval: true,
+      };
+    }
+
+    if (activeResolution.type === "SOURCE_CORRECTED") {
+      return {
+        label: "HUMAN CLEARED (Source Corrected)",
+        badgeClass: "bg-blue-100 text-blue-900 border-blue-300",
+        isHumanCleared: true,
+        isPendingApproval: false,
+      };
+    }
+
+    if (activeResolution.type === "DOCUMENT_REPLACEMENT") {
+      return {
+        label: "HUMAN CLEARED (Doc Replaced)",
+        badgeClass: "bg-indigo-100 text-indigo-900 border-indigo-300",
+        isHumanCleared: true,
+        isPendingApproval: false,
+      };
+    }
+  }
+
+  if (status === "MISMATCH") {
+    return {
+      label: "MISMATCH",
+      badgeClass: "bg-rose-100 text-rose-800 border-rose-300 font-semibold",
+      isHumanCleared: false,
+      isPendingApproval: false,
+    };
+  }
+
+  if (status === "INCOMPLETE") {
+    return {
+      label: "INCOMPLETE",
+      badgeClass: "bg-amber-100 text-amber-800 border-amber-300",
+      isHumanCleared: false,
+      isPendingApproval: false,
+    };
+  }
+
+  return {
+    label: status,
+    badgeClass: "bg-slate-100 text-slate-700 border-slate-300",
+    isHumanCleared: false,
+    isPendingApproval: false,
+  };
+}
+
 export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceInitialData }) {
   const { shipment } = initialData;
   const [documents, setDocuments] = useState<ReviewWorkspaceDocument[]>(initialData.documents);
@@ -252,16 +346,42 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
   const [newFieldValue, setNewFieldValue] = useState("");
   const [newFieldReason, setNewFieldReason] = useState("");
 
+  // Resolution State (Week 4 Step 8)
+  const [resolvingCheckId, setResolvingCheckId] = useState<string | null>(null);
+  const [resolutionType, setResolutionType] = useState<
+    "SOURCE_CORRECTED" | "DOCUMENT_REPLACEMENT" | "ACCEPTED_EXCEPTION"
+  >("SOURCE_CORRECTED");
+  const [resolutionReason, setResolutionReason] = useState("");
+  const [resolutionEvidence, setResolutionEvidence] = useState("");
+  const [valuesConfirmed, setValuesConfirmed] = useState(false);
+  const [showHistoryForCheckId, setShowHistoryForCheckId] = useState<string | null>(null);
+
   const [busy, setBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   const activeDoc = documents.find((d) => d.docType === activeDocType);
   const maxPages = activeDoc?.pageCount ?? 1;
 
-  // Cross-Check Summary Counts
+  // Cross-Check Summary Counts (Rule 8 & 11)
   const passedCount = crossChecks.filter((c) => c.status === "PASS").length;
-  const mismatchCount = crossChecks.filter((c) => c.status === "MISMATCH").length;
-  const incompleteCount = crossChecks.filter((c) => c.status === "INCOMPLETE").length;
+  const humanClearedCount = crossChecks.filter((c) => {
+    const eff = deriveEffectiveCheckStatus(c.status, c.activeResolution ?? c.resolutions?.[0]);
+    return eff.isHumanCleared;
+  }).length;
+  const pendingApprovalCount = crossChecks.filter((c) => {
+    const eff = deriveEffectiveCheckStatus(c.status, c.activeResolution ?? c.resolutions?.[0]);
+    return eff.isPendingApproval;
+  }).length;
+  const mismatchCount = crossChecks.filter((c) => {
+    if (c.status !== "MISMATCH") return false;
+    const eff = deriveEffectiveCheckStatus(c.status, c.activeResolution ?? c.resolutions?.[0]);
+    return !eff.isHumanCleared && !eff.isPendingApproval;
+  }).length;
+  const incompleteCount = crossChecks.filter((c) => {
+    if (c.status !== "INCOMPLETE") return false;
+    const eff = deriveEffectiveCheckStatus(c.status, c.activeResolution ?? c.resolutions?.[0]);
+    return !eff.isHumanCleared && !eff.isPendingApproval;
+  }).length;
   const warningCount = crossChecks.filter((c) => c.severity === "WARNING").length;
 
   // Zoom handlers
@@ -560,6 +680,94 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
     }
   }
 
+  // Inspect document source for compared values (Week 4 Step 8 Rule 2)
+  function inspectDocumentSource(docType: string) {
+    const valid = availableDocTypes.find((d) => d.toLowerCase() === docType.toLowerCase());
+    if (valid) {
+      setActiveDocType(valid);
+      setCurrentPage(1);
+      setMobileTab("document");
+      setStatusMessage(`Switched document viewer to ${valid.replaceAll("_", " ")}.`);
+    }
+  }
+
+  // Resolve Failed Cross-Check (Week 4 Step 8 Rules 3, 4, 5, 6, 7)
+  async function handleResolveCheck(check: ReviewWorkspaceCrossCheck) {
+    if (!check.id) {
+      setStatusMessage("Cannot resolve: Cross-check result ID is missing.");
+      return;
+    }
+    if (!valuesConfirmed) {
+      setStatusMessage("You must confirm that you have reviewed the compared values and inspected the source documents.");
+      return;
+    }
+    if (!resolutionReason.trim() || resolutionReason.trim().length < 5) {
+      setStatusMessage("A detailed reason (minimum 5 characters) is required for resolution.");
+      return;
+    }
+    if (resolutionType === "ACCEPTED_EXCEPTION" && (!resolutionEvidence.trim() || resolutionEvidence.trim().length < 3)) {
+      setStatusMessage("An external evidence or query reference (minimum 3 characters) is required for accepted exceptions.");
+      return;
+    }
+
+    setBusy(true);
+    setStatusMessage(null);
+    try {
+      const response = await fetch(`/api/crosschecks/${check.id}/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: resolutionType,
+          reason: resolutionReason.trim(),
+          evidence: resolutionEvidence.trim() || undefined,
+          valuesConfirmed: true,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        setStatusMessage(data.error ?? "Failed to record resolution.");
+      } else {
+        const newResolution: CrossCheckResolutionData = {
+          id: data.resolution.id,
+          type: data.resolution.type,
+          reason: data.resolution.reason,
+          evidence: data.resolution.evidence,
+          managerApprovedAt: data.resolution.managerApprovedAt,
+          createdAt: data.resolution.createdAt,
+          resolvedBy: data.resolution.resolvedBy,
+        };
+
+        setCrossChecks((prev) =>
+          prev.map((c) =>
+            c.id === check.id
+              ? {
+                  ...c,
+                  effectiveStatus: data.effectiveStatus,
+                  activeResolution: newResolution,
+                  resolutions: [newResolution, ...(c.resolutions ?? [])],
+                }
+              : c,
+          ),
+        );
+
+        if (data.latestRun?.results) {
+          setCrossChecks(data.latestRun.results);
+        }
+
+        setStatusMessage(`Cross-check resolution recorded as ${resolutionType.replaceAll("_", " ")}.`);
+        setResolvingCheckId(null);
+        setResolutionReason("");
+        setResolutionEvidence("");
+        setValuesConfirmed(false);
+      }
+    } catch {
+      setStatusMessage("Network error recording resolution.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // Re-run checks
   async function triggerCrossChecks() {
     setBusy(true);
@@ -636,6 +844,18 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
               <CheckCircle2 className="size-3.5 text-emerald-600" />
               <span>{passedCount} Passed</span>
             </div>
+            {humanClearedCount > 0 ? (
+              <div className="flex items-center gap-1 rounded-md bg-purple-50 px-2.5 py-1 text-purple-900 border border-purple-200 font-medium">
+                <Check className="size-3.5 text-purple-600" />
+                <span>{humanClearedCount} Cleared</span>
+              </div>
+            ) : null}
+            {pendingApprovalCount > 0 ? (
+              <div className="flex items-center gap-1 rounded-md bg-amber-50 px-2.5 py-1 text-amber-900 border border-amber-300 font-medium">
+                <AlertTriangle className="size-3.5 text-amber-600" />
+                <span>{pendingApprovalCount} Pending Approval</span>
+              </div>
+            ) : null}
             {mismatchCount > 0 ? (
               <div className="flex items-center gap-1 rounded-md bg-rose-50 px-2.5 py-1 text-rose-800 border border-rose-200 font-medium">
                 <AlertCircle className="size-3.5 text-rose-600" />
@@ -1324,51 +1544,286 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                 <CardContent className="p-3 space-y-2.5">
                   {crossChecks.length === 0 ? (
                     <p className="text-xs text-slate-500 py-2 text-center">
-                      No cross-check results recorded for revision {shipment.currentRevision}.
+                      No cross-check results recorded for revision {shipmentRevision}.
                     </p>
                   ) : (
-                    crossChecks.map((check) => (
-                      <div
-                        key={check.ruleKey}
-                        className={`rounded-lg border p-2.5 text-xs ${
-                          check.status === "MISMATCH"
-                            ? "border-rose-200 bg-rose-50/50"
-                            : check.status === "INCOMPLETE"
-                              ? "border-amber-200 bg-amber-50/50"
-                              : "border-slate-200 bg-white"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-semibold text-slate-900 font-mono">
-                            {check.ruleKey.replaceAll("_", " ")}
-                          </span>
-                          <Badge
-                            className={
-                              check.status === "PASS"
-                                ? "bg-emerald-100 text-emerald-800"
+                    crossChecks.map((check) => {
+                      const activeRes = check.activeResolution ?? check.resolutions?.[0];
+                      const eff = deriveEffectiveCheckStatus(check.status, activeRes);
+
+                      return (
+                        <div
+                          key={check.id ?? check.ruleKey}
+                          className={`rounded-lg border p-3 text-xs transition ${
+                            eff.isHumanCleared
+                              ? "border-purple-200 bg-purple-50/20"
+                              : eff.isPendingApproval
+                                ? "border-amber-300 bg-amber-50/30"
                                 : check.status === "MISMATCH"
-                                  ? "bg-rose-100 text-rose-800 font-semibold"
+                                  ? "border-rose-200 bg-rose-50/40"
                                   : check.status === "INCOMPLETE"
-                                    ? "bg-amber-100 text-amber-800"
-                                    : "bg-slate-100 text-slate-700"
-                            }
-                          >
-                            {check.status}
-                          </Badge>
+                                    ? "border-amber-200 bg-amber-50/40"
+                                    : "border-slate-200 bg-white"
+                          }`}
+                        >
+                          {/* Header: Rule Key, Severity, Status */}
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-semibold text-slate-900 font-mono">
+                                {check.ruleKey.replaceAll("_", " ")}
+                              </span>
+                              {check.ruleCode ? (
+                                <Badge className="bg-slate-100 text-slate-600 border-slate-200 text-[10px] py-0 h-4 font-mono">
+                                  {check.ruleCode}
+                                </Badge>
+                              ) : null}
+                              {check.severity === "WARNING" ? (
+                                <Badge className="bg-yellow-50 text-yellow-800 border-yellow-200 text-[10px] py-0 h-4">
+                                  Warning
+                                </Badge>
+                              ) : null}
+                            </div>
+                            <Badge className={`${eff.badgeClass} text-[10px]`}>
+                              {eff.label}
+                            </Badge>
+                          </div>
+
+                          {/* Compared Values and Units (Rule 1 & Rule 2) */}
+                          {check.details?.comparedValuesKg &&
+                          Object.keys(check.details.comparedValuesKg).length > 0 ? (
+                            <div className="mt-2 rounded-md bg-slate-50 border border-slate-200 p-2 text-[11px]">
+                              <div className="font-semibold text-slate-700 mb-1">
+                                Compared Source Values:
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                {Object.entries(check.details.comparedValuesKg).map(([docType, val]) => (
+                                  <div
+                                    key={docType}
+                                    className="flex items-center justify-between bg-white px-2 py-1 rounded border border-slate-200"
+                                  >
+                                    <span className="font-medium text-slate-700">{docType}:</span>
+                                    <span className="font-mono text-slate-900 font-semibold">{val} kg</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => inspectDocumentSource(docType)}
+                                      className="text-[10px] text-blue-600 hover:underline flex items-center gap-0.5 font-medium ml-1"
+                                    >
+                                      Inspect <ExternalLink className="size-2.5" />
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                              {check.details?.differenceKg ? (
+                                <div className="mt-1.5 text-right font-mono font-bold text-rose-700 text-[11px]">
+                                  Difference: {check.details.differenceKg} kg
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : check.details?.difference ? (
+                            <p className="mt-1 font-mono font-medium text-rose-700 text-[11px]">
+                              Difference: {check.details.difference}
+                            </p>
+                          ) : null}
+
+                          {/* Message / Diagnostic Note */}
+                          {check.details?.note || check.details?.message ? (
+                            <p className="mt-1.5 text-[11px] text-slate-600">
+                              {check.details.note ?? check.details.message}
+                            </p>
+                          ) : null}
+
+                          {/* Active Resolution Display (Rules 7, 8, 10) */}
+                          {activeRes ? (
+                            <div className="mt-2 rounded-md bg-slate-50 border border-slate-200 p-2 text-[11px] space-y-1">
+                              <div className="flex items-center justify-between">
+                                <span className="font-semibold text-slate-800">
+                                  Resolution: {activeRes.type.replaceAll("_", " ")}
+                                </span>
+                                <span className="text-slate-500 text-[10px]">
+                                  By: {activeRes.resolvedBy?.fullName ?? activeRes.resolvedBy?.email ?? "Reviewer"}
+                                </span>
+                              </div>
+                              <p className="text-slate-700">Reason: {activeRes.reason}</p>
+                              {activeRes.evidence ? (
+                                <p className="text-slate-600 font-mono text-[10px]">
+                                  Evidence: {activeRes.evidence}
+                                </p>
+                              ) : null}
+
+                              {/* Historical Resolution Audit Trail (Rule 10) */}
+                              {check.resolutions && check.resolutions.length > 1 ? (
+                                <div className="pt-1">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setShowHistoryForCheckId(
+                                        showHistoryForCheckId === check.id ? null : check.id ?? null,
+                                      )
+                                    }
+                                    className="text-[10px] text-blue-700 underline font-medium"
+                                  >
+                                    {showHistoryForCheckId === check.id
+                                      ? "Hide Resolution History"
+                                      : `View Resolution History (${check.resolutions.length})`}
+                                  </button>
+                                  {showHistoryForCheckId === check.id ? (
+                                    <div className="mt-1 space-y-1 border-t border-slate-200 pt-1 text-[10px] text-slate-600">
+                                      {check.resolutions.map((h, i) => (
+                                        <div key={h.id || i} className="p-1 rounded bg-white border border-slate-100">
+                                          <div className="font-medium text-slate-700">
+                                            {h.type} by {h.resolvedBy?.fullName ?? h.resolvedBy?.email ?? "User"}
+                                          </div>
+                                          <div>Reason: {h.reason}</div>
+                                          {h.evidence ? <div>Evidence: {h.evidence}</div> : null}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : null}
+
+                          {/* Resolution Form or Trigger Button (Rules 3, 4, 5) */}
+                          {check.status !== "PASS" && !isReadOnly ? (
+                            resolvingCheckId === (check.id ?? check.ruleKey) ? (
+                              <div className="mt-2.5 rounded-lg border border-blue-200 bg-blue-50/70 p-3 space-y-2.5">
+                                <div className="font-semibold text-xs text-blue-950 flex items-center justify-between">
+                                  <span>Resolve Discrepancy</span>
+                                  <Badge className="bg-blue-100 text-blue-800 text-[10px]">
+                                    {check.ruleCode ?? check.ruleKey}
+                                  </Badge>
+                                </div>
+
+                                {/* Step 1: Confirmation Checkbox (Rule 3) */}
+                                <label className="flex items-start gap-2 text-xs text-slate-800 cursor-pointer bg-white p-2 rounded border border-blue-100">
+                                  <input
+                                    type="checkbox"
+                                    checked={valuesConfirmed}
+                                    onChange={(e) => setValuesConfirmed(e.target.checked)}
+                                    className="mt-0.5 rounded border-slate-300 text-blue-600"
+                                  />
+                                  <span>
+                                    I confirm that I have reviewed the compared values and inspected the source documents.
+                                  </span>
+                                </label>
+
+                                {/* Step 2: Resolution Type (Rule 4) */}
+                                <div className="space-y-1">
+                                  <span className="text-[11px] font-semibold text-slate-700">
+                                    Select Resolution Type:
+                                  </span>
+                                  <div className="grid gap-1.5 sm:grid-cols-3 text-xs">
+                                    {(
+                                      [
+                                        "SOURCE_CORRECTED",
+                                        "DOCUMENT_REPLACEMENT",
+                                        "ACCEPTED_EXCEPTION",
+                                      ] as const
+                                    ).map((t) => (
+                                      <label
+                                        key={t}
+                                        className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer ${
+                                          resolutionType === t
+                                            ? "border-blue-500 bg-blue-100/40"
+                                            : "border-slate-200 bg-white"
+                                        }`}
+                                      >
+                                        <input
+                                          type="radio"
+                                          name={`resolution-type-${check.id ?? check.ruleKey}`}
+                                          checked={resolutionType === t}
+                                          onChange={() => setResolutionType(t)}
+                                        />
+                                        <span className="text-[10px] font-medium text-slate-800">
+                                          {t === "SOURCE_CORRECTED"
+                                            ? "Source Corrected"
+                                            : t === "DOCUMENT_REPLACEMENT"
+                                              ? "Doc Replacement"
+                                              : "Accepted Exception"}
+                                        </span>
+                                      </label>
+                                    ))}
+                                  </div>
+                                </div>
+
+                                {/* Step 3: Reason (Rule 5) */}
+                                <Input
+                                  placeholder="Resolution reason (required, min 5 chars)"
+                                  className="h-8 bg-white text-xs"
+                                  value={resolutionReason}
+                                  onChange={(e) => setResolutionReason(e.target.value)}
+                                />
+
+                                {/* Step 4: Evidence (Rule 5) */}
+                                <Input
+                                  placeholder={
+                                    resolutionType === "ACCEPTED_EXCEPTION"
+                                      ? "Evidence / Query Reference (required, e.g. TKT-9821 or vendor email)"
+                                      : "Evidence / Query Reference (optional)"
+                                  }
+                                  className={`h-8 bg-white text-xs ${
+                                    resolutionType === "ACCEPTED_EXCEPTION" &&
+                                    (!resolutionEvidence || resolutionEvidence.trim().length < 3)
+                                      ? "border-amber-400"
+                                      : ""
+                                  }`}
+                                  value={resolutionEvidence}
+                                  onChange={(e) => setResolutionEvidence(e.target.value)}
+                                />
+
+                                <div className="flex justify-end gap-2 pt-1">
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-7 text-xs"
+                                    onClick={() => {
+                                      setResolvingCheckId(null);
+                                      setResolutionReason("");
+                                      setResolutionEvidence("");
+                                      setValuesConfirmed(false);
+                                    }}
+                                  >
+                                    Cancel
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    className="h-7 text-xs bg-blue-700 text-white hover:bg-blue-800"
+                                    disabled={
+                                      busy ||
+                                      !valuesConfirmed ||
+                                      resolutionReason.trim().length < 5 ||
+                                      (resolutionType === "ACCEPTED_EXCEPTION" &&
+                                        resolutionEvidence.trim().length < 3)
+                                    }
+                                    onClick={() => void handleResolveCheck(check)}
+                                  >
+                                    Submit Resolution
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="mt-2 flex justify-end">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-6 text-[11px] border-blue-200 text-blue-800 hover:bg-blue-50"
+                                  onClick={() => {
+                                    setResolvingCheckId(check.id ?? check.ruleKey);
+                                    setValuesConfirmed(false);
+                                    setResolutionReason("");
+                                    setResolutionEvidence("");
+                                    setResolutionType("SOURCE_CORRECTED");
+                                  }}
+                                >
+                                  {activeRes ? "Update Resolution" : "Resolve Discrepancy"}
+                                </Button>
+                              </div>
+                            )
+                          ) : null}
                         </div>
-                        {check.details?.note || check.details?.message ? (
-                          <p className="mt-1 text-[11px] text-slate-600">
-                            {check.details.note ?? check.details.message}
-                          </p>
-                        ) : null}
-                        {check.details?.difference || check.details?.differenceKg ? (
-                          <p className="mt-0.5 text-[11px] font-mono font-medium text-rose-700">
-                            Difference: {check.details.differenceKg ?? check.details.difference}{" "}
-                            {check.ruleKey.includes("weight") ? "kg" : ""}
-                          </p>
-                        ) : null}
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </CardContent>
               </Card>

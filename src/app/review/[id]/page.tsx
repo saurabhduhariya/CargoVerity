@@ -171,6 +171,26 @@ export default async function ReviewPage({
       status: r.status as "PASS" | "MISMATCH" | "INCOMPLETE" | "NOT_APPLICABLE",
       severity: r.severity as "BLOCKING" | "WARNING",
       effectiveStatus: r.effectiveStatus,
+      activeResolution: r.activeResolution
+        ? {
+            id: r.activeResolution.id,
+            type: r.activeResolution.type,
+            reason: r.activeResolution.reason,
+            evidence: r.activeResolution.evidence,
+            managerApprovedAt: r.activeResolution.managerApprovedAt,
+            createdAt: r.activeResolution.createdAt,
+            resolvedBy: r.activeResolution.resolvedBy,
+          }
+        : null,
+      resolutions: (r.resolutions ?? []).map((res) => ({
+        id: res.id,
+        type: res.type,
+        reason: res.reason,
+        evidence: res.evidence,
+        managerApprovedAt: res.managerApprovedAt,
+        createdAt: res.createdAt,
+        resolvedBy: res.resolvedBy,
+      })),
       details: (r.details as Record<string, unknown>) ?? {},
     })),
   };
