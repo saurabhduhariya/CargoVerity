@@ -14,6 +14,7 @@ import {
   Eye,
   FileSpreadsheet,
   FileText,
+  History,
   Lock,
   Package,
   PlusCircle,
@@ -22,6 +23,8 @@ import {
   Save,
   Scale,
   Send,
+  ShieldCheck,
+  XCircle,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -117,6 +120,16 @@ export type ReviewWorkspaceCrossCheck = {
   };
 };
 
+export type ReviewWorkspaceAuditEvent = {
+  id: string;
+  action: string;
+  entityType: string;
+  actorEmail?: string | null;
+  actorRole?: string | null;
+  metadata?: Record<string, unknown> | null;
+  createdAt: string | Date;
+};
+
 export type ReviewWorkspaceInitialData = {
   shipment: {
     id: string;
@@ -127,8 +140,10 @@ export type ReviewWorkspaceInitialData = {
     exporterName?: string | null;
     supplier?: { id: string; name: string } | null;
   };
+  currentUserRole?: "EXECUTIVE" | "MANAGER";
   documents: ReviewWorkspaceDocument[];
   crossChecks: ReviewWorkspaceCrossCheck[];
+  auditHistory?: ReviewWorkspaceAuditEvent[];
 };
 
 export type FieldCategory = "parties" | "identifiers" | "commercial" | "logistics" | "other";
@@ -361,6 +376,19 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
   const [submitting, setSubmitting] = useState(false);
   const [submitBlockers, setSubmitBlockers] = useState<string[] | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+
+  // Manager Decision & Review State (Week 5 Step 2)
+  const isManager = initialData.currentUserRole === "MANAGER";
+  const [managerComment, setManagerComment] = useState("");
+  const [managerActionBusy, setManagerActionBusy] = useState(false);
+  const [showManagerAudit, setShowManagerAudit] = useState(false);
+  const auditHistory = initialData.auditHistory ?? [];
+
+  const modifiedFields = documents.flatMap((doc) =>
+    doc.fields
+      .filter((f) => f.modelValue !== null && f.modelValue !== f.currentValue)
+      .map((f) => ({ ...f, docType: doc.docType })),
+  );
 
   const activeDoc = documents.find((d) => d.docType === activeDocType);
   const maxPages = activeDoc?.pageCount ?? 1;
@@ -824,6 +852,40 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
     }
   }
 
+  async function handleManagerDecision(decision: "APPROVE" | "REJECT") {
+    setManagerActionBusy(true);
+    setStatusMessage(null);
+
+    try {
+      const response = await fetch(`/api/shipments/${shipment.id}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          decision,
+          comment: managerComment,
+          expectedRevision: shipmentRevision,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || `Failed to ${decision.toLowerCase()} shipment.`);
+      }
+
+      setShipmentStatus(decision === "APPROVE" ? "APPROVED" : "NEEDS_REVIEW");
+      setStatusMessage(
+        decision === "APPROVE"
+          ? "Shipment successfully approved! Ready for export."
+          : "Shipment rejected and returned to Needs Review.",
+      );
+      setManagerComment("");
+    } catch (err) {
+      setStatusMessage(err instanceof Error ? err.message : "Manager action failed.");
+    } finally {
+      setManagerActionBusy(false);
+    }
+  }
+
   const activePageData = activeDoc?.pages.find((p) => p.pageNumber === currentPage);
   const isPageUnreadable = activePageData && (!activePageData.isReadable || activePageData.manualEntryRequired);
 
@@ -1038,6 +1100,175 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
               ))}
             </ul>
           </div>
+        ) : null}
+
+        {/* Manager Decision & Review Panel (Week 5 Step 2) */}
+        {isManager || shipmentStatus === "READY_FOR_APPROVAL" ? (
+          <Card className="mb-6 border-indigo-200 bg-gradient-to-br from-indigo-50/50 via-white to-slate-50 shadow-sm">
+            <CardHeader className="border-b border-indigo-100 bg-indigo-50/60 px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="size-4 text-indigo-700" />
+                  <CardTitle className="text-sm font-bold text-indigo-950">
+                    Manager Review & Decision Flow
+                  </CardTitle>
+                  <Badge className="bg-indigo-100 text-indigo-800 border-indigo-300 text-xs">
+                    Revision {shipmentRevision}
+                  </Badge>
+                  {shipmentStatus === "READY_FOR_APPROVAL" ? (
+                    <Badge className="bg-amber-100 text-amber-900 border-amber-300 text-xs animate-pulse">
+                      Pending Manager Decision
+                    </Badge>
+                  ) : null}
+                </div>
+                {auditHistory && auditHistory.length > 0 ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs border-indigo-200 text-indigo-900 hover:bg-indigo-100"
+                    onClick={() => setShowManagerAudit(!showManagerAudit)}
+                  >
+                    <History className="size-3 mr-1" />
+                    {showManagerAudit ? "Hide Audit History" : `View Audit History (${auditHistory.length})`}
+                  </Button>
+                ) : null}
+              </div>
+            </CardHeader>
+            <CardContent className="p-4 space-y-4">
+              {/* Summary Stats: Documents, AI Diffs, Exceptions (Rules 2, 3, 4) */}
+              <div className="grid gap-3 sm:grid-cols-3">
+                {/* Rule 2: Current documents and extraction status */}
+                <div className="rounded-lg border border-slate-200 bg-white p-3">
+                  <span className="text-[11px] font-semibold uppercase text-slate-500">
+                    Documents ({documents.length})
+                  </span>
+                  <div className="mt-1 space-y-1 text-xs">
+                    {documents.map((d) => (
+                      <div key={d.id} className="flex items-center justify-between">
+                        <span className="font-medium text-slate-700 truncate max-w-[130px]">{d.docType} v{d.documentVersion}</span>
+                        <Badge className="text-[10px] bg-slate-100 text-slate-700 border-slate-200">
+                          {d.extractionStatus}
+                        </Badge>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Rule 3: AI-to-current value differences */}
+                <div className="rounded-lg border border-slate-200 bg-white p-3">
+                  <span className="text-[11px] font-semibold uppercase text-slate-500">
+                    AI vs Human Edits ({modifiedFields.length})
+                  </span>
+                  <p className="mt-1 text-xs text-slate-600">
+                    {modifiedFields.length === 0
+                      ? "No manual edits made (all values match initial AI proposals)."
+                      : `${modifiedFields.length} field(s) corrected or manually entered.`}
+                  </p>
+                  {modifiedFields.length > 0 ? (
+                    <div className="mt-1.5 max-h-20 overflow-y-auto space-y-1 text-[11px]">
+                      {modifiedFields.map((f) => (
+                        <div key={f.id} className="text-slate-700">
+                          <span className="font-semibold">{formatFieldLabel(f.fieldKey)}:</span>{" "}
+                          <span className="line-through text-slate-400">{f.modelValue ?? "empty"}</span> →{" "}
+                          <span className="font-bold text-indigo-700">{f.currentValue}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+
+                {/* Rule 4: Unresolved & Human-Cleared Checks */}
+                <div className="rounded-lg border border-slate-200 bg-white p-3">
+                  <span className="text-[11px] font-semibold uppercase text-slate-500">
+                    Cross-Checks Status
+                  </span>
+                  <div className="mt-1 flex flex-wrap gap-1 text-[11px]">
+                    <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-medium">{passedCount} Passed</span>
+                    <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 font-medium">{humanClearedCount} Cleared</span>
+                    {pendingApprovalCount > 0 ? (
+                      <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 font-medium animate-pulse">{pendingApprovalCount} Pending Approval</span>
+                    ) : null}
+                    {mismatchCount > 0 ? (
+                      <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-medium">{mismatchCount} Mismatch</span>
+                    ) : null}
+                  </div>
+                  {pendingApprovalCount > 0 ? (
+                    <p className="mt-1.5 text-[11px] text-amber-900 font-medium">
+                      ⚠️ {pendingApprovalCount} exception(s) awaiting manager sign-off.
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+
+              {/* Rule 5: Audit History Table (Collapsible) */}
+              {showManagerAudit && auditHistory && auditHistory.length > 0 ? (
+                <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
+                  <h4 className="text-xs font-bold text-slate-800">Correction & Resolution Audit Trail</h4>
+                  <div className="max-h-48 overflow-y-auto divide-y divide-slate-100 text-[11px]">
+                    {auditHistory.map((item) => (
+                      <div key={item.id} className="py-1.5 flex items-center justify-between">
+                        <div>
+                          <Badge className="mr-2 text-[10px] bg-slate-100 text-slate-800 border-slate-200">{item.action}</Badge>
+                          <span className="text-slate-600">{item.actorEmail || "System"}</span>
+                          {item.metadata && typeof item.metadata === "object" && "comment" in item.metadata ? (
+                            <span className="ml-2 italic text-slate-500">&ldquo;{String(item.metadata.comment)}&rdquo;</span>
+                          ) : null}
+                        </div>
+                        <span className="text-slate-400 font-mono text-[10px]">
+                          {new Date(item.createdAt).toLocaleTimeString()}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {/* Manager Actions (Rules 6, 7, 8, 10, 11) */}
+              {isManager && shipmentStatus !== "APPROVED" && shipmentStatus !== "EXPORTED" ? (
+                <div className="rounded-lg border border-indigo-200 bg-white p-3 space-y-3">
+                  <div className="space-y-1">
+                    <label htmlFor="manager-decision-comment" className="text-xs font-semibold text-slate-800">
+                      Manager Decision Comment {pendingApprovalCount > 0 ? "(Mandatory for exception approval)" : "(Mandatory for rejection)"}
+                    </label>
+                    <textarea
+                      id="manager-decision-comment"
+                      value={managerComment}
+                      onChange={(e) => setManagerComment(e.target.value)}
+                      placeholder={
+                        pendingApprovalCount > 0
+                          ? "Reason for approving accepted exceptions (minimum 5 characters)..."
+                          : "Enter decision comments (minimum 5 characters if rejecting)..."
+                      }
+                      rows={2}
+                      className="w-full rounded-md border border-slate-300 p-2 text-xs focus:border-indigo-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 border-rose-300 text-rose-700 hover:bg-rose-50 hover:text-rose-800 text-xs font-medium"
+                      disabled={managerActionBusy}
+                      onClick={() => void handleManagerDecision("REJECT")}
+                    >
+                      <XCircle className="size-3.5 mr-1 text-rose-600" />
+                      Reject Shipment (Return to Review)
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="h-8 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold"
+                      disabled={managerActionBusy}
+                      onClick={() => void handleManagerDecision("APPROVE")}
+                    >
+                      <CheckCircle2 className="size-3.5 mr-1" />
+                      Approve Shipment
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
         ) : null}
 
         {isReadOnly ? (

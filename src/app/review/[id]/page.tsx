@@ -153,6 +153,14 @@ export default async function ReviewPage({
     }),
   );
 
+  // 5. Load audit trail for manager review and compliance (Rule 5)
+  const auditEvents = await prisma.auditEvent.findMany({
+    where: { shipmentId: shipment.id },
+    orderBy: { createdAt: "desc" },
+    take: 25,
+    include: { actor: { select: { email: true, role: true } } },
+  });
+
   const initialData: ReviewWorkspaceInitialData = {
     shipment: {
       id: shipment.id,
@@ -163,6 +171,7 @@ export default async function ReviewPage({
       exporterName: shipment.exporterName,
       supplier: shipment.supplier,
     },
+    currentUserRole: appUser.role,
     documents,
     crossChecks: (latestRun?.results ?? []).map((r) => ({
       id: r.id,
@@ -192,6 +201,15 @@ export default async function ReviewPage({
         resolvedBy: res.resolvedBy,
       })),
       details: (r.details as Record<string, unknown>) ?? {},
+    })),
+    auditHistory: auditEvents.map((e) => ({
+      id: e.id,
+      action: e.action,
+      entityType: e.entityType,
+      actorEmail: e.actor?.email ?? null,
+      actorRole: e.actor?.role ?? null,
+      metadata: (e.metadata as Record<string, unknown>) ?? null,
+      createdAt: e.createdAt,
     })),
   };
 
