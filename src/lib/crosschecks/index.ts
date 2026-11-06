@@ -1,7 +1,15 @@
 import Decimal from "decimal.js";
 import { checkInvoiceArithmetic } from "./invoice-arithmetic";
+import {
+  checkGrossNetSanity,
+  checkGrossWeight,
+  checkPackageCount,
+  PackageCandidate,
+  WeightFieldCandidate,
+} from "./weight-package-checks";
 
 export * from "./invoice-arithmetic";
+export * from "./weight-package-checks";
 
 export type CrossCheckStatus = "PASS" | "MISMATCH" | "INCOMPLETE" | "NOT_APPLICABLE";
 export type CrossCheckDocumentType = "INVOICE" | "PACKING_LIST" | "BILL_OF_LADING";
@@ -66,28 +74,8 @@ function decimal(value: string | number | null | undefined) {
   }
 }
 
-function normalizeWeight(value: string | number | null | undefined, unit: string | null | undefined) {
-  const parsed = decimal(value);
-  if (!parsed) return null;
-  const normalized = (unit ?? "kg").toLowerCase().replaceAll(".", "");
-  if (["g", "gram", "grams"].includes(normalized)) return parsed.dividedBy(1000);
-  if (["lb", "lbs", "pound", "pounds"].includes(normalized)) return parsed.times(0.45359237);
-  if (["kg", "kgs", "kilogram", "kilograms"].includes(normalized)) return parsed;
-  return null;
-}
-
 function result(ruleKey: string, status: CrossCheckStatus, details: Record<string, unknown>): CrossCheckResult {
   return { ruleKey, status, details };
-}
-
-function compareDecimal(
-  ruleKey: string,
-  left: Decimal | null,
-  right: Decimal | null,
-  details: Record<string, unknown>,
-) {
-  if (!left || !right) return result(ruleKey, "INCOMPLETE", details);
-  return result(ruleKey, left.eq(right) ? "PASS" : "MISMATCH", details);
 }
 
 export function runCrossChecks(documents: CrossCheckDocument[]): CrossCheckResult[] {
@@ -151,39 +139,94 @@ export function runCrossChecks(documents: CrossCheckDocument[]): CrossCheckResul
     });
   }
 
-  const weightDocuments = [packingList, billOfLading].filter(Boolean) as CrossCheckDocument[];
-  if (weightDocuments.length < 2) {
-    results.push(result("gross_weight_comparison", "NOT_APPLICABLE", { reason: "fewer_than_two_weight_documents" }));
-  } else {
-    const left = weightDocuments[0];
-    const right = weightDocuments[1];
-    const leftValue = field(left, "grossWeight");
-    const rightValue = field(right, "grossWeight");
-    results.push(
-      compareDecimal(
-        "gross_weight_comparison",
-        leftValue ? normalizeWeight(leftValue, left.fields.grossWeight?.unit) : null,
-        rightValue ? normalizeWeight(rightValue, right.fields.grossWeight?.unit) : null,
-        { left: leftValue, right: rightValue },
-      ),
-    );
+  // 2. Gross Weight Comparison (CHK_GROSS_WEIGHT)
+  const grossWeightCandidates: WeightFieldCandidate[] = [];
+  if (invoice) {
+    grossWeightCandidates.push({
+      documentType: "INVOICE",
+      fieldId: invoice.fields.grossWeight?.id,
+      value: invoice.fields.grossWeight?.value,
+      unit: invoice.fields.grossWeight?.unit,
+      sourceQuote: invoice.fields.grossWeight?.sourceQuote,
+    });
+  }
+  if (packingList) {
+    grossWeightCandidates.push({
+      documentType: "PACKING_LIST",
+      fieldId: packingList.fields.grossWeight?.id,
+      value: packingList.fields.grossWeight?.value,
+      unit: packingList.fields.grossWeight?.unit,
+      sourceQuote: packingList.fields.grossWeight?.sourceQuote,
+    });
+  }
+  if (billOfLading) {
+    grossWeightCandidates.push({
+      documentType: "BILL_OF_LADING",
+      fieldId: billOfLading.fields.grossWeight?.id,
+      value: billOfLading.fields.grossWeight?.value,
+      unit: billOfLading.fields.grossWeight?.unit,
+      sourceQuote: billOfLading.fields.grossWeight?.sourceQuote,
+    });
   }
 
-  const packageDocuments = documents.filter((document) => field(document, "packageCount") !== null);
-  if (packageDocuments.length < 2) {
-    results.push(result("package_count_comparison", "NOT_APPLICABLE", { reason: "fewer_than_two_package_documents" }));
-  } else {
-    const values = packageDocuments.map((document) => decimal(field(document, "packageCount")));
-    results.push(
-      values.some((value) => !value)
-        ? result("package_count_comparison", "INCOMPLETE", { values: values.map((value) => value?.toString() ?? null) })
-        : result(
-            "package_count_comparison",
-            values.every((value) => value?.eq(values[0] as Decimal)) ? "PASS" : "MISMATCH",
-            { values: values.map((value) => value?.toString()) },
-          ),
-    );
+  const grossWeightResult = checkGrossWeight({
+    candidates: grossWeightCandidates,
+    requiredDocuments: ["PACKING_LIST", "BILL_OF_LADING"],
+  });
+  results.push({
+    ruleKey: grossWeightResult.ruleKey,
+    status: grossWeightResult.status,
+    details: grossWeightResult.details,
+  });
+
+  // 3. Package Count Comparison (CHK_PACKAGE_COUNT)
+  const packageCandidates: PackageCandidate[] = [];
+  if (
+    invoice &&
+    invoice.fields.packageCount &&
+    invoice.fields.packageCount.value !== null &&
+    invoice.fields.packageCount.value !== undefined &&
+    String(invoice.fields.packageCount.value).trim().length > 0
+  ) {
+    packageCandidates.push({
+      documentType: "INVOICE",
+      fieldId: invoice.fields.packageCount.id,
+      value: invoice.fields.packageCount.value,
+      packageType: invoice.fields.packageCount.unit,
+      unit: invoice.fields.packageCount.unit,
+      sourceQuote: invoice.fields.packageCount.sourceQuote,
+    });
   }
+  if (packingList) {
+    packageCandidates.push({
+      documentType: "PACKING_LIST",
+      fieldId: packingList.fields.packageCount?.id,
+      value: packingList.fields.packageCount?.value,
+      packageType: packingList.fields.packageCount?.unit,
+      unit: packingList.fields.packageCount?.unit,
+      sourceQuote: packingList.fields.packageCount?.sourceQuote,
+    });
+  }
+  if (billOfLading) {
+    packageCandidates.push({
+      documentType: "BILL_OF_LADING",
+      fieldId: billOfLading.fields.packageCount?.id,
+      value: billOfLading.fields.packageCount?.value,
+      packageType: billOfLading.fields.packageCount?.unit,
+      unit: billOfLading.fields.packageCount?.unit,
+      sourceQuote: billOfLading.fields.packageCount?.sourceQuote,
+    });
+  }
+
+  const packageCountResult = checkPackageCount({
+    candidates: packageCandidates,
+    requiredDocuments: ["PACKING_LIST", "BILL_OF_LADING"],
+  });
+  results.push({
+    ruleKey: packageCountResult.ruleKey,
+    status: packageCountResult.status,
+    details: packageCountResult.details,
+  });
 
   if (!invoice || !packingList) {
     results.push(result("invoice_quantity_vs_packing_list", "NOT_APPLICABLE", { reason: "required_documents_missing" }));
@@ -212,21 +255,34 @@ export function runCrossChecks(documents: CrossCheckDocument[]): CrossCheckResul
     );
   }
 
-  const netWeight = packingList ? field(packingList, "netWeight") : null;
-  const grossWeight = packingList ? field(packingList, "grossWeight") : null;
-  if (!netWeight || !grossWeight) {
-    results.push(result("gross_weight_vs_net_weight", "INCOMPLETE", { reason: "weight_missing" }));
+  // 5. Gross vs Net Weight Sanity (CHK_GROSS_NET_SANITY)
+  if (!packingList) {
+    results.push(result("gross_weight_vs_net_weight", "NOT_APPLICABLE", { reason: "packing_list_missing" }));
   } else {
-    const net = normalizeWeight(netWeight, packingList?.fields.netWeight?.unit);
-    const gross = normalizeWeight(grossWeight, packingList?.fields.grossWeight?.unit);
-    results.push(
-      !net || !gross
-        ? result("gross_weight_vs_net_weight", "INCOMPLETE", { reason: "unknown_weight_unit" })
-        : result("gross_weight_vs_net_weight", gross.gte(net) ? "PASS" : "MISMATCH", {
-            netWeight: net.toString(),
-            grossWeight: gross.toString(),
-          }),
-    );
+    const sanityResult = checkGrossNetSanity({
+      grossWeight: packingList.fields.grossWeight
+        ? {
+            id: packingList.fields.grossWeight.id,
+            value: packingList.fields.grossWeight.value,
+            unit: packingList.fields.grossWeight.unit,
+            sourceQuote: packingList.fields.grossWeight.sourceQuote,
+          }
+        : null,
+      netWeight: packingList.fields.netWeight
+        ? {
+            id: packingList.fields.netWeight.id,
+            value: packingList.fields.netWeight.value,
+            unit: packingList.fields.netWeight.unit,
+            sourceQuote: packingList.fields.netWeight.sourceQuote,
+          }
+        : null,
+      documentType: "PACKING_LIST",
+    });
+    results.push({
+      ruleKey: sanityResult.ruleKey,
+      status: sanityResult.status,
+      details: sanityResult.details,
+    });
   }
 
   const partyValues = [field(invoice, "exporter"), field(packingList, "exporter"), field(billOfLading, "exporter")].filter(Boolean) as string[];
