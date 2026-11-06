@@ -15,6 +15,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     const shipment = await prisma.shipment.findFirst({
       where: { id, ...(appUser.role === "MANAGER" ? {} : { createdById: appUser.id }) },
       include: {
+        supplier: true,
         documents: {
           where: { isCurrent: true },
           include: {
@@ -25,7 +26,10 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     });
     if (!shipment) throw new Error("Shipment not found or inaccessible.");
 
-    const approval = await prisma.approval.findUnique({ where: { shipmentId_revision: { shipmentId: id, revision: shipment.currentRevision } } });
+    const approval = await prisma.approval.findUnique({
+      where: { shipmentId_revision: { shipmentId: id, revision: shipment.currentRevision } },
+      include: { approvedBy: { select: { email: true, fullName: true } } },
+    });
     const checks = await prisma.crossCheckResult.findMany({ where: { shipmentId: id, revision: shipment.currentRevision } });
     const latestChecks = selectLatestCrossChecks(checks);
     const guard = canExport({
@@ -43,6 +47,13 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
         const run = document.extractionRuns[0];
         return run ? [{ docType: document.docType, fields: run.fields, lineItems: run.lineItems }] : [];
       }),
+      {
+        supplierName: shipment.supplier?.name ?? null,
+        importerName: shipment.importerName ?? null,
+        approvedBy: approval?.approvedBy?.email ?? approval?.approvedBy?.fullName ?? null,
+        approvedAt: approval?.approvedAt ?? null,
+        approvedRevision: approval?.revision ?? null,
+      },
     );
 
     if (new URL(request.url).searchParams.get("preview") === "1") {
@@ -50,6 +61,9 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
         fileName: `${shipment.reference}-${getEnv().EXPORT_PROFILE_ID}.csv`,
         headers: exportData.headers,
         rows: exportData.rows,
+        profileId: exportData.profileId,
+        profileVersion: exportData.profileVersion,
+        assumptionLabel: exportData.assumptionLabel,
       });
     }
 
