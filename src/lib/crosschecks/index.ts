@@ -1,19 +1,29 @@
 import Decimal from "decimal.js";
+import { checkInvoiceArithmetic } from "./invoice-arithmetic";
+
+export * from "./invoice-arithmetic";
 
 export type CrossCheckStatus = "PASS" | "MISMATCH" | "INCOMPLETE" | "NOT_APPLICABLE";
 export type CrossCheckDocumentType = "INVOICE" | "PACKING_LIST" | "BILL_OF_LADING";
 
 export type CrossCheckField = {
-  value: string | null;
+  id?: string;
+  value: string | number | null;
   unit?: string | null;
+  currency?: string | null;
+  sourceQuote?: string | null;
 };
 
 export type CrossCheckLineItem = {
+  id?: string;
+  lineNumber?: number;
   description: string | null;
-  quantity: string | null;
+  quantity: string | number | null;
   quantityUnit: string | null;
-  lineTotal: string | null;
+  unitPrice?: string | number | null;
+  lineTotal: string | number | null;
   currency: string | null;
+  sourceQuote?: string | null;
 };
 
 export type CrossCheckDocument = {
@@ -44,17 +54,19 @@ function field(document: CrossCheckDocument | undefined, key: string) {
   return document?.fields[key]?.value ?? null;
 }
 
-function decimal(value: string | null) {
-  if (value === null || value.trim() === "") return null;
+function decimal(value: string | number | null | undefined) {
+  if (value === null || value === undefined) return null;
+  const str = String(value).trim();
+  if (str === "") return null;
   try {
-    const parsed = new Decimal(value.replaceAll(",", "").trim());
+    const parsed = new Decimal(str.replaceAll(",", ""));
     return parsed.isFinite() ? parsed : null;
   } catch {
     return null;
   }
 }
 
-function normalizeWeight(value: string, unit: string | null | undefined) {
+function normalizeWeight(value: string | number | null | undefined, unit: string | null | undefined) {
   const parsed = decimal(value);
   if (!parsed) return null;
   const normalized = (unit ?? "kg").toLowerCase().replaceAll(".", "");
@@ -87,25 +99,56 @@ export function runCrossChecks(documents: CrossCheckDocument[]): CrossCheckResul
   if (!invoice) {
     results.push(result("invoice_line_total", "NOT_APPLICABLE", { reason: "invoice_missing" }));
   } else {
-    const invoiceTotal = decimal(field(invoice, "invoiceTotal"));
-    const currency = field(invoice, "currency");
-    const lineCurrencies = invoice.lineItems.map((item) => item.currency).filter(Boolean);
-    const currencyComparable = lineCurrencies.every((item) => item === currency || !item || !currency);
-    const lineSum = invoice.lineItems.reduce<Decimal | null>((sum, item) => {
-      const value = decimal(item.lineTotal);
-      if (!value) return sum;
-      return (sum ?? new Decimal(0)).plus(value);
-    }, null);
+    const arithmeticResult = checkInvoiceArithmetic({
+      invoiceTotal: invoice.fields.invoiceTotal
+        ? {
+            id: invoice.fields.invoiceTotal.id,
+            value: invoice.fields.invoiceTotal.value,
+            unit: invoice.fields.invoiceTotal.unit,
+            currency: invoice.fields.invoiceTotal.currency,
+            sourceQuote: invoice.fields.invoiceTotal.sourceQuote,
+          }
+        : undefined,
+      currency: invoice.fields.currency
+        ? {
+            id: invoice.fields.currency.id,
+            value: invoice.fields.currency.value,
+            sourceQuote: invoice.fields.currency.sourceQuote,
+          }
+        : undefined,
+      taxAmount: invoice.fields.taxAmount
+        ? { id: invoice.fields.taxAmount.id, value: invoice.fields.taxAmount.value }
+        : undefined,
+      freightAmount: invoice.fields.freightAmount
+        ? { id: invoice.fields.freightAmount.id, value: invoice.fields.freightAmount.value }
+        : undefined,
+      insuranceAmount: invoice.fields.insuranceAmount
+        ? { id: invoice.fields.insuranceAmount.id, value: invoice.fields.insuranceAmount.value }
+        : undefined,
+      discountAmount: invoice.fields.discountAmount
+        ? { id: invoice.fields.discountAmount.id, value: invoice.fields.discountAmount.value }
+        : undefined,
+      otherCharges: invoice.fields.otherCharges
+        ? { id: invoice.fields.otherCharges.id, value: invoice.fields.otherCharges.value }
+        : undefined,
+      lineItems: invoice.lineItems.map((item, idx) => ({
+        id: item.id,
+        lineNumber: item.lineNumber ?? idx + 1,
+        description: item.description,
+        quantity: item.quantity,
+        quantityUnit: item.quantityUnit,
+        unitPrice: item.unitPrice,
+        currency: item.currency,
+        lineTotal: item.lineTotal,
+        sourceQuote: item.sourceQuote,
+      })),
+    });
 
-    results.push(
-      !currencyComparable
-        ? result("invoice_line_total", "INCOMPLETE", { reason: "currency_mismatch" })
-        : compareDecimal("invoice_line_total", lineSum, invoiceTotal, {
-            lineSum: lineSum?.toString() ?? null,
-            invoiceTotal: invoiceTotal?.toString() ?? null,
-            currency,
-          }),
-    );
+    results.push({
+      ruleKey: arithmeticResult.ruleKey,
+      status: arithmeticResult.status,
+      details: arithmeticResult.details,
+    });
   }
 
   const weightDocuments = [packingList, billOfLading].filter(Boolean) as CrossCheckDocument[];

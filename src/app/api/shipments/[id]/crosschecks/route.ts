@@ -36,13 +36,27 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
       if (!run) return [];
       return [{
         docType: document.docType,
-        fields: Object.fromEntries(run.fields.map((field) => [field.fieldKey, { value: field.currentValue, unit: field.unit }])),
+        fields: Object.fromEntries(
+          run.fields.map((field) => [
+            field.fieldKey,
+            {
+              id: field.id,
+              value: field.currentValue,
+              unit: field.unit,
+              sourceQuote: field.sourceQuote,
+            },
+          ]),
+        ),
         lineItems: run.lineItems.map((item) => ({
+          id: item.id,
+          lineNumber: item.lineNumber,
           description: item.description,
           quantity: item.quantity?.toString() ?? null,
           quantityUnit: item.quantityUnit,
+          unitPrice: item.unitPrice?.toString() ?? null,
           lineTotal: item.lineTotal?.toString() ?? null,
           currency: item.currency,
+          sourceQuote: item.sourceQuote,
         })),
       }];
     }));
