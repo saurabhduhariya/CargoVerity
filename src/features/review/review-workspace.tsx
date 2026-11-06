@@ -12,6 +12,8 @@ import {
   ChevronRight,
   ExternalLink,
   Eye,
+  FileCheck,
+  FileDown,
   FileSpreadsheet,
   FileText,
   History,
@@ -33,6 +35,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  ExportPreviewDialog,
+} from "@/features/review/export-preview-dialog";
+import type { ExportRecordSummary } from "@/lib/export/preview";
 
 export type ReviewWorkspaceField = {
   id: string;
@@ -384,6 +390,10 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
   const [showManagerAudit, setShowManagerAudit] = useState(false);
   const auditHistory = initialData.auditHistory ?? [];
 
+  // Export Preview & Guard State (Week 5 Step 5)
+  const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
+  const [, setRecentExportRecord] = useState<ExportRecordSummary | null>(null);
+
   const modifiedFields = documents.flatMap((doc) =>
     doc.fields
       .filter((f) => f.modelValue !== null && f.modelValue !== f.currentValue)
@@ -468,7 +478,7 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
       }
       setStatusMessage(`Navigated to uncertain field: ${formatFieldLabel(nextField.fieldKey)}`);
     }
-  }, [activeDoc?.fields]);
+  }, [activeDoc?.fields, setStatusMessage]);
 
   // Keyboard navigation shortcuts
   useEffect(() => {
@@ -979,6 +989,38 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
             >
               <RefreshCw className="size-3 mr-1" /> Re-check
             </Button>
+
+            {/* Week 5 Step 5: Export Preview & Guarded Download Trigger */}
+            <Button
+              size="sm"
+              variant={shipmentStatus === "APPROVED" ? "default" : "outline"}
+              className={`h-7 text-xs ${
+                shipmentStatus === "APPROVED"
+                  ? "bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-xs"
+                  : shipmentStatus === "EXPORTED"
+                    ? "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                    : "border-slate-300 text-slate-700 hover:bg-slate-50"
+              }`}
+              onClick={() => setIsExportDialogOpen(true)}
+            >
+              {shipmentStatus === "EXPORTED" ? (
+                <>
+                  <FileCheck className="size-3 mr-1 text-emerald-600" />
+                  Exported CSV
+                </>
+              ) : shipmentStatus === "APPROVED" ? (
+                <>
+                  <FileDown className="size-3 mr-1 text-white" />
+                  Export CSV
+                </>
+              ) : (
+                <>
+                  <FileDown className="size-3 mr-1 text-slate-500" />
+                  Export Preview
+                </>
+              )}
+            </Button>
+
             {shipmentStatus !== "READY_FOR_APPROVAL" &&
             shipmentStatus !== "APPROVED" &&
             shipmentStatus !== "EXPORTED" ? (
@@ -1002,6 +1044,30 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
 
       {/* Main Workspace Canvas */}
       <main className="mx-auto max-w-7xl px-4 py-5 sm:px-6">
+        {/* Approved Shipment Ready for Export Banner (Week 5 Step 5) */}
+        {shipmentStatus === "APPROVED" && (
+          <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50/90 p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs text-emerald-950 shadow-xs">
+            <div className="flex items-center gap-2.5">
+              <ShieldCheck className="size-5 text-emerald-600 shrink-0" />
+              <div>
+                <strong className="block text-emerald-900 font-semibold">
+                  Shipment Approved & Ready for Customs Export
+                </strong>
+                <span className="text-emerald-700">
+                  Manager approval is recorded for revision {shipmentRevision}. You can preview the demo-v1 mapping and generate the official CSV.
+                </span>
+              </div>
+            </div>
+            <Button
+              size="sm"
+              className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
+              onClick={() => setIsExportDialogOpen(true)}
+            >
+              <FileDown className="size-3.5 mr-1" />
+              Preview & Download CSV
+            </Button>
+          </div>
+        )}
         {/* Document Tabs (Rule 3) */}
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
           <div className="flex flex-wrap gap-2">
@@ -2141,6 +2207,23 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
           </div>
         </div>
       </main>
+
+      {/* Week 5 Step 5: Export Preview Dialog */}
+      <ExportPreviewDialog
+        isOpen={isExportDialogOpen}
+        onClose={() => setIsExportDialogOpen(false)}
+        shipmentId={shipment.id}
+        shipmentReference={shipment.reference}
+        shipmentRevision={shipmentRevision}
+        shipmentStatus={shipmentStatus}
+        onExportSuccess={(record) => {
+          setShipmentStatus("EXPORTED");
+          setRecentExportRecord(record);
+          setStatusMessage(
+            `Shipment exported successfully (${record.fileName}). Checksum and audit event recorded.`,
+          );
+        }}
+      />
     </div>
   );
 }

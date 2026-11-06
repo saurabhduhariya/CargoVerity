@@ -42,6 +42,13 @@ export async function GET(
       },
       include: {
         supplier: true,
+        exportEvents: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          include: {
+            exportedBy: { select: { email: true, fullName: true } },
+          },
+        },
         documents: {
           where: { isCurrent: true },
           include: {
@@ -119,7 +126,43 @@ export async function GET(
       profileId,
     });
 
+    const isPreview = new URL(request.url).searchParams.get("preview") === "1";
+
     if (!guard.allowed) {
+      if (isPreview) {
+        return NextResponse.json(
+          {
+            ready: false,
+            allowed: false,
+            error: `Export blocked: ${guard.reasons.join(", ")}.`,
+            blockers: guard.reasons,
+            profileId: profile.id,
+            profileVersion: profile.version,
+            assumptionLabel: profile.assumptionLabel,
+            approvedRevision: approval?.revision ?? null,
+            approvedAt: approval?.approvedAt ? approval.approvedAt.toISOString() : null,
+            approvedBy:
+              approval?.approvedBy?.email ??
+              approval?.approvedBy?.fullName ??
+              null,
+            currentRevision: shipment.currentRevision,
+            shipmentStatus: shipment.status,
+            recentExport: shipment.exportEvents?.[0]
+              ? {
+                  id: shipment.exportEvents[0].id,
+                  profileId: shipment.exportEvents[0].profileId,
+                  revision: shipment.exportEvents[0].revision,
+                  createdAt: shipment.exportEvents[0].createdAt.toISOString(),
+                  exportedBy:
+                    shipment.exportEvents[0].exportedBy?.email ??
+                    shipment.exportEvents[0].exportedBy?.fullName ??
+                    null,
+                }
+              : null,
+          },
+          { status: 400 },
+        );
+      }
       throw new Error(`Export blocked: ${guard.reasons.join(", ")}.`);
     }
 
@@ -154,6 +197,41 @@ export async function GET(
     // Validate required export fields
     const validation = profile.validate(snapshot);
     if (!validation.valid) {
+      if (isPreview) {
+        return NextResponse.json(
+          {
+            ready: false,
+            allowed: false,
+            error: `Export blocked: missing required export fields: ${validation.missingFields.join(", ")}.`,
+            blockers: validation.missingFields.map((f) => `missing_field_${f}`),
+            missingFields: validation.missingFields,
+            profileId: profile.id,
+            profileVersion: profile.version,
+            assumptionLabel: profile.assumptionLabel,
+            approvedRevision: approval?.revision ?? null,
+            approvedAt: approval?.approvedAt ? approval.approvedAt.toISOString() : null,
+            approvedBy:
+              approval?.approvedBy?.email ??
+              approval?.approvedBy?.fullName ??
+              null,
+            currentRevision: shipment.currentRevision,
+            shipmentStatus: shipment.status,
+            recentExport: shipment.exportEvents?.[0]
+              ? {
+                  id: shipment.exportEvents[0].id,
+                  profileId: shipment.exportEvents[0].profileId,
+                  revision: shipment.exportEvents[0].revision,
+                  createdAt: shipment.exportEvents[0].createdAt.toISOString(),
+                  exportedBy:
+                    shipment.exportEvents[0].exportedBy?.email ??
+                    shipment.exportEvents[0].exportedBy?.fullName ??
+                    null,
+                }
+              : null,
+          },
+          { status: 400 },
+        );
+      }
       throw new Error(
         `Export blocked: missing required export fields: ${validation.missingFields.join(", ")}.`,
       );
@@ -169,8 +247,11 @@ export async function GET(
     const fileName = `${safeReference}-${profile.id}-rev${shipment.currentRevision}.csv`;
 
     // 6. Handle preview requests (Week 5 Step 5 preview support)
-    if (new URL(request.url).searchParams.get("preview") === "1") {
+    if (isPreview) {
       return NextResponse.json({
+        ready: true,
+        allowed: true,
+        blockers: [],
         fileName,
         headers: exportData.headers,
         rows: exportData.rows,
@@ -179,6 +260,26 @@ export async function GET(
         assumptionLabel: exportData.assumptionLabel,
         checksumSha256: checksum,
         rowCount: exportData.rows.length,
+        approvedRevision: approval?.revision ?? null,
+        approvedAt: approval?.approvedAt ? approval.approvedAt.toISOString() : null,
+        approvedBy:
+          approval?.approvedBy?.email ??
+          approval?.approvedBy?.fullName ??
+          null,
+        currentRevision: shipment.currentRevision,
+        shipmentStatus: shipment.status,
+        recentExport: shipment.exportEvents?.[0]
+          ? {
+              id: shipment.exportEvents[0].id,
+              profileId: shipment.exportEvents[0].profileId,
+              revision: shipment.exportEvents[0].revision,
+              createdAt: shipment.exportEvents[0].createdAt.toISOString(),
+              exportedBy:
+                shipment.exportEvents[0].exportedBy?.email ??
+                shipment.exportEvents[0].exportedBy?.fullName ??
+                null,
+            }
+          : null,
       });
     }
 
