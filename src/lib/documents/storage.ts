@@ -147,6 +147,7 @@ export async function authorizeDocumentAccess(
     },
     include: {
       shipment: true,
+      pages: { orderBy: { pageNumber: "asc" } },
       extractionRuns: {
         orderBy: { createdAt: "desc" },
         take: 1,
