@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@/generated/prisma/client";
 import { PROMPT_VERSION, SCHEMA_VERSION } from "@/lib/ai/extraction-prompts";
+import { ExtractionReviewPolicyService } from "@/lib/ai/review-policy.service";
 import type {
   DocumentType,
   ExtractionAdapterOutput,
@@ -175,8 +176,18 @@ export class ExtractionPersistenceService {
         throw new Error(`Extraction run ${runId} not found.`);
       }
 
-      // 1. Upsert ExtractedFields: modelValue is immutable, currentValue is initialized
-      for (const field of result.fields) {
+      // 1. Evaluate with deterministic review policy (Week 3 Step 4)
+      const docType = (run.document.selectedDocType ||
+        run.document.docType ||
+        result.documentType) as DocumentType;
+      const reviewPolicy = new ExtractionReviewPolicyService();
+      const evaluation = reviewPolicy.evaluateDocumentExtraction({
+        expectedDocumentType: docType,
+        extractionResult: result,
+      });
+
+      // Upsert ExtractedFields: modelValue is immutable, currentValue is initialized
+      for (const field of evaluation.fields) {
         const existing = await tx.extractedField.findUnique({
           where: {
             extractionRunId_fieldKey: {
@@ -210,7 +221,7 @@ export class ExtractionPersistenceService {
               sourceQuote: field.sourceQuote,
               pageNumber: field.pageNumber,
               reviewReason: field.reviewReason,
-              reviewStatus: "PENDING",
+              reviewStatus: field.reviewStatus,
             },
           });
         } else if (shouldUpdate) {
@@ -224,15 +235,16 @@ export class ExtractionPersistenceService {
               sourceQuote: field.sourceQuote,
               pageNumber: field.pageNumber,
               reviewReason: field.reviewReason,
+              reviewStatus: field.reviewStatus,
             },
           });
         }
       }
 
-      // 2. Insert line items
-      if (result.lineItems.length > 0) {
+      // 2. Insert line items with review policy applied
+      if (evaluation.lineItems.length > 0) {
         await tx.lineItem.createMany({
-          data: result.lineItems.map((item) => ({
+          data: evaluation.lineItems.map((item) => ({
             documentId: run.documentId,
             extractionRunId: run.id,
             batchNumber,
@@ -576,6 +588,20 @@ export class ExtractionPersistenceService {
 
       if (latestRun.status === "COMPLETED") {
         completedSlots.push(slot);
+
+        // Week 3 Step 4: Check document-level blockers
+        if (doc.typeMismatch) {
+          blockingReasons.push(
+            `Document type mismatch on ${slot}: detected ${doc.detectedDocType ?? "UNKNOWN"}.`,
+          );
+        }
+
+        const unreadablePages = doc.pages.filter((p) => !p.isReadable && !p.manualEntryRequired);
+        if (unreadablePages.length > 0) {
+          blockingReasons.push(
+            `Unreadable page(s) on ${slot.replace("_", " ")} require manual fallback.`,
+          );
+        }
       }
     }
 
@@ -583,7 +609,8 @@ export class ExtractionPersistenceService {
       completedSlots.length === REQUIRED_SLOTS.length &&
       pendingSlots.length === 0 &&
       missingSlots.length === 0 &&
-      failedSlots.length === 0;
+      failedSlots.length === 0 &&
+      blockingReasons.length === 0;
 
     return {
       isReadyForReview,

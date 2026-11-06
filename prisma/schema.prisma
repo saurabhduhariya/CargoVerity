@@ -42,6 +42,9 @@ enum ExtractionStatus {
 
 enum ReviewStatus {
   PENDING
+  REQUIRES_REVIEW
+  NOT_PRESENT
+  NOT_APPLICABLE
   CONFIRMED
   CORRECTED
   MANUAL_ENTRY

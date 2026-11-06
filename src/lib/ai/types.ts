@@ -15,14 +15,24 @@ export type PageReadability = {
   reviewNote?: string | null;
 };
 
+export type ReviewStatus =
+  | "PENDING"
+  | "REQUIRES_REVIEW"
+  | "NOT_PRESENT"
+  | "NOT_APPLICABLE"
+  | "CONFIRMED"
+  | "CORRECTED"
+  | "MANUAL_ENTRY";
+
 export type NormalizedField = {
   fieldKey: string;
   value: string | null;
   unit: string | null;
   modelConfidence: number | null;
+  confidenceLabel?: "model estimate";
   sourceQuote: string | null;
   pageNumber: number | null;
-  reviewStatus: "PENDING" | "CONFIRMED" | "CORRECTED" | "REQUIRES_REVIEW";
+  reviewStatus: ReviewStatus;
   reviewReason?: string | null;
 };
 
@@ -36,6 +46,7 @@ export type NormalizedLineItem = {
   currency: string | null;
   lineTotal: string | null;
   modelConfidence: number | null;
+  confidenceLabel?: "model estimate";
   sourceQuote: string | null;
   pageNumber: number | null;
   reviewReason?: string | null;

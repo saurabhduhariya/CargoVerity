@@ -1,7 +1,13 @@
+import "server-only";
+
 import { getEnv } from "@/lib/env";
 import type { NormalizedField } from "@/lib/ai/types";
 
-export function fieldNeedsReview(field: Pick<NormalizedField, "value" | "modelConfidence" | "sourceQuote">) {
+export { ExtractionReviewPolicyService, DOCUMENT_FIELD_POLICIES } from "@/lib/ai/review-policy.service";
+
+export function fieldNeedsReview(
+  field: Pick<NormalizedField, "value" | "modelConfidence" | "sourceQuote">,
+): boolean {
   const threshold = getEnv().LOW_CONFIDENCE_THRESHOLD;
 
   return (
@@ -12,7 +18,9 @@ export function fieldNeedsReview(field: Pick<NormalizedField, "value" | "modelCo
   );
 }
 
-export function confidenceReason(field: Pick<NormalizedField, "value" | "modelConfidence" | "sourceQuote">) {
+export function confidenceReason(
+  field: Pick<NormalizedField, "value" | "modelConfidence" | "sourceQuote">,
+): string | null {
   if (field.value === null) return "missing_value";
   if (!field.sourceQuote) return "missing_source_evidence";
   if (field.modelConfidence === null) return "missing_model_confidence";
