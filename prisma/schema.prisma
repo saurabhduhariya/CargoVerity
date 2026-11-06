@@ -74,6 +74,7 @@ model User {
   approvals      Approval[]
   auditEvents    AuditEvent[]
   exportEvents   ExportEvent[]
+  extractionRuns ExtractionRun[] @relation("ExtractionRunRequester")
 }
 
 model Supplier {
@@ -159,66 +160,80 @@ model DocumentPage {
 }
 
 model ExtractionRun {
-  id             String          @id @default(uuid()) @db.Uuid
-  documentId     String          @db.Uuid
-  document       Document        @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  provider       String
-  model          String
-  promptVersion  String
-  status         ExtractionStatus @default(QUEUED)
-  pageCount      Int
-  errorCode      String?
-  errorMessage   String?
-  startedAt      DateTime?
-  completedAt    DateTime?
-  fields         ExtractedField[]
-  lineItems      LineItem[]
-  createdAt      DateTime        @default(now())
+  id              String           @id @default(uuid()) @db.Uuid
+  documentId      String           @db.Uuid
+  document        Document         @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  documentVersion Int              @default(1)
+  requestedById   String?          @db.Uuid
+  requestedBy     User?            @relation("ExtractionRunRequester", fields: [requestedById], references: [id])
+  idempotencyKey  String?          @unique
+  retryOfRunId    String?          @db.Uuid
+  retryOf         ExtractionRun?   @relation("ExtractionRunRetries", fields: [retryOfRunId], references: [id])
+  retries         ExtractionRun[]  @relation("ExtractionRunRetries")
+  provider        String
+  model           String
+  promptVersion   String
+  status          ExtractionStatus @default(QUEUED)
+  pageCount       Int
+  inputSizeBytes  Int?
+  latencyMs       Int?
+  rawResponse     Json?
+  errorCode       String?
+  errorMessage    String?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  fields          ExtractedField[]
+  lineItems       LineItem[]
+  createdAt       DateTime         @default(now())
 
   @@index([documentId, createdAt])
+  @@index([documentId, documentVersion])
+  @@index([requestedById])
 }
 
 model ExtractedField {
-  id             String          @id @default(uuid()) @db.Uuid
-  documentId     String          @db.Uuid
-  document       Document        @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  extractionRunId String         @db.Uuid
-  extractionRun  ExtractionRun   @relation(fields: [extractionRunId], references: [id], onDelete: Cascade)
-  fieldKey       String
-  modelValue     String?
-  currentValue   String?
-  unit           String?
-  modelConfidence Decimal?       @db.Decimal(5, 4)
-  sourceQuote    String?
-  pageNumber     Int?
-  reviewStatus   ReviewStatus    @default(PENDING)
-  corrections    FieldCorrection[]
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
+  id              String          @id @default(uuid()) @db.Uuid
+  documentId      String          @db.Uuid
+  document        Document        @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  extractionRunId String          @db.Uuid
+  extractionRun   ExtractionRun   @relation(fields: [extractionRunId], references: [id], onDelete: Cascade)
+  fieldKey        String
+  modelValue      String?
+  currentValue    String?
+  unit            String?
+  modelConfidence Decimal?        @db.Decimal(5, 4)
+  sourceQuote     String?
+  pageNumber      Int?
+  reviewReason    String?
+  reviewStatus    ReviewStatus    @default(PENDING)
+  corrections     FieldCorrection[]
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
 
   @@unique([extractionRunId, fieldKey])
   @@index([documentId, fieldKey])
 }
 
 model LineItem {
-  id             String          @id @default(uuid()) @db.Uuid
-  documentId     String          @db.Uuid
-  document       Document        @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  extractionRunId String         @db.Uuid
-  extractionRun  ExtractionRun   @relation(fields: [extractionRunId], references: [id], onDelete: Cascade)
-  batchNumber    Int             @default(0)
-  lineNumber     Int
-  description    String?
-  hsnCode        String?
-  quantity       Decimal?        @db.Decimal(18, 6)
-  quantityUnit   String?
-  unitPrice      Decimal?        @db.Decimal(18, 6)
-  currency       String?
-  lineTotal      Decimal?        @db.Decimal(18, 6)
-  modelConfidence Decimal?       @db.Decimal(5, 4)
-  sourceQuote    String?
-  pageNumber     Int?
-  createdAt      DateTime        @default(now())
+  id              String          @id @default(uuid()) @db.Uuid
+  documentId      String          @db.Uuid
+  document        Document        @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  extractionRunId String          @db.Uuid
+  extractionRun   ExtractionRun   @relation(fields: [extractionRunId], references: [id], onDelete: Cascade)
+  batchNumber     Int             @default(0)
+  lineNumber      Int
+  description     String?
+  hsnCode         String?
+  quantity        Decimal?        @db.Decimal(18, 6)
+  quantityUnit    String?
+  unitPrice       Decimal?        @db.Decimal(18, 6)
+  currency        String?
+  lineTotal       Decimal?        @db.Decimal(18, 6)
+  modelConfidence Decimal?        @db.Decimal(5, 4)
+  sourceQuote     String?
+  pageNumber      Int?
+  reviewReason    String?
+  createdAt       DateTime        @default(now())
 
   @@unique([extractionRunId, batchNumber, lineNumber])
   @@index([documentId])
