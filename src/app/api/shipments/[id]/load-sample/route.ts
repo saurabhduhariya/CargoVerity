@@ -15,6 +15,7 @@ const loadSampleSchema = z
       .enum(["SHP-24811", "SHP-24812", "SHP-24813", "SHP-24814", "SHP-24815"])
       .optional()
       .default("SHP-24811"),
+    expectedRevision: z.number().int().positive().optional(),
   })
   .optional()
   .default({ scenario: "SHP-24811" });
@@ -56,12 +57,14 @@ export async function POST(
       shipmentId,
       appUser,
       scenario: parsed.data.scenario as SampleScenario,
+      expectedRevision: parsed.data.expectedRevision,
     });
 
     return NextResponse.json({
       success: true,
       shipment: result.shipment,
       documents: result.documents,
+      skipped: result.skipped,
       message: `Loaded synthetic demo documents for ${parsed.data.scenario} into private storage.`,
     });
   } catch (error) {

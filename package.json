@@ -22,6 +22,7 @@
     "db:validate": "prisma validate",
     "db:migrate": "prisma migrate deploy",
     "db:seed": "node scripts/seed-demo-users.mjs",
+    "storage:setup": "node scripts/setup-storage.mjs",
     "db:studio": "prisma studio",
     "generate:sample-docs": "node --experimental-strip-types scripts/generate-sample-docs.ts",
     "postinstall": "prisma generate"

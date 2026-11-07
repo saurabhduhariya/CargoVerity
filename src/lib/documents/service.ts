@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@/generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import type { DocumentType } from "@/lib/ai/types";
 
 type DocumentDatabase = Pick<PrismaClient, "document">;
@@ -42,45 +42,52 @@ export function listDocumentVersions(
   });
 }
 
-/** Replace a slot atomically: retire the current version, then create the next one. */
-export async function createDocumentVersion(
-  prisma: PrismaClient,
+/**
+ * Retire the current version of a slot and create the next one, inside the caller's transaction.
+ * The partial unique index `Document_one_current_per_type_key` (see the document_versioning
+ * migration) guarantees at most one current version per shipment slot even under concurrency.
+ */
+export async function createDocumentVersionInTransaction(
+  transaction: Prisma.TransactionClient,
   input: NewDocumentVersion,
 ) {
-  return prisma.$transaction(async (transaction) => {
-    const latest = await transaction.document.findFirst({
-      where: { shipmentId: input.shipmentId, selectedDocType: input.selectedDocType },
-      orderBy: { documentVersion: "desc" },
-      select: { documentVersion: true },
-    });
-
-    await transaction.document.updateMany({
-      where: {
-        shipmentId: input.shipmentId,
-        selectedDocType: input.selectedDocType,
-        isCurrent: true,
-      },
-      data: { isCurrent: false },
-    });
-
-    return transaction.document.create({
-      data: {
-        ...(input.id ? { id: input.id } : {}),
-        shipmentId: input.shipmentId,
-        docType: input.selectedDocType,
-        selectedDocType: input.selectedDocType,
-        detectedDocType: input.detectedDocType ?? null,
-        typeMismatch: input.typeMismatch ?? false,
-        documentVersion: (latest?.documentVersion ?? 0) + 1,
-        isCurrent: true,
-        storageKey: input.storageKey,
-        originalFileName: input.originalFileName,
-        mimeType: input.mimeType,
-        sizeBytes: input.sizeBytes,
-        sha256: input.sha256,
-        pageCount: input.pageCount ?? null,
-        uploadedById: input.uploadedById,
-      },
-    });
+  const latest = await transaction.document.findFirst({
+    where: { shipmentId: input.shipmentId, selectedDocType: input.selectedDocType },
+    orderBy: { documentVersion: "desc" },
+    select: { documentVersion: true },
   });
+
+  await transaction.document.updateMany({
+    where: {
+      shipmentId: input.shipmentId,
+      selectedDocType: input.selectedDocType,
+      isCurrent: true,
+    },
+    data: { isCurrent: false },
+  });
+
+  return transaction.document.create({
+    data: {
+      ...(input.id ? { id: input.id } : {}),
+      shipmentId: input.shipmentId,
+      docType: input.selectedDocType,
+      selectedDocType: input.selectedDocType,
+      detectedDocType: input.detectedDocType ?? null,
+      typeMismatch: input.typeMismatch ?? false,
+      documentVersion: (latest?.documentVersion ?? 0) + 1,
+      isCurrent: true,
+      storageKey: input.storageKey,
+      originalFileName: input.originalFileName,
+      mimeType: input.mimeType,
+      sizeBytes: input.sizeBytes,
+      sha256: input.sha256,
+      pageCount: input.pageCount ?? null,
+      uploadedById: input.uploadedById,
+    },
+  });
+}
+
+/** Replace a slot atomically: retire the current version, then create the next one. */
+export async function createDocumentVersion(prisma: PrismaClient, input: NewDocumentVersion) {
+  return prisma.$transaction((transaction) => createDocumentVersionInTransaction(transaction, input));
 }

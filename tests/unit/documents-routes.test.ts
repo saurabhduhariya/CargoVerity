@@ -1,7 +1,9 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 import { GET as getDocumentRoute } from "@/app/api/documents/[id]/route";
-import { POST as postDocumentRoute } from "@/app/api/documents/route";
 import * as auth from "@/lib/auth";
 import * as db from "@/lib/db";
 import * as storage from "@/lib/documents/storage";
@@ -108,49 +110,11 @@ describe("Documents API Routes — Authorization & Security (Week 2 Step 2)", ()
     });
   });
 
-  describe("POST /api/documents", () => {
-    it("returns 401 if user is logged out / unauthenticated", async () => {
-      vi.spyOn(auth, "requireAppUser").mockRejectedValue(new Error("AUTHENTICATION_REQUIRED"));
-
-      const formData = new FormData();
-      formData.append("shipmentId", shipmentId);
-      formData.append("documentType", "INVOICE");
-      formData.append("file", new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], "invoice.pdf", { type: "application/pdf" }));
-
-      const request = new Request("http://localhost:3000/api/documents", {
-        method: "POST",
-        body: formData,
-      });
-
-      const response = await postDocumentRoute(request);
-      expect(response.status).toBe(401);
-      const json = await response.json();
-      expect(json.error).toBe("Authentication required.");
-    });
-
-    it("returns 400 when user does not have permission to upload to another user's shipment", async () => {
-      vi.spyOn(auth, "requireAppUser").mockResolvedValue({
-        appUser: executiveUser as never,
-        authUser: { id: executiveUser.id, email: executiveUser.email } as never,
-      });
-
-      vi.spyOn(db, "getPrisma").mockReturnValue({} as never);
-      vi.spyOn(storage, "authorizeShipmentAccess").mockRejectedValue(new Error("Shipment not found or inaccessible."));
-
-      const formData = new FormData();
-      formData.append("shipmentId", shipmentId);
-      formData.append("documentType", "INVOICE");
-      formData.append("file", new File([minimalValidPdf], "invoice.pdf", { type: "application/pdf" }));
-
-      const request = new Request("http://localhost:3000/api/documents", {
-        method: "POST",
-        body: formData,
-      });
-
-      const response = await postDocumentRoute(request);
-      expect(response.status).toBe(400);
-      const json = await response.json();
-      expect(json.error).toBe("Shipment not found or inaccessible.");
+  describe("single upload path", () => {
+    it("has no multipart POST /api/documents route that could bypass upload completion checks", () => {
+      expect(existsSync(join(process.cwd(), "src/app/api/documents/route.ts"))).toBe(false);
+      expect(minimalValidPdf.byteLength).toBeGreaterThan(0);
+      expect(shipmentId).toBeTruthy();
     });
   });
 });

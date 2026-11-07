@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { ConfigurationError, ConflictError, ProviderError } from "@/lib/errors";
+import { ConfigurationError, ConflictError, DocumentUploadError, ProviderError } from "@/lib/errors";
 
 /**
  * Field or index names involved in a Prisma P2002 unique-constraint error.
@@ -26,6 +26,10 @@ function uniqueConstraintTargets(error: object): string[] {
 
 export function apiError(error: unknown) {
   const message = error instanceof Error ? error.message : "Unexpected server error.";
+
+  if (error instanceof DocumentUploadError) {
+    return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
+  }
 
   if (error instanceof ConflictError || /stale shipment revision/i.test(message)) {
     return NextResponse.json({ error: message, code: "CONFLICT" }, { status: 409 });

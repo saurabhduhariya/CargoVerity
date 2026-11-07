@@ -27,7 +27,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { DocumentUpload } from "@/features/documents/document-upload";
 import { EnrichedShipment } from "@/lib/shipments";
 import { buildLoginPath } from "@/lib/auth-paths";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
@@ -721,15 +720,6 @@ export function DashboardShell({ email, role }: { email: string; role: "EXECUTIV
           </Card>
         </div>
 
-        {/* Existing Document Upload Section */}
-        {shipments.length > 0 ? (
-          <DocumentUpload
-            shipments={shipments.map(({ id, reference }) => ({
-              id,
-              reference,
-            }))}
-          />
-        ) : null}
       </div>
     </main>
   );

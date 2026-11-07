@@ -152,7 +152,10 @@ model Document {
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
 
-  @@index([shipmentId, selectedDocType, isCurrent])
+  // At most one current version per shipment slot is enforced by the partial unique index
+  // "Document_one_current_per_type_key" ON ("shipmentId", "selectedDocType") WHERE "isCurrent",
+  // created in migration 20261105000000_document_versioning (Prisma cannot express it here).
+  @@index([shipmentId])
   @@index([shipmentId, selectedDocType, documentVersion])
   @@index([extractionStatus])
 }

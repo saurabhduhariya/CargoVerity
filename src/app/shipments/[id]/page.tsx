@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { requirePageAppUser } from "@/lib/auth-page";
 import { getPrisma } from "@/lib/db";
+import { getEnv } from "@/lib/env";
 import { ShipmentDocumentSlots } from "@/features/documents/shipment-document-slots";
 
 export const instant = false;
@@ -15,6 +16,7 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
   const { id } = await params;
   const { appUser } = await requirePageAppUser(`/shipments/${encodeURIComponent(id)}`);
   const prisma = getPrisma();
+  const env = getEnv();
   const shipment = await prisma.shipment.findFirst({
     where: { id, ...(appUser.role === "MANAGER" ? {} : { createdById: appUser.id }) },
     include: {
@@ -154,6 +156,11 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
           initialRevision={shipment.currentRevision}
           initialShipmentStatus={shipment.status}
           initialDocuments={initialDocuments}
+          limits={{
+            maxPdfBytes: env.MAX_PDF_BYTES,
+            maxImageBytes: env.MAX_IMAGE_BYTES,
+            maxPdfPages: env.MAX_PDF_PAGES,
+          }}
         />
       </div>
     </main>

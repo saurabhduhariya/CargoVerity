@@ -5,13 +5,13 @@ import {
   authorizeDocumentAccess,
   authorizeShipmentAccess,
   buildStorageKey,
-  createAuthorizedUploadCapability,
   createSignedDownloadUrl,
   DEFAULT_SIGNED_DOWNLOAD_URL_TTL_SECONDS,
   ensurePrivateStorageBucket,
   getAuthorizedDocumentDownloadUrl,
   sanitizeFileExtension,
 } from "@/lib/documents/storage";
+import { issueUploadCapability } from "@/lib/documents/upload-service";
 
 const shipmentId = "11111111-1111-4111-8111-111111111111";
 const documentId = "22222222-2222-4222-8222-222222222222";
@@ -267,7 +267,9 @@ describe("Private Storage Service — Authorization & Signed URLs (Week 2 Step 2
   });
 
   it("creates authorized upload capability with safe storage key and server authorization", async () => {
-    const findFirst = vi.fn().mockResolvedValue({ id: shipmentId, createdById: executiveUser.id });
+    const findFirst = vi
+      .fn()
+      .mockResolvedValue({ id: shipmentId, createdById: executiveUser.id, status: "DRAFT", currentRevision: 1 });
     const prisma = { shipment: { findFirst } } as unknown as PrismaClient;
 
     const mockSupabase = {
@@ -285,10 +287,15 @@ describe("Private Storage Service — Authorization & Signed URLs (Week 2 Step 2
       },
     };
 
-    const capability = await createAuthorizedUploadCapability(prisma, {
+    const capability = await issueUploadCapability(prisma, {
       shipmentId,
       appUser: executiveUser,
-      originalFileName: "Commercial_Invoice_2026.pdf",
+      body: {
+        documentType: "INVOICE",
+        declaredMimeType: "application/pdf",
+        fileName: "Commercial_Invoice_2026.pdf",
+        expectedRevision: 1,
+      },
       supabaseAdmin: mockSupabase as never,
       bucket: "shipment-documents",
     });
@@ -304,10 +311,12 @@ describe("Private Storage Service — Authorization & Signed URLs (Week 2 Step 2
     const prisma = { shipment: { findFirst } } as unknown as PrismaClient;
 
     await expect(
-      createAuthorizedUploadCapability(prisma, {
+      issueUploadCapability(prisma, {
         shipmentId,
         appUser: otherExecutive,
-        originalFileName: "test.pdf",
+        body: { documentType: "INVOICE", declaredMimeType: "application/pdf", expectedRevision: 1 },
+        supabaseAdmin: {} as never,
+        bucket: "shipment-documents",
       }),
     ).rejects.toThrow("Shipment not found or inaccessible.");
   });

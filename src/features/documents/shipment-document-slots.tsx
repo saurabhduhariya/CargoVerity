@@ -24,7 +24,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatBytes } from "@/lib/utils";
-import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 import { runDocumentExtraction } from "@/lib/extraction/client-runner";
 import type { DocumentType } from "@/lib/ai/types";
 
@@ -56,12 +55,26 @@ export type DocumentSlotItem = {
   manualPagesCount?: number;
 };
 
+export type UploadLimits = {
+  maxPdfBytes: number;
+  maxImageBytes: number;
+  maxPdfPages: number;
+};
+
+export const DEFAULT_UPLOAD_LIMITS: UploadLimits = {
+  maxPdfBytes: 10_485_760,
+  maxImageBytes: 7_000_000,
+  maxPdfPages: 50,
+};
+
 export type ShipmentDocumentSlotsProps = {
   shipmentId: string;
   shipmentReference: string;
   initialRevision: number;
   initialShipmentStatus?: string;
   initialDocuments: DocumentSlotItem[];
+  /** Server-configured limits (MAX_PDF_BYTES, MAX_IMAGE_BYTES, MAX_PDF_PAGES). */
+  limits?: UploadLimits;
 };
 
 type SlotConfig = {
@@ -69,8 +82,6 @@ type SlotConfig = {
   title: string;
   shortCode: string;
   description: string;
-  acceptedTypesDescription: string;
-  limitsDescription: string;
 };
 
 const SLOT_CONFIGS: SlotConfig[] = [
@@ -79,26 +90,72 @@ const SLOT_CONFIGS: SlotConfig[] = [
     title: "Commercial Invoice",
     shortCode: "CI",
     description: "Itemized billing document with unit prices, totals, currencies, and line items.",
-    acceptedTypesDescription: "PDF, PNG, JPEG",
-    limitsDescription: "Max 10 MB (up to 50 pages) for PDF · Max 7 MB for images",
   },
   {
     type: "PACKING_LIST",
     title: "Packing List",
     shortCode: "PL",
     description: "Detailed inventory breakdown with package counts, gross/net weights, and SKU quantities.",
-    acceptedTypesDescription: "PDF, PNG, JPEG",
-    limitsDescription: "Max 10 MB (up to 50 pages) for PDF · Max 7 MB for images",
   },
   {
     type: "BILL_OF_LADING",
     title: "Bill of Lading",
     shortCode: "BL",
     description: "Carrier transport receipt with vessel name, container numbers, ports, and carrier weights.",
-    acceptedTypesDescription: "PDF, PNG, JPEG",
-    limitsDescription: "Max 10 MB (up to 50 pages) for PDF · Max 7 MB for images",
   },
 ];
+
+export const ACCEPTED_TYPES_DESCRIPTION = "PDF, PNG, JPEG";
+
+export function describeUploadLimits(limits: UploadLimits) {
+  return `PDF up to ${formatBytes(limits.maxPdfBytes)} and ${limits.maxPdfPages} pages · PNG/JPEG up to ${formatBytes(limits.maxImageBytes)}`;
+}
+
+/** Maps a file the user picked to the MIME type the server will verify; null when unsupported. */
+export function declaredMimeForFile(file: { name: string; type: string }) {
+  const name = file.name.toLowerCase();
+  if (file.type === "application/pdf" || name.endsWith(".pdf")) return "application/pdf" as const;
+  if (file.type === "image/png" || name.endsWith(".png")) return "image/png" as const;
+  if (file.type === "image/jpeg" || name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg" as const;
+  return null;
+}
+
+/**
+ * PUTs the file to the signed Storage upload URL with real byte progress.
+ * Storage enforces the bucket's size and MIME limits; the server re-validates the bytes afterwards.
+ */
+export function uploadFileToSignedUrl(
+  signedUploadUrl: string,
+  file: Blob,
+  contentType: string,
+  onProgress: (percent: number) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", signedUploadUrl);
+    xhr.setRequestHeader("content-type", contentType);
+    xhr.setRequestHeader("x-upsert", "false");
+    xhr.setRequestHeader("cache-control", "max-age=3600");
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress(100);
+        resolve();
+      } else if (xhr.status === 413 || /maximum allowed size|too large/i.test(xhr.responseText)) {
+        reject(new Error(formatPlainLanguageError("FILE_OVERSIZED")));
+      } else if (xhr.status === 415 || /mime type/i.test(xhr.responseText)) {
+        reject(new Error(formatPlainLanguageError("INVALID_MIME")));
+      } else {
+        reject(new Error("The file could not be uploaded to private storage. Check your connection and try again."));
+      }
+    };
+    xhr.onerror = () =>
+      reject(new Error("The file could not be uploaded to private storage. Check your connection and try again."));
+    xhr.send(file);
+  });
+}
 
 export function formatPlainLanguageError(code?: string, rawMessage?: string): string {
   switch (code) {
@@ -111,13 +168,24 @@ export function formatPlainLanguageError(code?: string, rawMessage?: string): st
     case "REPLACEMENT_REQUIRED":
       return "A document is already present in this slot. Please check 'Replace existing document' to confirm replacement.";
     case "FILE_OVERSIZED":
-      return "The file exceeds the maximum allowed size (10 MB for PDF, 7 MB for images).";
+      return "The file is larger than the maximum allowed size for its type. See the limits shown on the slot.";
+    case "INVALID_STORAGE_KEY":
+      return "This upload could not be matched to the shipment. Please upload the file again.";
+    case "SHIPMENT_LOCKED":
+      return "This shipment has been exported, so its documents can no longer be changed.";
+    case "STORAGE_UNAVAILABLE":
+      return "Private storage is temporarily unavailable. Please try again shortly.";
+    case "AUTHENTICATION_REQUIRED":
+      return "Your session has expired. Please sign in again.";
+    case "ACCOUNT_NOT_PROVISIONED":
+    case "FORBIDDEN":
+      return "Your account is not allowed to change this shipment.";
     case "EMPTY_FILE":
       return "The selected file is empty (0 bytes). Please choose a valid file.";
     case "CORRUPTED_PDF":
       return "The PDF file is corrupted or could not be parsed by the system.";
     case "PAGE_LIMIT_EXCEEDED":
-      return "The PDF document exceeds the maximum limit of 50 pages.";
+      return "The PDF has more pages than the limit shown on the slot. Split it or upload the relevant pages.";
     case "PASSWORD_PROTECTED_PDF":
       return "Password-protected PDFs are not supported. Please remove the password and try again.";
     case "INVALID_MAGIC_BYTES":
@@ -135,7 +203,9 @@ export function formatPlainLanguageError(code?: string, rawMessage?: string): st
     case "TIMEOUT":
       return "Extraction request timed out before the model could finish. Please retry.";
     default:
-      return rawMessage || "An unexpected error occurred during document upload.";
+      // Never show machine output (for example a JSON validation dump) as the user-facing message.
+      if (rawMessage && !/^\s*[[{]/.test(rawMessage)) return rawMessage;
+      return "An unexpected error occurred during document upload.";
   }
 }
 
@@ -145,6 +215,7 @@ export function ShipmentDocumentSlots({
   initialRevision,
   initialShipmentStatus = "DRAFT",
   initialDocuments,
+  limits = DEFAULT_UPLOAD_LIMITS,
 }: ShipmentDocumentSlotsProps) {
   const router = useRouter();
   const [documents, setDocuments] = useState<DocumentSlotItem[]>(initialDocuments);
@@ -397,24 +468,14 @@ export function ShipmentDocumentSlots({
 
     setSlotErrors((prev) => ({ ...prev, [type]: null }));
 
-    const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-    const isPng = file.type === "image/png" || file.name.toLowerCase().endsWith(".png");
-    const isJpeg =
-      file.type === "image/jpeg" ||
-      file.name.toLowerCase().endsWith(".jpg") ||
-      file.name.toLowerCase().endsWith(".jpeg");
-
-    if (!isPdf && !isPng && !isJpeg) {
-      setSlotErrors((prev) => ({
-        ...prev,
-        [type]: "Only PDF (.pdf), PNG (.png), and JPEG (.jpg, .jpeg) documents are accepted.",
-      }));
+    const declaredMimeType = declaredMimeForFile(file);
+    if (!declaredMimeType) {
+      setSlotErrors((prev) => ({ ...prev, [type]: formatPlainLanguageError("INVALID_MIME") }));
       return;
     }
 
-    const declaredMimeType = isPdf ? "application/pdf" : isPng ? "image/png" : "image/jpeg";
-    const extension = isPdf ? "pdf" : isPng ? "png" : "jpg";
-    const maxBytes = isPdf ? 10 * 1024 * 1024 : 7 * 1024 * 1024;
+    // Client checks are only a fast path; the server re-validates the stored bytes.
+    const maxBytes = declaredMimeType === "application/pdf" ? limits.maxPdfBytes : limits.maxImageBytes;
 
     if (file.size === 0) {
       setSlotErrors((prev) => ({
@@ -441,8 +502,8 @@ export function ShipmentDocumentSlots({
         body: JSON.stringify({
           fileName: file.name,
           fileSizeBytes: file.size,
+          documentType: type,
           declaredMimeType,
-          extension,
           expectedRevision: currentRevision,
         }),
       });
@@ -452,60 +513,10 @@ export function ShipmentDocumentSlots({
         throw new Error(formatPlainLanguageError(uploadUrlData.code, uploadUrlData.error));
       }
 
-      setSlotUploading((prev) => ({ ...prev, [type]: "Uploading file to private storage…" }));
-
-      let storageSuccess = false;
-      try {
-        const supabase = getSupabaseBrowserClient();
-        const { error: storageError } = await supabase.storage
-          .from("shipment-documents")
-          .uploadToSignedUrl(uploadUrlData.storageKey, uploadUrlData.token, file);
-
-        if (!storageError) {
-          storageSuccess = true;
-        }
-      } catch (clientStorageError) {
-        console.warn("Client direct upload encountered error, falling back to server route", clientStorageError);
-      }
-
-      if (!storageSuccess) {
-        setSlotUploading((prev) => ({ ...prev, [type]: "Finalizing upload with server storage…" }));
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("shipmentId", shipmentId);
-        formData.append("documentType", type);
-
-        const serverRes = await fetch("/api/documents", {
-          method: "POST",
-          body: formData,
-        });
-        const serverData = await serverRes.json();
-        if (!serverRes.ok) {
-          throw new Error(formatPlainLanguageError(serverData.code, serverData.error));
-        }
-
-        const newDoc: DocumentSlotItem = {
-          id: serverData.document.id,
-          docType: type,
-          documentVersion: serverData.document.documentVersion,
-          originalFileName: serverData.document.originalFileName,
-          mimeType: serverData.document.mimeType,
-          sizeBytes: serverData.document.sizeBytes,
-          pageCount: serverData.document.pageCount ?? null,
-          extractionStatus: serverData.document.extractionStatus,
-          createdAt: serverData.document.createdAt,
-          isCurrent: true,
-        };
-
-        setDocuments((prev) => [
-          ...prev.map((d) => (d.docType === type ? { ...d, isCurrent: false } : d)),
-          newDoc,
-        ]);
-        setCurrentRevision((prev) => prev + 1);
-        resetSlotUI(type);
-        router.refresh();
-        return;
-      }
+      setSlotUploading((prev) => ({ ...prev, [type]: "Uploading to private storage… 0%" }));
+      await uploadFileToSignedUrl(uploadUrlData.signedUploadUrl, file, declaredMimeType, (percent) => {
+        setSlotUploading((prev) => ({ ...prev, [type]: `Uploading to private storage… ${percent}%` }));
+      });
 
       setSlotUploading((prev) => ({
         ...prev,
@@ -580,12 +591,16 @@ export function ShipmentDocumentSlots({
       const response = await fetch(`/api/shipments/${shipmentId}/load-sample`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scenario: sampleScenario }),
+        body: JSON.stringify({ scenario: sampleScenario, expectedRevision: currentRevision }),
       });
 
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error ?? "Failed to load synthetic sample documents.");
+        throw new Error(
+          data.code === "DUPLICATE_CONTENT"
+            ? "These synthetic documents are already loaded for this shipment."
+            : formatPlainLanguageError(data.code, data.error ?? "Failed to load synthetic sample documents."),
+        );
       }
 
       if (Array.isArray(data.documents)) {
@@ -903,6 +918,7 @@ export function ShipmentDocumentSlots({
             return (
               <Card
                 key={slot.type}
+                data-testid={`slot-${slot.type}`}
                 className={`flex flex-col justify-between transition-colors ${
                   activeDoc ? "border-slate-300 bg-white" : "border-dashed border-slate-300 bg-slate-50/60"
                 }`}
@@ -919,7 +935,7 @@ export function ShipmentDocumentSlots({
                             {slot.title}
                           </CardTitle>
                           <span className="text-[11px] text-slate-500">
-                            {slot.acceptedTypesDescription}
+                            {ACCEPTED_TYPES_DESCRIPTION}
                           </span>
                         </div>
                       </div>
@@ -955,8 +971,11 @@ export function ShipmentDocumentSlots({
                     </div>
 
                     <p className="text-xs text-slate-500">{slot.description}</p>
-                    <div className="rounded border border-slate-200/80 bg-slate-100/60 px-2 py-1 text-[11px] text-slate-500">
-                      {slot.limitsDescription}
+                    <div
+                      data-testid={`upload-limits-${slot.type}`}
+                      className="rounded border border-slate-200/80 bg-slate-100/60 px-2 py-1 text-[11px] text-slate-500"
+                    >
+                      {describeUploadLimits(limits)}
                     </div>
                   </CardHeader>
 

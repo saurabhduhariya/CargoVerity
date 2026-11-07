@@ -49,7 +49,8 @@ To run the app against Supabase:
 ```bash
 cp .env.example .env
 # Fill the Supabase, database and AI provider values in .env.
-npm run db:migrate   # requires DIRECT_URL
+npm run db:migrate      # requires DIRECT_URL
+npm run storage:setup   # private bucket, 10 MB object limit, PDF/PNG/JPEG only (needs SUPABASE_SECRET_KEY)
 npm run dev
 ```
 
