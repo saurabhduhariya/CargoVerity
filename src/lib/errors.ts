@@ -94,3 +94,46 @@ export class ExtractionError extends Error {
     this.name = "ExtractionError";
   }
 }
+
+/** Review workspace (field actions, line mappings, check resolutions) failures with stable codes. */
+export type ReviewErrorCode =
+  | "SHIPMENT_NOT_FOUND"
+  | "FIELD_NOT_FOUND"
+  | "FIELD_SUPERSEDED"
+  | "EMPTY_CONFIRM_VALUE"
+  | "NO_CHANGE"
+  | "INVALID_FIELD_VALUE"
+  | "STALE_REVISION"
+  | "SHIPMENT_LOCKED"
+  | "MAPPING_LINE_INVALID"
+  | "MAPPING_CONFLICT"
+  | "MAPPING_NOT_FOUND"
+  | "CHECK_NOT_FOUND"
+  | "CHECK_NOT_LATEST"
+  | "CHECK_NOT_FAILING"
+  | "EVIDENCE_REQUIRED"
+  | "VALUES_NOT_CONFIRMED"
+  | "RESOLUTION_LINK_INVALID";
+
+export class ReviewError extends Error {
+  constructor(
+    message: string,
+    readonly code: ReviewErrorCode,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "ReviewError";
+  }
+}
+
+/**
+ * Stable, log-safe identifier for an error: a typed `code` (ours or Prisma's) or "UNEXPECTED".
+ * Never returns messages, stacks or values, which can contain shipment data.
+ */
+export function safeErrorCode(error: unknown): string {
+  if (typeof error === "object" && error !== null && "code" in error) {
+    const code = (error as { code: unknown }).code;
+    if (typeof code === "string" && /^[A-Z0-9_]{1,64}$/.test(code)) return code;
+  }
+  return "UNEXPECTED";
+}

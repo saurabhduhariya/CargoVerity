@@ -140,7 +140,7 @@ export async function listShipments(
           createdAt: true,
           revision: true,
           resolutions: {
-            select: { id: true, type: true, managerApprovedAt: true },
+            select: { id: true, type: true, reason: true, evidence: true, managerApprovedAt: true, createdAt: true },
           },
         },
       },

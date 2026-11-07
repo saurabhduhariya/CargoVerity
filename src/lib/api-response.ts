@@ -6,6 +6,7 @@ import {
   DocumentUploadError,
   ExtractionError,
   ProviderError,
+  ReviewError,
 } from "@/lib/errors";
 
 /**
@@ -33,7 +34,7 @@ function uniqueConstraintTargets(error: object): string[] {
 export function apiError(error: unknown) {
   const message = error instanceof Error ? error.message : "Unexpected server error.";
 
-  if (error instanceof DocumentUploadError || error instanceof ExtractionError) {
+  if (error instanceof DocumentUploadError || error instanceof ExtractionError || error instanceof ReviewError) {
     return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
   }
 

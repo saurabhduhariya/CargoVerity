@@ -211,9 +211,14 @@ describe("Export Preview & Verification (Week 5 Step 5)", () => {
           ruleKey: "invoice_total_matches_line_sum",
           status: "MISMATCH",
           createdAt: new Date("2026-11-05T11:00:00Z"),
+          severity: "BLOCKING",
           resolutions: [
             {
+              id: "res-exc-1",
               type: "ACCEPTED_EXCEPTION",
+              // Week 4: an exception needs reason + evidence to be valid at all.
+              reason: "Supplier confirmed rounding difference",
+              evidence: "TKT-1001",
               managerApprovedAt: null, // NOT approved by manager!
             },
           ],

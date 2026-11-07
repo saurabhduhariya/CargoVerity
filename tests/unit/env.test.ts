@@ -10,6 +10,9 @@ const managedKeys = [
   "OPENROUTER_API_KEY",
   "OPENROUTER_MODEL",
   "DATABASE_URL",
+  "CHECK_WEIGHT_TOLERANCE_PERCENT",
+  "CHECK_WEIGHT_TOLERANCE_KG",
+  "CHECK_MONETARY_TOLERANCE",
 ] as const;
 
 const originalValues = Object.fromEntries(
@@ -64,5 +67,27 @@ describe("server environment validation", () => {
     process.env.GROQ_API_KEY = "test-groq-key";
     process.env.DATABASE_URL = "not-a-postgres-url";
     expect(() => requireDatabaseUrl()).toThrow("DATABASE_URL");
+  });
+});
+
+describe("cross-check tolerance environment (Week 4)", () => {
+  it("defaults to 0.5% weight, 0 kg floor and 0.01 money", () => {
+    delete process.env.CHECK_WEIGHT_TOLERANCE_PERCENT;
+    delete process.env.CHECK_WEIGHT_TOLERANCE_KG;
+    delete process.env.CHECK_MONETARY_TOLERANCE;
+    const env = getEnv();
+    expect(env.CHECK_WEIGHT_TOLERANCE_PERCENT).toBe(0.5);
+    expect(env.CHECK_WEIGHT_TOLERANCE_KG).toBe(0);
+    expect(env.CHECK_MONETARY_TOLERANCE).toBe(0.01);
+  });
+
+  it.each([
+    ["CHECK_WEIGHT_TOLERANCE_PERCENT", "-1"],
+    ["CHECK_WEIGHT_TOLERANCE_PERCENT", "101"],
+    ["CHECK_WEIGHT_TOLERANCE_KG", "-0.5"],
+    ["CHECK_MONETARY_TOLERANCE", "abc"],
+  ] as const)("rejects %s=%s through the configuration-error path", (key, value) => {
+    process.env[key] = value;
+    expect(() => getEnv()).toThrow(/Invalid environment configuration/);
   });
 });

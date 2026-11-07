@@ -7,6 +7,7 @@ import {
   getCrossCheckHistory,
   getLatestCrossCheckRun,
 } from "@/lib/crosschecks/service";
+import { listActiveLineMappings } from "@/lib/crosschecks/line-mapping";
 
 /**
  * POST /api/shipments/[id]/crosschecks
@@ -92,10 +93,13 @@ export async function GET(
         })
       : undefined;
 
+    const lineMappings = await listActiveLineMappings(prisma, shipment.id);
+
     return NextResponse.json({
       shipmentId: shipment.id,
       currentRevision: shipment.currentRevision,
       latestRun,
+      lineMappings,
       history,
     });
   } catch (error) {

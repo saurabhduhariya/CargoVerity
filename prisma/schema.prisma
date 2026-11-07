@@ -87,6 +87,8 @@ model User {
   exportEvents   ExportEvent[]
   extractionRuns ExtractionRun[] @relation("ExtractionRunRequester")
   crossCheckRunRequests CrossCheckRun[] @relation("CrossCheckRunRequester")
+  lineItemMappingsCreated    LineItemMapping[] @relation("LineItemMappingCreator")
+  lineItemMappingsSuperseded LineItemMapping[] @relation("LineItemMappingSuperseder")
 }
 
 model Supplier {
@@ -118,6 +120,7 @@ model Shipment {
   approvals      Approval[]
   auditEvents    AuditEvent[]
   exportEvents   ExportEvent[]
+  lineItemMappings LineItemMapping[]
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
 
@@ -250,9 +253,40 @@ model LineItem {
   pageNumber      Int?
   reviewReason    String?
   createdAt       DateTime        @default(now())
+  invoiceMappings     LineItemMapping[] @relation("InvoiceLineMapping")
+  packingListMappings LineItemMapping[] @relation("PackingListLineMapping")
 
   @@unique([extractionRunId, batchNumber, lineNumber])
   @@index([documentId])
+}
+
+/// Executive-selected Invoice line -> Packing List line mapping used by line-item matching.
+/// Append-only: a mapping is never deleted; it is superseded (supersededAt/supersededById).
+/// At most one ACTIVE mapping per invoice line and per packing-list line is enforced by the partial
+/// unique indexes "LineItemMapping_one_active_per_invoice_line" and
+/// "LineItemMapping_one_active_per_packing_line" (WHERE "supersededAt" IS NULL), plus CHECK
+/// constraints "LineItemMapping_distinct_lines" and "LineItemMapping_superseded_pair", created in
+/// migration 20261107000000_line_item_mappings (Prisma cannot express them here).
+model LineItemMapping {
+  id                    String    @id @default(uuid()) @db.Uuid
+  shipmentId            String    @db.Uuid
+  shipment              Shipment  @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  invoiceLineItemId     String    @db.Uuid
+  invoiceLineItem       LineItem  @relation("InvoiceLineMapping", fields: [invoiceLineItemId], references: [id], onDelete: Cascade)
+  packingListLineItemId String    @db.Uuid
+  packingListLineItem   LineItem  @relation("PackingListLineMapping", fields: [packingListLineItemId], references: [id], onDelete: Cascade)
+  reason                String
+  revision              Int
+  createdById           String    @db.Uuid
+  createdBy             User      @relation("LineItemMappingCreator", fields: [createdById], references: [id])
+  createdAt             DateTime  @default(now())
+  supersededAt          DateTime?
+  supersededById        String?   @db.Uuid
+  supersededBy          User?     @relation("LineItemMappingSuperseder", fields: [supersededById], references: [id], onDelete: Restrict)
+
+  @@index([shipmentId, supersededAt])
+  @@index([invoiceLineItemId])
+  @@index([packingListLineItemId])
 }
 
 model FieldCorrection {

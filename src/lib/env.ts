@@ -57,6 +57,18 @@ const envSchema = z.object({
   MAX_AI_RETRIES: z.coerce.number().int().min(0).max(1).default(1),
   AI_MAX_COMPLETION_TOKENS: z.coerce.number().int().min(256).max(8000).default(1000),
   AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(5000).max(120000).default(60000),
+  CHECK_WEIGHT_TOLERANCE_PERCENT: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().min(0).max(100).default(0.5),
+  ),
+  CHECK_WEIGHT_TOLERANCE_KG: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().min(0).default(0),
+  ),
+  CHECK_MONETARY_TOLERANCE: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().min(0).default(0.01),
+  ),
   EXPORT_PROFILE_ID: defaultedString("demo-v1"),
   DOCUMENT_RETENTION_DAYS: optionalString,
 });

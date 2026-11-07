@@ -81,7 +81,8 @@ describe("Shipment Status List & Queue Actions (Week 5 Step 7)", () => {
           severity: "BLOCKING",
           createdAt: new Date("2026-11-06T10:00:00Z"),
           revision: 2,
-          resolutions: [{ id: "r-1", type: "SOURCE_CORRECTED", managerApprovedAt: null }], // Resolved!
+          // Week 4 fix: SOURCE_CORRECTED is an audit link only; it never clears a current failure.
+          resolutions: [{ id: "r-1", type: "SOURCE_CORRECTED", managerApprovedAt: null }],
         },
         {
           id: "c-4",
@@ -109,8 +110,9 @@ describe("Shipment Status List & Queue Actions (Week 5 Step 7)", () => {
       expect(summary.passed).toBe(1);
       expect(summary.mismatch).toBe(2);
       expect(summary.incomplete).toBe(1);
-      expect(summary.resolved).toBe(1);
-      expect(summary.blockingUnresolved).toBe(2); // c-2 (mismatch) and c-4 (incomplete)
+      expect(summary.resolved).toBe(0);
+      // c-2 (unresolved mismatch) and c-3 (audit-link only). c-4 is WARNING severity and never blocks.
+      expect(summary.blockingUnresolved).toBe(2);
       expect(summary.hasBlockingMismatches).toBe(true);
     });
 
@@ -124,7 +126,13 @@ describe("Shipment Status List & Queue Actions (Week 5 Step 7)", () => {
           createdAt: new Date("2026-11-06T10:00:00Z"),
           revision: 1,
           resolutions: [
-            { id: "r-1", type: "ACCEPTED_EXCEPTION", managerApprovedAt: null as Date | null }, // Not signed off yet
+            {
+              id: "r-1",
+              type: "ACCEPTED_EXCEPTION",
+              reason: "Supplier confirmed weight variance in writing",
+              evidence: "TKT-8492",
+              managerApprovedAt: null as Date | null,
+            }, // Not signed off yet
           ],
         },
       ];

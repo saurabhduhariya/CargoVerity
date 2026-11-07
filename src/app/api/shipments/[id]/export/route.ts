@@ -6,6 +6,7 @@ import { requireAppUser } from "@/lib/auth";
 import { getPrisma } from "@/lib/db";
 import { getEnv } from "@/lib/env";
 import { canExport, selectLatestCrossChecks } from "@/lib/export/guard";
+import { summarizeClearance } from "@/lib/crosschecks/resolution-state";
 import { getExportProfile } from "@/lib/export/csv";
 
 const REQUIRED_EXPORT_DOC_TYPES = ["INVOICE", "PACKING_LIST", "BILL_OF_LADING"] as const;
@@ -98,21 +99,12 @@ export async function GET(
       shipment.documents.some((d) => d.docType === type),
     );
 
-    // Check unapproved exceptions (ACCEPTED_EXCEPTION without manager sign-off)
-    const unapprovedExceptionCount = latestChecks.filter((c) =>
-      c.resolutions?.some(
-        (r) => r.type === "ACCEPTED_EXCEPTION" && r.managerApprovedAt === null,
-      ),
-    ).length;
-
-    // Check unresolved cross-checks
-    const unresolvedStatuses = latestChecks
-      .filter(
-        (c) =>
-          ["MISMATCH", "INCOMPLETE"].includes(c.status) &&
-          (!c.resolutions || c.resolutions.length === 0),
-      )
-      .map((c) => c.status as "MISMATCH" | "INCOMPLETE");
+    // Shared clearance rules (same as submission guard, manager decision and shipment summary):
+    // - unresolved: failing BLOCKING checks with no valid ACCEPTED_EXCEPTION
+    // - unapproved: failing BLOCKING checks cleared by an exception that lacks manager sign-off
+    const clearance = summarizeClearance(latestChecks, { isLatestRun: true, atCurrentRevision: true });
+    const unapprovedExceptionCount = clearance.pendingManagerApproval.length;
+    const unresolvedStatuses = clearance.unresolvedStatuses;
 
     // 3. Run pure export guard (Rules 3, 4, 5, 6, 7, 8)
     const guard = canExport({

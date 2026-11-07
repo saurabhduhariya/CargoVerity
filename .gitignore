@@ -32,6 +32,8 @@
 .DS_Store
 *.pem
 *.log
+.kiro/
+.vscode/
 
 # local tooling caches
 /.cache/

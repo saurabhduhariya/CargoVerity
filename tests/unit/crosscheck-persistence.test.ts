@@ -64,6 +64,9 @@ describe("Cross-Check Run Persistence Service (Week 4 Step 5)", () => {
       shipment: {
         findUnique: vi.fn().mockResolvedValue(mockShipment),
       },
+      lineItemMapping: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
       crossCheckRun: {
         create: vi.fn().mockImplementation(async ({ data }: { data: unknown }) => {
           createdRunData = { id: "cc-run-999", ...(data as object) };
@@ -138,7 +141,10 @@ describe("Cross-Check Run Persistence Service (Week 4 Step 5)", () => {
               id: "resolv-1",
               type: "ACCEPTED_EXCEPTION",
               reason: "Known tare variance confirmed by port agent",
+              // Week 4: an accepted exception needs external evidence to be valid.
+              evidence: "PORT-AGENT-EMAIL-2026-11-06",
               managerApprovedAt: new Date("2026-11-06T12:30:00Z"), // approved by manager
+              createdAt: new Date("2026-11-06T12:20:00Z"),
               resolvedBy: { id: "mgr-1", email: "mgr@cargoverity.test", role: "MANAGER" },
             },
           ],
@@ -223,6 +229,9 @@ describe("Cross-Check Run Persistence Service (Week 4 Step 5)", () => {
         findFirst: vi.fn().mockResolvedValue(mockShipment),
         findUnique: vi.fn().mockResolvedValue(mockShipment),
       },
+      lineItemMapping: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
       crossCheckRun: {
         create: vi.fn().mockResolvedValue(mockRun),
         findFirst: vi.fn().mockResolvedValue(mockRun),
@@ -253,3 +262,93 @@ describe("Cross-Check Run Persistence Service (Week 4 Step 5)", () => {
   });
 });
 
+
+describe("Week 4 Step 5: canonical hash, snapshot contents and single transaction", () => {
+  function shipmentWith(grossValue: string, mappingTarget = "pl-line-1") {
+    return {
+      shipment: {
+        id: "ship-h",
+        currentRevision: 3,
+        documents: [
+          {
+            id: "doc-pl",
+            docType: "PACKING_LIST",
+            documentVersion: 1,
+            isCurrent: true,
+            extractionRuns: [
+              {
+                id: "ext-pl",
+                status: "COMPLETED",
+                fields: [{ id: "f-gw", fieldKey: "grossWeight", currentValue: grossValue, unit: "kg", sourceQuote: "GW", pageNumber: 1 }],
+                lineItems: [{ id: "pl-line-1", lineNumber: 1, description: "Bolts", quantity: 10, quantityUnit: "pcs", lineTotal: null, currency: null }],
+              },
+            ],
+          },
+        ],
+      },
+      mappings: [
+        {
+          id: "map-1",
+          invoiceLineItemId: "inv-line-1",
+          packingListLineItemId: mappingTarget,
+          reason: "manual",
+          createdById: "user-1",
+          createdAt: new Date("2026-11-07T10:00:00Z"),
+          createdBy: { id: "user-1", email: "exec@example.test", fullName: "Exec" },
+        },
+      ],
+    };
+  }
+
+  function clientFor(data: ReturnType<typeof shipmentWith>, calls: string[] = []) {
+    const tx = {
+      shipment: { findUnique: vi.fn(async () => (calls.push("tx.shipment"), data.shipment)) },
+      lineItemMapping: { findMany: vi.fn(async () => (calls.push("tx.mappings"), data.mappings)) },
+      crossCheckRun: { create: vi.fn(async ({ data: row }: { data: Record<string, unknown> }) => (calls.push("tx.run"), { id: "run-x", ...row })) },
+      crossCheckResult: { create: vi.fn(async ({ data: row }: { data: Record<string, unknown> }) => ({ id: "r", ...row, resolutions: [] })) },
+    };
+    const options: unknown[] = [];
+    const client = {
+      shipment: { findUnique: vi.fn(async () => (calls.push("client.shipment"), data.shipment)) },
+      $transaction: vi.fn(async (callback: (t: typeof tx) => unknown, opts: unknown) => {
+        options.push(opts);
+        return callback(tx);
+      }),
+    };
+    return { client, tx, options };
+  }
+
+  it("reads and writes inside one RepeatableRead transaction", async () => {
+    const calls: string[] = [];
+    const { client, options } = clientFor(shipmentWith("3165"), calls);
+    await createCrossCheckRun({ shipmentId: "ship-h", prismaClient: client as never });
+
+    expect(calls).not.toContain("client.shipment");
+    expect(calls.slice(0, 3)).toEqual(["tx.shipment", "tx.mappings", "tx.run"]);
+    expect(options[0]).toMatchObject({ isolationLevel: "RepeatableRead" });
+  });
+
+  it("hash changes with a nested field value or an active mapping, and is stable otherwise", async () => {
+    const hashOf = async (data: ReturnType<typeof shipmentWith>) => {
+      const { client } = clientFor(data);
+      const { run } = await createCrossCheckRun({ shipmentId: "ship-h", prismaClient: client as never });
+      return (run as unknown as { inputHash: string }).inputHash;
+    };
+    const base = await hashOf(shipmentWith("3165"));
+    expect(await hashOf(shipmentWith("3165"))).toBe(base);
+    expect(await hashOf(shipmentWith("3156"))).not.toBe(base);
+    expect(await hashOf(shipmentWith("3165", "pl-line-2"))).not.toBe(base);
+  });
+
+  it("stores schemaVersion 2 with tolerances and mappings in the snapshot", async () => {
+    const { client, tx } = clientFor(shipmentWith("3165"));
+    await createCrossCheckRun({ shipmentId: "ship-h", prismaClient: client as never });
+    const snapshot = (tx.crossCheckRun.create.mock.calls[0][0] as { data: { inputSnapshot: Record<string, unknown> } }).data.inputSnapshot;
+
+    expect(snapshot.schemaVersion).toBe(2);
+    expect(snapshot.tolerances).toMatchObject({ monetary: "0.01", weightPercent: "0.5", weightKg: "0" });
+    expect(snapshot.mappings).toEqual([
+      expect.objectContaining({ mappingId: "map-1", invoiceLineId: "inv-line-1", packingListLineId: "pl-line-1" }),
+    ]);
+  });
+});

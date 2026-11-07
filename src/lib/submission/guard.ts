@@ -2,6 +2,7 @@ import { DocumentType } from "@/lib/ai/types";
 import { DOCUMENT_FIELD_POLICIES } from "@/lib/ai/review-policy.service";
 import { getEnv } from "@/lib/env";
 import { getPrisma } from "@/lib/db";
+import { evaluateClearance } from "@/lib/crosschecks/resolution-state";
 import type {
   ShipmentStatus,
   DocumentStatus,
@@ -89,6 +90,7 @@ export type SubmissionGuardResolution = {
   reason: string;
   evidence?: string | null;
   managerApprovedAt: Date | null;
+  createdAt?: Date | null;
 };
 
 export type SubmissionGuardCrossCheck = {
@@ -288,39 +290,32 @@ export function evaluateSubmissionGuard(input: SubmissionGuardInput): Submission
     }
   }
 
-  // 8. Cross-check results & resolutions check (Rules 6 & 7)
+  // 8. Cross-check results & resolutions check (Rules 6 & 7), via the shared clearance helper.
+  //    Only a valid ACCEPTED_EXCEPTION clears a failing BLOCKING check; WARNING failures never block;
+  //    SOURCE_CORRECTED / DOCUMENT_REPLACEMENT are audit links and never clear a current failure.
   if (input.latestCheckRun && input.latestCheckRun.revision === input.currentRevision) {
     for (const check of input.latestCheckRun.results) {
-      const isFailed = check.status === "MISMATCH" || check.status === "INCOMPLETE";
-      if (!isFailed) continue;
+      const clearance = evaluateClearance(check, { isLatestRun: true, atCurrentRevision: true });
+      if (!clearance.blocksSubmission) continue;
 
-      if (!check.resolutions || check.resolutions.length === 0) {
+      if (clearance.problem === "EXCEPTION_MISSING_EVIDENCE") {
+        blockers.push({
+          code: "ACCEPTED_EXCEPTION_MISSING_EVIDENCE",
+          checkRuleKey: check.ruleKey,
+          message: `Accepted exception for cross-check "${check.ruleKey}" requires external evidence or query reference.`,
+        });
+      } else if (clearance.problem === "EXCEPTION_MISSING_REASON") {
+        blockers.push({
+          code: "ACCEPTED_EXCEPTION_MISSING_REASON",
+          checkRuleKey: check.ruleKey,
+          message: `Accepted exception for cross-check "${check.ruleKey}" requires a valid explanation (minimum 5 characters).`,
+        });
+      } else {
         blockers.push({
           code: "UNRESOLVED_CROSS_CHECK",
           checkRuleKey: check.ruleKey,
-          message: `Failed cross-check "${check.ruleKey}" (${check.status}) has not been resolved.`,
+          message: `Failed cross-check "${check.ruleKey}" (${check.status}) has not been resolved with a valid accepted exception or a corrected source.`,
         });
-        continue;
-      }
-
-      // Check active resolution (latest)
-      const activeRes = check.resolutions[check.resolutions.length - 1];
-      if (activeRes.type === "ACCEPTED_EXCEPTION") {
-        // Rule 7: Accepted exception must have valid evidence and reason
-        if (!activeRes.evidence || activeRes.evidence.trim().length < 3) {
-          blockers.push({
-            code: "ACCEPTED_EXCEPTION_MISSING_EVIDENCE",
-            checkRuleKey: check.ruleKey,
-            message: `Accepted exception for cross-check "${check.ruleKey}" requires external evidence or query reference.`,
-          });
-        }
-        if (!activeRes.reason || activeRes.reason.trim().length < 5) {
-          blockers.push({
-            code: "ACCEPTED_EXCEPTION_MISSING_REASON",
-            checkRuleKey: check.ruleKey,
-            message: `Accepted exception for cross-check "${check.ruleKey}" requires a valid explanation (minimum 5 characters).`,
-          });
-        }
       }
     }
   }
@@ -363,7 +358,7 @@ export async function evaluateShipmentSubmission(
         },
       },
       crossCheckRuns: {
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: 1,
         include: {
           results: {
@@ -427,6 +422,7 @@ export async function evaluateShipmentSubmission(
               reason: res.reason,
               evidence: res.evidence,
               managerApprovedAt: res.managerApprovedAt,
+              createdAt: res.createdAt,
             })),
           })),
         }

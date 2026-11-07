@@ -1,5 +1,6 @@
 import { getPrisma } from "@/lib/db";
 import { ConflictError } from "@/lib/errors";
+import { summarizeClearance } from "@/lib/crosschecks/resolution-state";
 import { UserRole } from "@/generated/prisma/enums";
 
 export type ManagerDecisionType = "APPROVE" | "REJECT";
@@ -56,7 +57,7 @@ export async function processManagerDecision(
     where: { id: input.shipmentId },
     include: {
       crossCheckRuns: {
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: 1,
         include: {
           results: {
@@ -145,11 +146,10 @@ export async function processManagerDecision(
   }
 
   const checks = latestRun.results;
-  const unresolvedChecks = checks.filter(
-    (check) =>
-      (check.status === "MISMATCH" || check.status === "INCOMPLETE") &&
-      check.resolutions.length === 0,
-  );
+  // Shared clearance rules: a failing BLOCKING check needs a valid ACCEPTED_EXCEPTION (the manager's
+  // approval below supplies the sign-off). Audit-link resolutions never clear a current failure.
+  const clearance = summarizeClearance(checks, { isLatestRun: true, atCurrentRevision: true });
+  const unresolvedChecks = clearance.submissionBlockers;
 
   if (unresolvedChecks.length > 0) {
     throw new Error(
@@ -157,10 +157,13 @@ export async function processManagerDecision(
     );
   }
 
-  // Rule 8: If any check has an ACCEPTED_EXCEPTION resolution, require meaningful manager comment
-  const hasAcceptedException = checks.some((c) =>
-    c.resolutions.some((res) => res.type === "ACCEPTED_EXCEPTION"),
-  );
+  // Exceptions this approval signs off: active valid exceptions on failing BLOCKING checks.
+  const exceptionsToSignOff = clearance.evaluated
+    .filter((entry) => entry.clearance.isCurrentBlockingFailure && entry.clearance.activeException)
+    .map((entry) => entry.clearance.activeException!);
+
+  // Rule 8: If this approval relies on an accepted exception, require a meaningful manager comment
+  const hasAcceptedException = exceptionsToSignOff.length > 0;
 
   const trimmedComment = input.comment?.trim() ?? "";
   if (hasAcceptedException && trimmedComment.length < 5) {
@@ -198,9 +201,8 @@ export async function processManagerDecision(
     });
 
     // c. Stamp managerApprovedAt on any pending ACCEPTED_EXCEPTION resolutions
-    const resolutionIdsToApprove = checks
-      .flatMap((c) => c.resolutions)
-      .filter((r) => r.type === "ACCEPTED_EXCEPTION" && r.managerApprovedAt === null)
+    const resolutionIdsToApprove = exceptionsToSignOff
+      .filter((r) => r.managerApprovedAt === null)
       .map((r) => r.id);
 
     if (resolutionIdsToApprove.length > 0) {

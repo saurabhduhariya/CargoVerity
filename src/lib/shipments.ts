@@ -1,4 +1,5 @@
 import { Prisma, type ShipmentStatus } from "@/generated/prisma/client";
+import { evaluateClearance, selectLatestByRule } from "@/lib/crosschecks/resolution-state";
 
 export type ShipmentListFilters = {
   search?: string;
@@ -137,7 +138,10 @@ export type RawCrossCheckInput = {
   resolutions?: Array<{
     id: string;
     type: string;
+    reason?: string | null;
+    evidence?: string | null;
     managerApprovedAt: Date | string | null;
+    createdAt?: Date | string | null;
   }>;
 };
 
@@ -186,18 +190,8 @@ export function deriveCrossChecksSummary(
 ): CrossChecksSummary {
   const revisionChecks = checks.filter((c) => c.revision === currentRevision);
 
-  // Group latest check by ruleKey
-  const latestByRule = new Map<string, RawCrossCheckInput>();
-  for (const check of revisionChecks) {
-    const existing = latestByRule.get(check.ruleKey);
-    const existingTime = existing ? new Date(existing.createdAt).getTime() : 0;
-    const checkTime = new Date(check.createdAt).getTime();
-    if (!existing || checkTime > existingTime) {
-      latestByRule.set(check.ruleKey, check);
-    }
-  }
-
-  const latestChecks = Array.from(latestByRule.values());
+  // Latest check per ruleKey (createdAt ties broken by ID)
+  const latestChecks = selectLatestByRule(revisionChecks);
 
   let passed = 0;
   let mismatch = 0;
@@ -206,21 +200,17 @@ export function deriveCrossChecksSummary(
   let blockingUnresolved = 0;
 
   for (const check of latestChecks) {
-    const resolutions = check.resolutions ?? [];
-    const activeRes = resolutions[0];
-    const isResolved =
-      Boolean(activeRes) &&
-      (activeRes.type !== "ACCEPTED_EXCEPTION" || activeRes.managerApprovedAt !== null);
+    // Shared clearance rules: resolved = cleared for approval (valid exception with manager
+    // sign-off). WARNING failures are counted but never block; audit links never clear.
+    const clearance = evaluateClearance(check, { isLatestRun: true, atCurrentRevision: true });
 
     if (check.status === "PASS") {
       passed++;
-    } else if (check.status === "MISMATCH") {
-      mismatch++;
-      if (isResolved) resolved++;
-      else blockingUnresolved++;
-    } else if (check.status === "INCOMPLETE") {
-      incomplete++;
-      if (isResolved) resolved++;
+    } else if (check.status === "MISMATCH" || check.status === "INCOMPLETE") {
+      if (check.status === "MISMATCH") mismatch++;
+      else incomplete++;
+      if (!clearance.isBlockingSeverity) continue;
+      if (clearance.clearedForApproval) resolved++;
       else blockingUnresolved++;
     }
   }

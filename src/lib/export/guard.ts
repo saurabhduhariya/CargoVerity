@@ -10,7 +10,10 @@ export type ExportGuardInput = {
   profileId: string;
 };
 
+import { selectLatestByRule } from "@/lib/crosschecks/resolution-state";
+
 export type RevisionCrossCheck = {
+  id?: string;
   ruleKey: string;
   status: string;
   createdAt: Date;
@@ -20,13 +23,9 @@ export type RevisionCrossCheck = {
   }>;
 };
 
+/** Latest result per rule; createdAt ties are broken by ID so the choice is deterministic. */
 export function selectLatestCrossChecks<T extends RevisionCrossCheck>(checks: T[]) {
-  const latestByRule = new Map<string, T>();
-  for (const check of checks) {
-    const existing = latestByRule.get(check.ruleKey);
-    if (!existing || check.createdAt > existing.createdAt) latestByRule.set(check.ruleKey, check);
-  }
-  return [...latestByRule.values()];
+  return selectLatestByRule(checks);
 }
 
 /**
