@@ -1,7 +1,7 @@
-import type { LabelHTMLAttributes } from "react";
+import type { ComponentProps } from "react";
 
 import { cn } from "@/lib/utils";
 
-export function Label({ className, ...props }: LabelHTMLAttributes<HTMLLabelElement>) {
-  return <label className={cn("text-sm font-medium text-slate-700", className)} {...props} />;
+export function Label({ className, ...props }: ComponentProps<"label">) {
+  return <label {...props} data-slot="label" className={cn("text-sm font-medium text-foreground-secondary", className)} />;
 }

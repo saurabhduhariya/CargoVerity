@@ -1,12 +1,21 @@
-import type { InputHTMLAttributes } from "react";
+import type { ComponentProps } from "react";
 
+import { CONTROL_STYLES, FOCUS_RING_STYLES } from "@/components/ui/control-styles";
 import { cn } from "@/lib/utils";
 
-export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
+export function Input({ className, readOnly, ...props }: ComponentProps<"input">) {
   return (
     <input
-      className={cn("flex h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none ring-offset-white placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100", className)}
       {...props}
+      data-slot="input"
+      readOnly={readOnly}
+      className={cn(
+        CONTROL_STYLES,
+        FOCUS_RING_STYLES,
+        "h-[var(--control-height)] file:mr-3 file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground",
+        readOnly && "bg-surface-subtle",
+        className,
+      )}
     />
   );
 }
