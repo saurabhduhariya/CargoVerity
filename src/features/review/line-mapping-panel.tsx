@@ -1,19 +1,13 @@
 "use client";
 
-import { Link2, Unlink } from "lucide-react";
+import { Eye, Link2, Unlink } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import type {
-  ReviewWorkspaceCrossCheck,
-  ReviewWorkspaceDocument,
-  ReviewWorkspaceLineMapping,
-} from "@/features/review/review-workspace";
-
-/**
- * Week 4 Step 4: manual Invoice -> Packing List line mapping for lines the deterministic matcher
- * left unresolved (no candidate or ambiguous duplicates). Charge lines are never offered.
- */
+import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { displayDate } from "./review-presentation";
+import type { EvidenceTarget, ReviewWorkspaceCrossCheck, ReviewWorkspaceDocument, ReviewWorkspaceLineMapping } from "./review-types";
 
 type UnmatchedLine = {
   documentType: "INVOICE" | "PACKING_LIST";
@@ -25,8 +19,8 @@ type UnmatchedLine = {
   reason: string;
   candidateLineIds?: string[];
 };
-
 type StaleMapping = { mappingId?: string; invoiceLineId: string; packingListLineId: string; reason: string };
+type MappingDetails = { unmatchedLines?: UnmatchedLine[]; staleManualMappings?: StaleMapping[] };
 
 export type LineMappingPanelProps = {
   check: ReviewWorkspaceCrossCheck;
@@ -39,127 +33,110 @@ export type LineMappingPanelProps = {
   onReasonChange: (value: string) => void;
   onMap: (invoiceLineId: string) => void;
   onRemove: (mappingId: string) => void;
+  onInspect?: (target: EvidenceTarget) => void;
 };
 
 function lineLabel(line: { lineNumber?: number; description: string | null; quantity: string | number | null; unit?: string | null }) {
-  const quantity = line.quantity !== null && line.quantity !== undefined ? ` · ${line.quantity}${line.unit ? ` ${line.unit}` : ""}` : "";
-  return `#${line.lineNumber ?? "?"} ${line.description ?? "(no description)"}${quantity}`;
+  return `#${line.lineNumber ?? "?"} ${line.description ?? "No description"}${line.quantity != null ? ` · ${line.quantity}${line.unit ? ` ${line.unit}` : ""}` : ""}`;
 }
 
-export function LineMappingPanel(props: LineMappingPanelProps) {
-  const { check, documents, mappings, selections, reason, disabled, onSelect, onReasonChange, onMap, onRemove } = props;
-  const details = check.details as {
-    unmatchedLines?: UnmatchedLine[];
-    staleManualMappings?: StaleMapping[];
-  };
+/** Retain selections across refresh, but never send a vanished or newly matched line. */
+export function mappingSelectionIssue(
+  check: ReviewWorkspaceCrossCheck | undefined,
+  documents: ReviewWorkspaceDocument[],
+  mappings: ReviewWorkspaceLineMapping[],
+  selections: Record<string, string>,
+  invoiceId: string,
+): string | null {
+  const packingId = selections[invoiceId];
+  if (!packingId) return "Choose a packing-list line.";
+  const invoice = documents.find((doc) => doc.docType === "INVOICE")?.lineItems.find((line) => line.id === invoiceId);
+  const packing = documents.find((doc) => doc.docType === "PACKING_LIST")?.lineItems.find((line) => line.id === packingId);
+  if (!invoice || !packing) return "A selected line is no longer in the current extraction. Inspect the current lines and choose again.";
+  const unmatched = (check?.details as MappingDetails | undefined)?.unmatchedLines ?? [];
+  if (!unmatched.some((line) => line.documentType === "INVOICE" && line.lineId === invoiceId)) {
+    return "This invoice line no longer needs manual mapping. Discard the retained selection and review the current check.";
+  }
+  if (!unmatched.some((line) => line.documentType === "PACKING_LIST" && line.lineId === packingId) ||
+    mappings.some((mapping) => mapping.invoiceLineId === invoiceId || mapping.packingListLineId === packingId)) {
+    return "The selected line has already been matched or mapped. Choose another current unmatched line.";
+  }
+  if (Object.entries(selections).some(([id, selected]) => id !== invoiceId && selected === packingId)) {
+    return "This packing-list line is selected for another invoice line. Choose a different line.";
+  }
+  return null;
+}
+
+export function LineMappingPanel({ check, documents, mappings, selections, reason, disabled, onSelect, onReasonChange, onMap, onRemove, onInspect }: LineMappingPanelProps) {
+  const details = check.details as MappingDetails;
   const unmatched = details.unmatchedLines ?? [];
-  const unmatchedInvoice = unmatched.filter((line) => line.documentType === "INVOICE" && line.lineId);
-  const unmatchedPacking = unmatched.filter((line) => line.documentType === "PACKING_LIST" && line.lineId);
+  const invoices = unmatched.filter((line) => line.documentType === "INVOICE" && line.lineId);
+  const packing = unmatched.filter((line) => line.documentType === "PACKING_LIST" && line.lineId);
   const stale = details.staleManualMappings ?? [];
-
-  const allLines = new Map(
-    documents.flatMap((doc) => doc.lineItems.map((item) => [item.id, { ...item, docType: doc.docType }] as const)),
-  );
-
-  if (unmatchedInvoice.length === 0 && mappings.length === 0 && stale.length === 0) return null;
+  const allLines = new Map(documents.flatMap((doc) => doc.lineItems.map((line) => [line.id, { ...line, doc }] as const)));
+  const retained = Object.entries(selections).filter(([invoiceId, selected]) => selected && !invoices.some((line) => line.lineId === invoiceId));
+  if (!invoices.length && !mappings.length && !stale.length && !retained.length) return null;
 
   return (
-    <section aria-label="Manual line mapping" className="mt-2 space-y-2 rounded-md border border-sky-200 bg-sky-50/40 p-2 text-[11px]">
-      <h4 className="font-semibold text-slate-800">Manual line mapping</h4>
-
-      {mappings.length > 0 ? (
-        <ul className="space-y-1">
-          {mappings.map((mapping) => {
-            const invoiceLine = allLines.get(mapping.invoiceLineId);
-            const packingLine = allLines.get(mapping.packingListLineId);
-            return (
-              <li key={mapping.id} className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-200 bg-white p-1.5">
-                <span className="text-slate-700">
-                  Invoice {invoiceLine ? lineLabel({ ...invoiceLine, unit: invoiceLine.quantityUnit }) : mapping.invoiceLineId}
-                  {" -> "}
-                  Packing list {packingLine ? lineLabel({ ...packingLine, unit: packingLine.quantityUnit }) : mapping.packingListLineId}
-                  <span className="block text-[10px] text-slate-500">
-                    Mapped by {mapping.createdBy ?? "reviewer"} on {new Date(mapping.createdAt).toLocaleString()} · {mapping.reason}
-                  </span>
-                </span>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-6 text-[11px]"
-                  disabled={disabled}
-                  onClick={() => onRemove(mapping.id)}
-                  aria-label={`Remove mapping for invoice line ${invoiceLine?.lineNumber ?? ""}`}
-                >
-                  <Unlink className="mr-1 size-3" aria-hidden="true" /> Remove mapping
-                </Button>
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
-
-      {stale.length > 0 ? (
-        <div role="status" className="rounded border border-amber-300 bg-amber-50 p-1.5 text-amber-900">
-          {stale.length} saved mapping(s) refer to lines that are no longer in the current extraction. Remove them and map the current lines.
-        </div>
-      ) : null}
-
-      {unmatchedInvoice.length > 0 ? (
-        <div className="space-y-1.5">
-          <label className="block">
-            <span className="text-slate-700">Reason for mapping (required, min 5 characters)</span>
-            <Input
-              className="mt-0.5 h-7 bg-white text-xs"
-              value={reason}
-              onChange={(event) => onReasonChange(event.target.value)}
-              placeholder="e.g. Same SKU; supplier uses a different description"
-            />
-          </label>
-          {unmatchedInvoice.map((line) => {
-            const selectId = `map-select-${line.lineId}`;
-            const options = unmatchedPacking;
-            return (
-              <div key={line.lineId} className="flex flex-wrap items-end gap-2 rounded border border-slate-200 bg-white p-1.5">
-                <div className="min-w-[180px] flex-1">
-                  <span className="block text-slate-800">Invoice {lineLabel(line)}</span>
-                  {line.reason === "AMBIGUOUS_DUPLICATE_CANDIDATES" ? (
-                    <span className="text-[10px] text-amber-800">Several packing-list lines match; choose one.</span>
-                  ) : (
-                    <span className="text-[10px] text-slate-500">No packing-list line matched automatically.</span>
-                  )}
-                </div>
-                <label htmlFor={selectId} className="sr-only">
-                  Packing list line for invoice line {line.lineNumber}
-                </label>
-                <select
-                  id={selectId}
-                  className="h-7 rounded border border-slate-300 bg-white px-1 text-[11px]"
-                  value={selections[line.lineId!] ?? ""}
-                  disabled={disabled || options.length === 0}
-                  onChange={(event) => onSelect(line.lineId!, event.target.value)}
-                >
-                  <option value="">{options.length === 0 ? "No unmatched packing-list lines" : "Choose packing list line"}</option>
-                  {options.map((option) => (
-                    <option key={option.lineId} value={option.lineId}>
-                      {lineLabel(option)}
-                    </option>
-                  ))}
-                </select>
-                <Button
-                  type="button"
-                  size="sm"
-                  className="h-7 text-[11px]"
-                  disabled={disabled || !selections[line.lineId!] || reason.trim().length < 5}
-                  onClick={() => onMap(line.lineId!)}
-                >
-                  <Link2 className="mr-1 size-3" aria-hidden="true" /> Map lines
-                </Button>
+    <section aria-label="Manual line mapping" className="space-y-3 border-t border-border pt-4 text-sm">
+      <h4 className="text-base font-semibold">Line mapping</h4>
+      <p className="text-foreground-secondary">Resolve ambiguous goods lines by choosing one invoice line and one packing-list line. Charge lines are excluded. Every mapping requires a reason and recomputes checks.</p>
+      {mappings.length ? <ul className="space-y-3">{mappings.map((mapping) => {
+        const invoice = allLines.get(mapping.invoiceLineId);
+        const pack = allLines.get(mapping.packingListLineId);
+        return (
+          <li key={mapping.id} className="space-y-2 border-t border-border pt-3">
+            <p className="font-medium">Invoice {invoice ? lineLabel({ ...invoice, unit: invoice.quantityUnit }) : "older line"}<span className="block text-foreground-secondary">→ Packing list {pack ? lineLabel({ ...pack, unit: pack.quantityUnit }) : "older line"}</span></p>
+            <p className="break-words text-foreground-secondary">{mapping.reason}</p>
+            <p className="break-words text-xs text-muted-foreground">Mapped by {mapping.createdBy ?? "reviewer"} · {displayDate(mapping.createdAt)}</p>
+            <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={() => onRemove(mapping.id)} aria-label={`Remove mapping for invoice line ${invoice?.lineNumber ?? "older extraction"}`}><Unlink className="size-4" aria-hidden="true" />Remove mapping</Button>
+          </li>
+        );
+      })}</ul> : null}
+      {stale.length ? <div role="status" className="space-y-2 rounded-control border border-warning-border bg-warning-surface p-3 text-warning">
+        <p>{stale.length} saved mapping{stale.length === 1 ? " refers" : "s refer"} to lines outside the current extraction. Remove stale mappings, then map the current goods lines.</p>
+        {stale.filter((entry) => entry.mappingId && !mappings.some((mapping) => mapping.id === entry.mappingId)).map((entry) => <Button key={entry.mappingId} type="button" size="sm" variant="outline" disabled={disabled} onClick={() => onRemove(entry.mappingId!)}>Remove stale mapping</Button>)}
+      </div> : null}
+      {retained.length ? <div role="alert" className="space-y-2 rounded-control border border-warning-border bg-warning-surface p-3 text-warning">
+        <p>{retained.length} unsaved selection{retained.length === 1 ? " no longer refers" : "s no longer refer"} to an unmatched invoice line. The draft is retained, but cannot be saved against changed data.</p>
+        {retained.map(([invoiceId]) => <Button key={invoiceId} type="button" size="sm" variant="outline" disabled={disabled} onClick={() => onSelect(invoiceId, "")}>Discard outdated line selection</Button>)}
+      </div> : null}
+      {invoices.length ? <div className="space-y-4">
+        <div className="space-y-1"><Label htmlFor="mapping-reason">Mapping reason (at least 5 characters)</Label><Textarea id="mapping-reason" rows={2} maxLength={500} value={reason} disabled={disabled} onChange={(event) => onReasonChange(event.target.value)} placeholder="Explain how the source documents identify the same goods." /></div>
+        {invoices.map((line) => {
+          const selected = selections[line.lineId!] ?? "";
+          const options = packing.filter((candidate) => allLines.get(candidate.lineId ?? "")?.doc.docType === "PACKING_LIST" &&
+            !mappings.some((mapping) => mapping.packingListLineId === candidate.lineId) &&
+            !Object.entries(selections).some(([invoiceId, packingId]) => invoiceId !== line.lineId && packingId === candidate.lineId));
+          const selectionAvailable = options.some((option) => option.lineId === selected);
+          const selectionIssue = selected ? mappingSelectionIssue(check, documents, mappings, selections, line.lineId!) : null;
+          const source = allLines.get(line.lineId!);
+          const packingSource = allLines.get(selected);
+          const errorId = `map-error-${line.lineId}`;
+          return (
+            <div key={line.lineId} className="space-y-3 border-t border-border pt-3">
+              <p className="font-medium">Invoice {lineLabel(line)}</p>
+              <p className="text-warning">{line.reason === "AMBIGUOUS_DUPLICATE_CANDIDATES" ? "Several packing-list lines match. Inspect both sources before choosing." : "No packing-list line matched automatically."}</p>
+              {source?.sourceQuote ? <p className="break-words text-foreground-secondary">“{source.sourceQuote}”</p> : null}
+              <div className="space-y-1">
+                <Label htmlFor={`map-select-${line.lineId}`}>Packing list line for invoice line {line.lineNumber}</Label>
+                <Select id={`map-select-${line.lineId}`} value={selected} disabled={disabled} aria-invalid={Boolean(selectionIssue)} aria-describedby={selectionIssue ? errorId : undefined} onChange={(event) => onSelect(line.lineId!, event.target.value)}>
+                  <option value="">{options.length ? "Choose a packing-list line" : "No unmatched packing-list lines"}</option>
+                  {selected && !selectionAvailable ? <option value={selected} disabled>Previous selection (no longer available)</option> : null}
+                  {options.map((option) => <option key={option.lineId} value={option.lineId}>{lineLabel(option)}</option>)}
+                </Select>
               </div>
-            );
-          })}
-        </div>
-      ) : null}
+              {selectionIssue ? <p id={errorId} role="alert" className="text-sm text-warning">{selectionIssue}</p> : null}
+              {packingSource?.sourceQuote ? <p className="break-words text-foreground-secondary">Packing list: “{packingSource.sourceQuote}”</p> : null}
+              <div className="flex flex-wrap gap-2">
+                {source?.pageNumber && onInspect ? <Button type="button" size="sm" variant="link" className="px-0" onClick={() => onInspect({ documentId: source.doc.id, page: source.pageNumber!, label: `Invoice line ${line.lineNumber}` })}><Eye className="size-4" aria-hidden="true" />Invoice · page {source.pageNumber}</Button> : null}
+                {packingSource?.pageNumber && onInspect ? <Button type="button" size="sm" variant="link" className="px-0" onClick={() => onInspect({ documentId: packingSource.doc.id, page: packingSource.pageNumber!, label: `Packing-list line ${packingSource.lineNumber}` })}><Eye className="size-4" aria-hidden="true" />Packing list · page {packingSource.pageNumber}</Button> : null}
+                <Button type="button" size="sm" disabled={disabled || !selected || Boolean(selectionIssue) || reason.trim().length < 5} onClick={() => onMap(line.lineId!)}><Link2 className="size-4" aria-hidden="true" />Map lines</Button>
+              </div>
+            </div>
+          );
+        })}
+      </div> : null}
     </section>
   );
 }

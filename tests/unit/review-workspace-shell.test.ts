@@ -215,51 +215,14 @@ describe("Review Workspace Shell (Week 4 Step 6)", () => {
     expect(calculateNextRotation(270)).toBe(0);
   });
 
-  it("determines uncertain fields requiring reviewer attention", () => {
-    // Low confidence (< 0.85)
-    expect(
-      isFieldUncertain({
-        modelConfidence: 0.72,
-        reviewStatus: "CONFIRMED",
-        sourceQuote: "Invoice 123",
-      }),
-    ).toBe(true);
+  it("uses the server review policy to identify uncertain fields", () => {
+    expect(isFieldUncertain({ reviewStatus: "REQUIRES_REVIEW", modelConfidence: 0.98, sourceQuote: "Invoice 123" })).toBe(true);
+    expect(isFieldUncertain({ reviewStatus: "PENDING", modelConfidence: 0.98, sourceQuote: "Invoice 123" })).toBe(false);
+  });
 
-    // Uncalibrated / non-numeric confidence
-    expect(
-      isFieldUncertain({
-        modelConfidence: null,
-        reviewStatus: "CONFIRMED",
-        sourceQuote: "Invoice 123",
-      }),
-    ).toBe(true);
-
-    // Requires review status
-    expect(
-      isFieldUncertain({
-        modelConfidence: 0.98,
-        reviewStatus: "REQUIRES_REVIEW",
-        sourceQuote: "Invoice 123",
-      }),
-    ).toBe(true);
-
-    // Missing source quote
-    expect(
-      isFieldUncertain({
-        modelConfidence: 0.98,
-        reviewStatus: "CONFIRMED",
-        sourceQuote: null,
-      }),
-    ).toBe(true);
-
-    // Clear, confirmed, high-confidence field with quote
-    expect(
-      isFieldUncertain({
-        modelConfidence: 0.95,
-        reviewStatus: "CONFIRMED",
-        sourceQuote: "Total: $500",
-      }),
-    ).toBe(false);
+  it.each(["CONFIRMED", "CORRECTED", "MANUAL_ENTRY", "NOT_PRESENT", "NOT_APPLICABLE"])("does not re-queue %s decisions based on model confidence or missing quotes", (reviewStatus) => {
+    expect(isFieldUncertain({ reviewStatus, modelConfidence: 0.72, sourceQuote: "Invoice 123" })).toBe(false);
+    expect(isFieldUncertain({ reviewStatus, modelConfidence: null, sourceQuote: null })).toBe(false);
   });
 
   it("checks allowed pre-approval statuses correctly (Week 4 Step 7 Rule 1)", () => {
@@ -330,20 +293,23 @@ describe("Review Workspace viewer and navigation (Week 4 Step 6)", () => {
     expect(isPdfMimeType("image/jpeg")).toBe(false);
   });
 
-  it("keeps grouping, the model-estimate label, source links and the Document/Fields/Checks tabs", () => {
+  it("keeps the responsive panes, inspector tabs and shared evidence presentation", () => {
     const workspace = read("src/features/review/review-workspace.tsx");
-    expect(workspace).toMatch(/\(model estimate\)/);
-    expect(workspace).toMatch(/jumpToPage/);
-    expect(workspace).toMatch(/mobileTab === "document"/);
-    expect(workspace).toMatch(/mobileTab === "fields"/);
-    expect(workspace).toMatch(/mobileTab === "checks"/);
-    expect(workspace).toMatch(/"parties", "identifiers", "commercial", "logistics"/);
+    const presentation = read("src/features/review/review-presentation.ts");
+    const fields = read("src/features/review/fields-inspector.tsx");
+    expect(presentation).toContain("(model estimate)");
+    expect(presentation).toContain('"parties", "identifiers", "commercial", "logistics"');
+    expect(fields).toContain("onEvidence(");
+    for (const value of ["fields", "checks", "history", "document", "review"]) {
+      expect(workspace).toContain(`<TabsTrigger value="${value}"`);
+    }
   });
 
   it("cycles the next uncertain field and always sends expectedRevision", () => {
     const workspace = read("src/features/review/review-workspace.tsx");
+    const controller = read("src/features/review/use-review-controller.ts");
     expect(workspace).toMatch(/nextUncertainFieldId\(/);
-    expect(workspace.match(/expectedRevision: shipmentRevision/g)?.length ?? 0).toBeGreaterThanOrEqual(4);
+    expect(controller.match(/expectedRevision: shipmentRevision/g)?.length ?? 0).toBeGreaterThanOrEqual(7);
     expect(workspace).toMatch(/crossChecksStale/);
   });
 

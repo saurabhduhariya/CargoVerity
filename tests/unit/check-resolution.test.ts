@@ -163,28 +163,28 @@ describe("Failed-Check Resolution (Week 4 Step 8)", () => {
 
   describe("deriveEffectiveCheckStatus (display mirrors the shared clearance rules)", () => {
     it("PASS stays PASS; an unresolved failure shows its status", () => {
-      expect(deriveEffectiveCheckStatus("PASS", null).label).toBe("PASS");
+      expect(deriveEffectiveCheckStatus("PASS", null).label).toBe("Passed");
       const mismatch = deriveEffectiveCheckStatus("MISMATCH", null);
-      expect(mismatch).toMatchObject({ label: "MISMATCH", isHumanCleared: false, isPendingApproval: false });
+      expect(mismatch).toMatchObject({ label: "Mismatch", isHumanCleared: false, isPendingApproval: false });
     });
 
-    it("a valid unapproved exception is PENDING MANAGER APPROVAL; once approved it is HUMAN CLEARED", () => {
+    it("a valid exception awaits manager approval and is neutrally labeled Exception approved after sign-off", () => {
       const base = { id: "r", type: "ACCEPTED_EXCEPTION" as const, reason: "Supplier confirmed variation", evidence: "TKT-8492" };
       expect(deriveEffectiveCheckStatus("MISMATCH", { ...base, managerApprovedAt: null })).toMatchObject({ isPendingApproval: true, isHumanCleared: false });
       expect(deriveEffectiveCheckStatus("MISMATCH", { ...base, managerApprovedAt: new Date() })).toMatchObject({
-        label: "HUMAN CLEARED (Exception Approved)",
+        label: "Exception approved",
         isHumanCleared: true,
       });
     });
 
     it("an exception without evidence does not clear", () => {
       const res = deriveEffectiveCheckStatus("MISMATCH", { id: "r", type: "ACCEPTED_EXCEPTION", reason: "Supplier confirmed", evidence: null, managerApprovedAt: new Date() });
-      expect(res).toMatchObject({ label: "MISMATCH", isHumanCleared: false, isPendingApproval: false });
+      expect(res).toMatchObject({ label: "Mismatch", isHumanCleared: false, isPendingApproval: false });
     });
 
     it.each(["SOURCE_CORRECTED", "DOCUMENT_REPLACEMENT"] as const)("%s is an audit link and never shows a failure as cleared", (type) => {
       const res = deriveEffectiveCheckStatus("MISMATCH", { id: "r", type, reason: "Fixed in source" });
-      expect(res).toMatchObject({ label: "MISMATCH", isHumanCleared: false, isPendingApproval: false });
+      expect(res).toMatchObject({ label: "Mismatch", isHumanCleared: false, isPendingApproval: false });
     });
 
     it("the server-derived status wins when present", () => {

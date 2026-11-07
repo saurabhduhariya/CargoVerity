@@ -1,29 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  AlertCircle,
-  AlertTriangle,
-  Check,
-  CheckCircle2,
-  Copy,
-  Download,
-  FileCheck,
-  FileSpreadsheet,
-  Info,
-  RefreshCw,
-  ShieldCheck,
-  X,
-} from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
+import { Check, Copy, Download, RefreshCw, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { FeedbackState } from "@/components/ui/feedback-state";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
-  ExportPreviewData,
-  ExportRecordSummary,
   formatExportBlocker,
+  type ExportPreviewData,
+  type ExportRecordSummary,
 } from "@/lib/export/preview";
+import { displayDate } from "./review-presentation";
 
 export type ExportPreviewDialogProps = {
   isOpen: boolean;
@@ -32,8 +22,104 @@ export type ExportPreviewDialogProps = {
   shipmentReference: string;
   shipmentRevision: number;
   shipmentStatus: string;
-  onExportSuccess?: (record: ExportRecordSummary) => void;
+  hasUnsavedChanges?: boolean;
+  /** Null means the export succeeded but its complete server receipt could not be read. */
+  onExportSuccess?: (record: ExportRecordSummary | null) => void;
+  onRequestRefresh?: () => void;
 };
+
+/** UI guard only. The download endpoint re-evaluates all authoritative server gates. */
+export function canDownloadExport(
+  preview: ExportPreviewData | null | undefined,
+  revision: number,
+  status: string,
+  hasUnsavedChanges: boolean,
+): boolean {
+  return Boolean(
+    preview?.ready && preview.allowed && preview.blockers.length === 0 &&
+    preview.currentRevision === revision && preview.approvedRevision === revision &&
+    ["APPROVED", "EXPORTED"].includes(status) &&
+    ["APPROVED", "EXPORTED"].includes(preview.shipmentStatus) &&
+    preview.fileName && preview.checksumSha256 && preview.headers?.length && Array.isArray(preview.rows) &&
+    !hasUnsavedChanges,
+  );
+}
+
+function nullableString(value: unknown): boolean {
+  return value === null || typeof value === "string";
+}
+
+function optionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+function optionalChecksum(value: unknown): boolean {
+  return value === undefined || (typeof value === "string" && /^[a-f\d]{64}$/i.test(value));
+}
+
+function nonnegativeInteger(value: unknown): boolean {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isServerExportRecord(value: unknown): value is ExportRecordSummary {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Partial<ExportRecordSummary>;
+  return typeof record.id === "string" && typeof record.profileId === "string" &&
+    (record.profileVersion === undefined || nullableString(record.profileVersion)) &&
+    nonnegativeInteger(record.revision) && typeof record.createdAt === "string" &&
+    !Number.isNaN(new Date(record.createdAt).getTime()) && nullableString(record.exportedBy) &&
+    optionalChecksum(record.checksumSha256) && optionalString(record.fileName) &&
+    (record.rowCount === undefined || record.rowCount === null || nonnegativeInteger(record.rowCount));
+}
+
+export function isExportPreviewResponse(body: unknown): body is ExportPreviewData {
+  if (!body || typeof body !== "object") return false;
+  const data = body as Partial<ExportPreviewData>;
+  return typeof data.ready === "boolean" && typeof data.allowed === "boolean" &&
+    Array.isArray(data.blockers) && data.blockers.every((value) => typeof value === "string") &&
+    Number.isInteger(data.currentRevision) && typeof data.shipmentStatus === "string" &&
+    typeof data.profileId === "string" && typeof data.profileVersion === "string" &&
+    typeof data.assumptionLabel === "string" &&
+    (data.approvedRevision === null || Number.isInteger(data.approvedRevision)) &&
+    nullableString(data.approvedAt) && nullableString(data.approvedBy) &&
+    optionalString(data.fileName) && optionalChecksum(data.checksumSha256) && optionalString(data.error) &&
+    (data.recentExport === null || isServerExportRecord(data.recentExport)) &&
+    (data.rowCount === undefined || nonnegativeInteger(data.rowCount)) &&
+    (data.previewRowLimit === undefined || nonnegativeInteger(data.previewRowLimit)) &&
+    (data.blockerDetails === undefined || (Array.isArray(data.blockerDetails) && data.blockerDetails.every((entry) =>
+      entry && typeof entry === "object" && typeof entry.code === "string" && optionalString(entry.detail)))) &&
+    (data.headers === undefined || (Array.isArray(data.headers) && data.headers.every((header) => typeof header === "string"))) &&
+    (data.rows === undefined || (Array.isArray(data.rows) && data.rows.every((row) => Array.isArray(row) && row.every((cell) => typeof cell === "string"))));
+}
+
+export function exportSnapshotMatches(preview: ExportPreviewData, metadata: {
+  checksum: string | null; profile: string | null; fileName: string | undefined; contentType: string | null;
+}, actualChecksum: string): boolean {
+  return metadata.checksum === preview.checksumSha256 && actualChecksum === preview.checksumSha256 &&
+    metadata.fileName === preview.fileName && metadata.profile === `${preview.profileId}@${preview.profileVersion}` &&
+    Boolean(metadata.contentType?.includes("text/csv"));
+}
+
+export function latestServerExportRecord(cached: ExportRecordSummary | null | undefined, recent: ExportRecordSummary | null | undefined) {
+  if (!cached) return recent;
+  if (!recent) return cached;
+  return new Date(recent.createdAt).getTime() >= new Date(cached.createdAt).getTime() ? recent : cached;
+}
+
+type ChecksumCopyFeedback = { copiedHash: string | null; error: string | null };
+
+/** Clipboard feedback is independent of export warnings and receipts. */
+export async function copyExportChecksum(hash: string): Promise<ChecksumCopyFeedback> {
+  try {
+    await navigator.clipboard.writeText(hash);
+    return { copiedHash: hash, error: null };
+  } catch {
+    return { copiedHash: null, error: "Clipboard access was unavailable. Select and copy the full checksum below." };
+  }
+}
+
+type PreviewState = { key: string; data?: ExportPreviewData; error?: string };
+type DownloadFeedback = { kind: "success" | "warning" | "error"; message: string };
 
 export function ExportPreviewDialog({
   isOpen,
@@ -42,580 +128,262 @@ export function ExportPreviewDialog({
   shipmentReference,
   shipmentRevision,
   shipmentStatus,
+  hasUnsavedChanges = false,
   onExportSuccess,
+  onRequestRefresh,
 }: ExportPreviewDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
-
-  const [loading, setLoading] = useState(false);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const downloadInFlight = useRef(false);
+  const downloadUrlRef = useRef<string | null>(null);
+  const id = useId();
+  const [attempt, setAttempt] = useState(0);
+  const [loaded, setLoaded] = useState<PreviewState | null>(null);
   const [downloading, setDownloading] = useState(false);
-  const [previewData, setPreviewData] = useState<ExportPreviewData | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [copiedChecksum, setCopiedChecksum] = useState(false);
-  const [recentExportRecord, setRecentExportRecord] =
-    useState<ExportRecordSummary | null>(null);
-
-  const loadPreview = useCallback(async () => {
-    setLoading(true);
-    setErrorMessage(null);
-    try {
-      const response = await fetch(
-        `/api/shipments/${shipmentId}/export?preview=1`,
-      );
-      const data = (await response.json()) as ExportPreviewData;
-
-      if (!response.ok && !data.blockers) {
-        setErrorMessage(data.error ?? "Failed to load export preview.");
-      } else {
-        setPreviewData(data);
-        if (data.recentExport && !recentExportRecord) {
-          setRecentExportRecord(data.recentExport);
-        }
-      }
-    } catch (err) {
-      setErrorMessage(
-        err instanceof Error ? err.message : "Failed to load export preview.",
-      );
-    } finally {
-      setLoading(false);
+  const [feedback, setFeedback] = useState<DownloadFeedback | null>(null);
+  const [invalidatedKey, setInvalidatedKey] = useState<string | null>(null);
+  const [receipt, setReceipt] = useState<{ shipmentId: string; record: ExportRecordSummary } | null>(null);
+  const [checksumCopy, setChecksumCopy] = useState<ChecksumCopyFeedback | null>(null);
+  const [previousOpen, setPreviousOpen] = useState(isOpen);
+  if (previousOpen !== isOpen) {
+    setPreviousOpen(isOpen);
+    if (isOpen) {
+      setAttempt((value) => value + 1);
+      setLoaded(null);
+      setFeedback(null);
+      setChecksumCopy(null);
     }
-  }, [shipmentId, recentExportRecord]);
+  }
+  const key = `${shipmentId}|${shipmentRevision}|${shipmentStatus}|${attempt}`;
+  const current = loaded?.key === key ? loaded : null;
+  const preview = current?.data ?? null;
+  const loading = isOpen && !current;
+  const record = latestServerExportRecord(receipt?.shipmentId === shipmentId ? receipt.record : null, preview?.recentExport);
+  const canDownload = !loading && !downloading && invalidatedKey !== key &&
+    canDownloadExport(preview, shipmentRevision, shipmentStatus, hasUnsavedChanges);
+  const revisionChanged = preview && preview.currentRevision !== shipmentRevision;
 
-  // Synchronize modal state with native <dialog>
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
-
-    if (isOpen) {
-      if (!dialog.open) {
-        dialog.showModal();
-        void loadPreview();
-      }
-    } else {
-      if (dialog.open) {
-        dialog.close();
-      }
+    if (isOpen && !dialog.open) {
+      dialog.showModal();
+      closeRef.current?.focus();
+    } else if (!isOpen && dialog.open) {
+      dialog.close();
     }
-  }, [isOpen, loadPreview]);
+  }, [isOpen]);
 
-  async function handleDownloadCsv() {
-    if (!previewData?.ready || downloading) return;
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    return () => {
+      if (dialog?.open) dialog.close();
+      if (downloadUrlRef.current) URL.revokeObjectURL(downloadUrlRef.current);
+    };
+  }, []);
 
-    setDownloading(true);
-    setErrorMessage(null);
-    try {
-      const response = await fetch(`/api/shipments/${shipmentId}/export`);
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => null);
-        throw new Error(
-          errorData?.error ?? "Export blocked by server guard evaluation.",
-        );
-      }
-
-      const csvContent = await response.text();
-      const checksum = response.headers.get("X-Checksum-Sha256") ?? "";
-      const disposition = response.headers.get("Content-Disposition") ?? "";
-      const fileNameMatch = disposition.match(/filename="?([^";]+)"?/);
-      const fileName =
-        fileNameMatch?.[1] ?? `${shipmentReference}-demo-v1-rev${shipmentRevision}.csv`;
-
-      // Trigger standard browser download
-      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-      const downloadUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = downloadUrl;
-      link.setAttribute("download", fileName);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(downloadUrl);
-
-      // Show the export record the server stored (re-load the guarded preview to read it back).
-      const fallback: ExportRecordSummary = {
-        id: response.headers.get("X-Export-Event-Id") ?? `export-${Date.now()}`,
-        profileId: previewData.profileId,
-        profileVersion: previewData.profileVersion,
-        revision: shipmentRevision,
-        createdAt: new Date().toISOString(),
-        exportedBy: null,
-        checksumSha256: checksum || previewData.checksumSha256,
-        fileName,
-        rowCount: previewData.rowCount ?? null,
-      };
-      let record = fallback;
+  useEffect(() => {
+    if (!isOpen) return;
+    const abort = new AbortController();
+    void (async () => {
       try {
-        const refreshed = await fetch(`/api/shipments/${shipmentId}/export?preview=1`, { cache: "no-store" });
-        const refreshedData = (await refreshed.json()) as ExportPreviewData;
-        if (refreshedData.recentExport) record = refreshedData.recentExport;
-        setPreviewData(refreshedData);
-      } catch {
-        // Keep the header-derived record.
+        const response = await fetch(`/api/shipments/${shipmentId}/export?preview=1`, {
+          cache: "no-store",
+          signal: abort.signal,
+        });
+        const body: unknown = await response.json();
+        // A guarded 422 is a valid preview. Authentication and transport failures are not.
+        if ((!response.ok && response.status !== 422) || !isExportPreviewResponse(body)) {
+          const error = body && typeof body === "object" && "error" in body ? String(body.error) : "The server did not return a valid export preview.";
+          throw new Error(error);
+        }
+        if (!abort.signal.aborted) setLoaded({ key, data: body });
+      } catch (error) {
+        if (!abort.signal.aborted) setLoaded({ key, error: error instanceof Error ? error.message : "Export preview could not be loaded." });
       }
+    })();
+    return () => abort.abort();
+  }, [isOpen, key, shipmentId]);
 
-      setRecentExportRecord(record);
-      onExportSuccess?.(record);
-    } catch (err) {
-      setErrorMessage(
-        err instanceof Error ? err.message : "Could not complete CSV download.",
-      );
+  async function readReceipt(eventId: string | null): Promise<ExportRecordSummary | null> {
+    try {
+      const response = await fetch(`/api/shipments/${shipmentId}/export?preview=1`, { cache: "no-store" });
+      const body: unknown = await response.json();
+      if ((response.ok || response.status === 422) && isExportPreviewResponse(body)) {
+        const recent = body.recentExport;
+        if (eventId && recent?.id === eventId) return recent;
+      }
+    } catch {
+      // The event ID in the CSV response is real; never invent actor, revision or timestamp data.
+    }
+    return null;
+  }
+
+  async function downloadCsv() {
+    if (!canDownload || !preview || downloadInFlight.current) return;
+    downloadInFlight.current = true;
+    setDownloading(true);
+    setFeedback(null);
+    let serverExported = false;
+    try {
+      const response = await fetch(`/api/shipments/${shipmentId}/export`, { cache: "no-store" });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null) as { error?: string; blockers?: string[]; blockerDetails?: ExportPreviewData["blockerDetails"] } | null;
+        if (error?.blockers) {
+          setLoaded({ key, data: { ...preview, ready: false, allowed: false, blockers: error.blockers, blockerDetails: error.blockerDetails } });
+        }
+        throw new Error(error?.error ?? "The server blocked this export. Refresh the preflight and review the current blockers.");
+      }
+      serverExported = true;
+      const checksum = response.headers.get("X-Checksum-Sha256");
+      const profile = response.headers.get("X-Export-Profile");
+      const eventId = response.headers.get("X-Export-Event-Id");
+      const disposition = response.headers.get("Content-Disposition") ?? "";
+      const fileName = disposition.match(/filename="?([^";]+)"?/)?.[1];
+      const blob = await response.blob();
+      const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+      const actualChecksum = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      const snapshotMatches = exportSnapshotMatches(preview, { checksum, profile, fileName, contentType: response.headers.get("Content-Type") }, actualChecksum);
+      const savedReceipt = await readReceipt(eventId);
+      if (savedReceipt) setReceipt({ shipmentId, record: savedReceipt });
+
+      if (snapshotMatches && fileName) {
+        if (downloadUrlRef.current) URL.revokeObjectURL(downloadUrlRef.current);
+        const downloadUrl = URL.createObjectURL(blob);
+        downloadUrlRef.current = downloadUrl;
+        const link = document.createElement("a");
+        link.href = downloadUrl;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setFeedback({
+          kind: savedReceipt ? "success" : "warning",
+          message: savedReceipt
+            ? "CSV download started. The server export receipt is shown below."
+            : `CSV download started, but the complete audit receipt could not be read.${eventId ? ` Server event: ${eventId}.` : ""} Refresh the preflight to retrieve it.`,
+        });
+      } else {
+        setInvalidatedKey(key);
+        setFeedback({ kind: "warning", message: "The server exported a different saved snapshot than this preview. No file was downloaded. Refresh the workspace and preflight before continuing; the server export event is retained." });
+      }
+      onExportSuccess?.(savedReceipt);
+    } catch (error) {
+      setInvalidatedKey(key);
+      setFeedback({
+        kind: "error",
+        message: `${error instanceof Error ? `${error.message} ` : "The export response was interrupted. "}Refresh the workspace and preflight to check the server record before retrying.`,
+      });
+      if (serverExported) onExportSuccess?.(null);
+      else onRequestRefresh?.();
     } finally {
+      downloadInFlight.current = false;
       setDownloading(false);
     }
   }
 
-  function handleCopyChecksum(hash: string) {
-    if (!hash) return;
-    void navigator.clipboard.writeText(hash);
-    setCopiedChecksum(true);
-    setTimeout(() => setCopiedChecksum(false), 2000);
+  async function copyChecksum(hash: string) {
+    setChecksumCopy(await copyExportChecksum(hash));
   }
 
-  // Backdrop light dismiss helper
-  const handleBackdropClick = (e: React.MouseEvent<HTMLDialogElement>) => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    const rect = dialog.getBoundingClientRect();
-    const isOutside =
-      e.clientX < rect.left ||
-      e.clientX > rect.right ||
-      e.clientY < rect.top ||
-      e.clientY > rect.bottom;
-    if (isOutside) {
-      dialog.close();
-      onClose();
-    }
-  };
-
-  const isApproved =
-    previewData?.approvedRevision !== null &&
-    previewData?.approvedRevision !== undefined &&
-    previewData.approvedRevision === shipmentRevision &&
-    (shipmentStatus === "APPROVED" || shipmentStatus === "EXPORTED");
-
-  const isApprovalStale =
-    previewData?.approvedRevision !== null &&
-    previewData?.approvedRevision !== undefined &&
-    previewData.approvedRevision !== shipmentRevision;
+  function refreshPreflight() {
+    if (downloading) return;
+    setFeedback(null);
+    setChecksumCopy(null);
+    setAttempt((value) => value + 1);
+  }
 
   return (
     <dialog
       ref={dialogRef}
-      onCancel={onClose}
-      onClick={handleBackdropClick}
-      aria-labelledby="export-dialog-title"
-      className="m-auto w-full max-w-5xl rounded-2xl border border-slate-200 bg-white p-0 text-slate-900 shadow-2xl backdrop:bg-slate-900/50 backdrop:backdrop-blur-sm"
-      style={{ overscrollBehavior: "contain" }}
+      data-testid="export-preview-dialog"
+      aria-labelledby={`${id}-title`}
+      aria-describedby={`${id}-description`}
+      aria-busy={downloading || undefined}
+      onCancel={(event) => { event.preventDefault(); if (!downloadInFlight.current) onClose(); }}
+      onClose={(event) => { if (isOpen && !event.currentTarget.open) onClose(); }}
+      className="fixed inset-0 m-auto w-[calc(100vw_-_2rem)] max-w-3xl overflow-hidden rounded-dialog border-0 bg-surface p-0 text-foreground shadow-overlay backdrop:bg-foreground/35"
     >
-      <div className="flex flex-col max-h-[90vh]">
-        {/* Dialog Header */}
-        <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="flex size-9 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600">
-              <FileSpreadsheet className="size-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h2
-                  id="export-dialog-title"
-                  className="text-lg font-bold text-slate-900"
-                >
-                  Export CSV Preview & Guard Verification
-                </h2>
-                <Badge className="bg-indigo-100 text-indigo-800 border-indigo-200 text-xs">
-                  {previewData?.profileId ?? "demo-v1"} (v
-                  {previewData?.profileVersion ?? "1.0.0"})
-                </Badge>
-              </div>
-              <p className="text-xs text-slate-500">
-                Shipment Reference:{" "}
-                <span className="font-mono font-medium text-slate-700">
-                  {shipmentReference}
-                </span>{" "}
-                · Current Revision:{" "}
-                <span className="font-semibold text-slate-700">
-                  rev {shipmentRevision}
-                </span>
-              </p>
-            </div>
+      <div className="flex max-h-[calc(100dvh_-_2rem)] min-h-0 flex-col">
+        <header className="flex shrink-0 items-start justify-between gap-3 border-b border-border p-4 sm:px-6">
+          <div className="min-w-0">
+            <h2 id={`${id}-title`} className="text-lg font-semibold">Export preview</h2>
+            <p id={`${id}-description`} className="mt-1 break-words text-sm text-foreground-secondary">
+              <span className="font-mono">{shipmentReference}</span> · Saved revision {shipmentRevision}
+            </p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition"
-            aria-label="Close dialog"
-          >
-            <X className="size-5" />
-          </button>
-        </div>
-
-        {/* Dialog Body (Scrollable) */}
-        <div className="overflow-y-auto px-6 py-5 space-y-5 text-sm">
-          {/* Rule 1: Profile Assumption Label Banner */}
-          <div className="rounded-xl border border-blue-200 bg-blue-50/70 p-4 text-blue-900">
-            <div className="flex items-start gap-3">
-              <Info className="size-5 text-blue-600 shrink-0 mt-0.5" />
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-bold text-xs uppercase tracking-wider text-blue-700">
-                    Export Profile Assumption
-                  </span>
-                  <Badge className="text-[10px] bg-white border border-blue-300 text-blue-800">
-                    demo-v1
-                  </Badge>
-                </div>
-                <p className="text-xs text-blue-800 leading-relaxed">
-                  {previewData?.assumptionLabel ??
-                    "[ASSUMPTION] Temporary export profile demo-v1; filing-software customs template awaiting client specification."}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* Rule 2: Current Approved Revision & Timestamp */}
-          <Card className="border-slate-200">
-            <CardHeader className="bg-slate-50/70 py-3 px-4 border-b border-slate-200">
-              <CardTitle className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center justify-between">
-                <span>Manager Approval & Revision Integrity</span>
-                {isApproved ? (
-                  <Badge className="bg-emerald-100 text-emerald-800 border-emerald-300 text-xs">
-                    Approved Revision Match
-                  </Badge>
-                ) : isApprovalStale ? (
-                  <Badge className="bg-rose-100 text-rose-800 border-rose-300 text-xs">
-                    Approval Stale
-                  </Badge>
-                ) : (
-                  <Badge className="bg-amber-100 text-amber-800 border-amber-300 text-xs">
-                    Pending Approval
-                  </Badge>
-                )}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-4 grid grid-cols-1 sm:grid-cols-4 gap-4 text-xs">
-              <div>
-                <span className="text-slate-500 block">Workflow Status</span>
-                <span className="font-semibold text-slate-800 capitalize">
-                  {shipmentStatus.replaceAll("_", " ").toLowerCase()}
-                </span>
-              </div>
-              <div>
-                <span className="text-slate-500 block">Approved Revision</span>
-                <span className="font-mono font-semibold text-slate-800">
-                  {previewData?.approvedRevision !== null &&
-                  previewData?.approvedRevision !== undefined
-                    ? `rev ${previewData.approvedRevision}`
-                    : "Not approved"}
-                </span>
-              </div>
-              <div>
-                <span className="text-slate-500 block">Approval Timestamp</span>
-                <span className="text-slate-800">
-                  {previewData?.approvedAt
-                    ? new Date(previewData.approvedAt).toLocaleString()
-                    : "Pending"}
-                </span>
-              </div>
-              <div>
-                <span className="text-slate-500 block">Approved By</span>
-                <span className="text-slate-800 truncate block">
-                  {previewData?.approvedBy ?? "Pending manager action"}
-                </span>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Rule 3: Exact Blockers When Export is Unavailable */}
-          {previewData && !previewData.ready && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50/60 p-4">
-              <div className="flex items-start gap-3">
-                <AlertCircle className="size-5 text-rose-600 shrink-0 mt-0.5" />
-                <div className="space-y-3 w-full">
-                  <div>
-                    <h3 className="font-bold text-rose-950 text-sm">
-                      Export Unavailable — {previewData.blockers.length} Guard Blocker
-                      {previewData.blockers.length > 1 ? "s" : ""}
-                    </h3>
-                    <p className="text-xs text-rose-800">
-                      The export route enforces strict server-side gating. The
-                      following requirements must be resolved before customs CSV
-                      generation is unlocked:
-                    </p>
-                  </div>
-
-                  <div className="grid gap-2">
-                    {previewData.blockers.map((blockerKey) => {
-                      const formatted = formatExportBlocker(blockerKey);
-                      const detail = previewData.blockerDetails?.find((b) => b.code === blockerKey)?.detail;
-                      return (
-                        <div
-                          key={blockerKey}
-                          className="flex items-start gap-2.5 rounded-lg border border-rose-200 bg-white p-2.5 text-xs shadow-xs"
-                        >
-                          <AlertTriangle className="size-4 text-rose-500 shrink-0 mt-0.5" />
-                          <div>
-                            <span className="font-bold text-slate-900 block">
-                              {formatted.title}
-                            </span>
-                            <span className="text-slate-600">
-                              {formatted.description}
-                            </span>
-                            {detail ? (
-                              <span className="block text-slate-800 font-medium mt-0.5">{detail}</span>
-                            ) : null}
-                            <span className="text-[10px] text-slate-400 block font-mono mt-0.5">
-                              Rule Code: {formatted.code}
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Rule 5: Backend Readiness Confirmation */}
-          {previewData?.ready && (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4">
-              <div className="flex items-center gap-3">
-                <CheckCircle2 className="size-5 text-emerald-600 shrink-0" />
-                <div className="space-y-0.5">
-                  <h3 className="font-bold text-emerald-950 text-sm">
-                    Backend Readiness Confirmed
-                  </h3>
-                  <p className="text-xs text-emerald-800">
-                    All export guards passed cleanly: Manager approval is active,
-                    revision matches, required documents are present, and all
-                    cross-checks are resolved.
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* General Error Message */}
-          {errorMessage && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 flex items-center gap-2">
-              <AlertCircle className="size-4 shrink-0" />
-              <span>{errorMessage}</span>
-            </div>
-          )}
-
-          {/* Rule 7: Post-Download Export Record */}
-          {recentExportRecord && (
-            <Card className="border-indigo-200 bg-indigo-50/30">
-              <CardHeader className="bg-indigo-50/60 py-3 px-4 border-b border-indigo-100 flex flex-row items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck className="size-4 text-indigo-600" />
-                  <CardTitle className="text-xs font-bold uppercase tracking-wider text-indigo-950">
-                    Export Record & Audit Event
-                  </CardTitle>
-                </div>
-                <Badge className="bg-emerald-600 text-white text-xs">
-                  EXPORTED
-                </Badge>
-              </CardHeader>
-              <CardContent className="p-4 space-y-3 text-xs">
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div>
-                    <span className="text-slate-500 block">Exported File</span>
-                    <span className="font-mono font-medium text-slate-800">
-                      {recentExportRecord.fileName ?? "shipment-export.csv"}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-slate-500 block">Export Timestamp</span>
-                    <span className="text-slate-800">
-                      {new Date(recentExportRecord.createdAt).toLocaleString()}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-slate-500 block">Profile & Version</span>
-                    <span className="text-slate-800">
-                      {recentExportRecord.profileId}
-                      {recentExportRecord.profileVersion ? ` v${recentExportRecord.profileVersion}` : ""} (rev{" "}
-                      {recentExportRecord.revision})
-                      {typeof recentExportRecord.rowCount === "number" ? ` · ${recentExportRecord.rowCount} rows` : ""}
-                      {recentExportRecord.exportedBy ? ` · by ${recentExportRecord.exportedBy}` : ""}
-                    </span>
-                  </div>
-                </div>
-
-                {recentExportRecord.checksumSha256 && (
-                  <div className="rounded-lg bg-slate-100 p-2.5 flex items-center justify-between gap-2 border border-slate-200">
-                    <div className="truncate">
-                      <span className="text-[10px] uppercase font-bold text-slate-500 block">
-                        SHA-256 Checksum
-                      </span>
-                      <span className="font-mono text-xs text-slate-800 truncate block">
-                        {recentExportRecord.checksumSha256}
-                      </span>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 text-xs bg-white shrink-0"
-                      onClick={() =>
-                        handleCopyChecksum(recentExportRecord.checksumSha256!)
-                      }
-                    >
-                      {copiedChecksum ? (
-                        <>
-                          <Check className="size-3 text-emerald-600 mr-1" />
-                          Copied
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="size-3 mr-1" />
-                          Copy Hash
-                        </>
-                      )}
-                    </Button>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Rule 4: Small CSV Preview from Same Server Mapping */}
-          {previewData?.headers && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <h3 className="font-bold text-slate-900 text-xs uppercase tracking-wider">
-                    CSV Table Preview
-                  </h3>
-                  <Badge className="text-[10px] bg-white border border-slate-300 text-slate-600">
-                    {previewData.headers.length} Columns · {previewData.rowCount ?? 0}{" "}
-                    Row{(previewData.rowCount ?? 0) === 1 ? "" : "s"}
-                    {previewData.rows && (previewData.rowCount ?? 0) > previewData.rows.length
-                      ? ` (showing first ${previewData.rows.length})`
-                      : ""}
-                  </Badge>
-                </div>
-                {previewData.checksumSha256 && (
-                  <span className="text-[11px] font-mono text-slate-500">
-                    Precomputed SHA-256:{" "}
-                    <span className="text-slate-700">
-                      {previewData.checksumSha256.slice(0, 16)}...
-                    </span>
-                  </span>
-                )}
-              </div>
-
-              <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-xs max-h-72">
-                <table className="w-full border-collapse text-left text-xs font-mono">
-                  <thead className="bg-slate-100 text-slate-700 sticky top-0 border-b border-slate-200">
-                    <tr>
-                      <th className="py-2 px-3 text-slate-400 font-normal">#</th>
-                      {previewData.headers.map((header) => (
-                        <th
-                          key={header}
-                          className="py-2 px-3 whitespace-nowrap font-bold text-slate-800 border-r border-slate-200 last:border-r-0"
-                        >
-                          {header}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {previewData.rows && previewData.rows.length > 0 ? (
-                      previewData.rows.map((row, rowIndex) => (
-                        <tr
-                          key={rowIndex}
-                          className="hover:bg-slate-50 transition odd:bg-white even:bg-slate-50/40"
-                        >
-                          <td className="py-1.5 px-3 text-slate-400 whitespace-nowrap">
-                            {rowIndex + 1}
-                          </td>
-                          {row.map((cell, colIndex) => (
-                            <td
-                              key={colIndex}
-                              className="py-1.5 px-3 whitespace-nowrap text-slate-700 border-r border-slate-100 last:border-r-0"
-                            >
-                              {cell === "" ? (
-                                <span className="text-slate-300 italic">null</span>
-                              ) : (
-                                cell
-                              )}
-                            </td>
-                          ))}
-                        </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td
-                          colSpan={previewData.headers.length + 1}
-                          className="py-8 text-center text-slate-400 italic font-sans"
-                        >
-                          No line items extracted to display in preview table.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Dialog Footer Actions */}
-        <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-6 py-4">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => void loadPreview()}
-            disabled={loading || downloading}
-            className="text-xs"
-          >
-            <RefreshCw
-              className={`size-3.5 mr-1.5 ${loading ? "animate-spin" : ""}`}
-            />
-            {loading ? "Verifying..." : "Refresh Preflight"}
+          <Button ref={closeRef} type="button" variant="ghost" size="icon" disabled={downloading} aria-label="Close export preview" onClick={onClose}>
+            <X className="size-5" aria-hidden="true" />
           </Button>
+        </header>
 
-          <div className="flex items-center gap-3">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={onClose}
-              disabled={downloading}
-              className="text-xs"
-            >
-              Close
-            </Button>
+        <div className="min-h-0 space-y-5 overflow-y-auto overscroll-contain p-4 sm:p-6">
+          {loading ? <FeedbackState kind="loading" title="Checking export readiness" description="Reading approval, current checks and the saved revision from the server." className="py-4" /> : current?.error ? (
+            <FeedbackState kind="error" title="Export preview unavailable" description={current.error} className="py-4" action={<Button type="button" variant="outline" onClick={refreshPreflight}>Retry preflight</Button>} />
+          ) : null}
 
-            {/* Rule 5 & 6: Download only enabled when backend readiness is confirmed */}
-            <Button
-              size="sm"
-              onClick={() => void handleDownloadCsv()}
-              disabled={!previewData?.ready || downloading}
-              className={`text-xs font-semibold px-4 ${
-                previewData?.ready
-                  ? "bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm"
-                  : "bg-slate-200 text-slate-400 cursor-not-allowed"
-              }`}
-            >
-              {downloading ? (
-                <>
-                  <RefreshCw className="size-3.5 mr-1.5 animate-spin" />
-                  Generating CSV...
-                </>
-              ) : recentExportRecord ? (
-                <>
-                  <FileCheck className="size-3.5 mr-1.5" />
-                  Re-download Guarded CSV
-                </>
-              ) : (
-                <>
-                  <Download className="size-3.5 mr-1.5" />
-                  Download Guarded CSV
-                </>
-              )}
-            </Button>
-          </div>
+          {hasUnsavedChanges ? <div role="alert" className="rounded-control border border-warning-border bg-warning-surface p-3 text-sm text-warning">Download is blocked while there are unsaved drafts or a pending workspace refresh. Close this preview, then save, discard or refresh your review.</div> : null}
+          {revisionChanged ? <div role="alert" className="space-y-2 rounded-control border border-warning-border bg-warning-surface p-3 text-sm text-warning"><p>The server is on revision {preview.currentRevision}; this workspace shows revision {shipmentRevision}. No download is allowed until you review the latest revision.</p><Button type="button" variant="outline" size="sm" onClick={onRequestRefresh}>Refresh latest shipment</Button></div> : null}
+          {feedback ? <p role={feedback.kind === "success" ? "status" : "alert"} className={feedback.kind === "success" ? "text-sm text-success" : feedback.kind === "warning" ? "break-words text-sm text-warning" : "break-words text-sm text-danger"}>{feedback.message}</p> : null}
+          {checksumCopy?.error ? <p role="alert" className="break-words text-sm text-danger">{checksumCopy.error}</p> : null}
+
+          {preview ? <>
+            <section className="space-y-2 rounded-control border border-info-border bg-info-surface p-3 text-info" aria-label="Export profile assumption">
+              <Badge variant="info">{preview.profileId} · v{preview.profileVersion}</Badge>
+              <p className="text-sm leading-6">{preview.assumptionLabel}</p>
+            </section>
+
+            <section className="space-y-3" aria-label="Approval and revision">
+              <h3 className="text-base font-semibold">Approval and revision</h3>
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+                <div><dt className="text-foreground-secondary">Server workflow</dt><dd className="mt-1"><StatusBadge status={preview.shipmentStatus} /></dd></div>
+                <div><dt className="text-foreground-secondary">Approved revision</dt><dd className="mt-1 font-mono">{preview.approvedRevision === null ? "Not approved" : preview.approvedRevision}</dd></div>
+                <div><dt className="text-foreground-secondary">Approved at</dt><dd className="mt-1">{preview.approvedAt ? displayDate(preview.approvedAt) : "Not approved"}</dd></div>
+                <div><dt className="text-foreground-secondary">Approved by</dt><dd className="mt-1 break-words">{preview.approvedBy ?? "No manager approval"}</dd></div>
+              </dl>
+            </section>
+
+            {!preview.ready ? <section className="space-y-3 border-t border-border pt-4" aria-label="Export blockers">
+              <h3 className="text-base font-semibold text-danger">Export blocked · {preview.blockers.length} issue{preview.blockers.length === 1 ? "" : "s"}</h3>
+              <ul className="space-y-3">{preview.blockers.map((code, index) => {
+                const blocker = formatExportBlocker(code);
+                const detail = preview.blockerDetails?.find((entry) => entry.code === code)?.detail;
+                return <li key={`${code}-${index}`} className="space-y-1 border-t border-border pt-3 text-sm">
+                  <h4 className="font-medium">{blocker.title}</h4>
+                  <p className="text-foreground-secondary">{blocker.description}</p>
+                  {detail ? <p className="break-words text-danger">{detail}</p> : null}
+                  <p className="break-words font-mono text-xs text-muted-foreground">{code}</p>
+                </li>;
+              })}</ul>
+            </section> : <p className="rounded-control border border-success-border bg-success-surface p-3 text-sm leading-6 text-success">Server preflight allows export of approved revision {preview.approvedRevision}. The download rechecks these guards. Accepted exceptions remain human decisions, not machine passes or customs clearance.</p>}
+
+            {preview.headers ? <section className="space-y-3 border-t border-border pt-4" aria-label="CSV preview">
+              <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-base font-semibold">CSV preview</h3><p className="text-sm text-foreground-secondary">{preview.rowCount ?? 0} rows · {preview.headers.length} columns{(preview.rowCount ?? 0) > (preview.rows?.length ?? 0) ? ` · showing first ${preview.rows?.length ?? 0}` : ""}</p></div>
+              <Table containerLabel="Scrollable CSV preview" containerClassName="max-h-72" className="w-max min-w-full font-mono">
+                <TableHeader><TableRow>{preview.headers.map((header, index) => <TableHead key={`${header}-${index}`} className="whitespace-nowrap">{header}</TableHead>)}</TableRow></TableHeader>
+                <TableBody>{preview.rows?.length ? preview.rows.map((row, rowIndex) => <TableRow key={rowIndex}>{row.map((cell, columnIndex) => <TableCell key={columnIndex} className="max-w-80 break-words">{cell || <span className="font-sans text-muted-foreground">Empty</span>}</TableCell>)}</TableRow>) : <TableRow><TableCell colSpan={preview.headers.length}>No export rows were returned.</TableCell></TableRow>}</TableBody>
+              </Table>
+              {preview.checksumSha256 ? <p className="break-all text-sm text-foreground-secondary">Preview SHA-256: <span className="font-mono">{preview.checksumSha256}</span></p> : null}
+            </section> : null}
+          </> : null}
+
+          {record ? <section className="space-y-3 border-t border-border pt-4" aria-label="Server export receipt">
+            <h3 className="text-base font-semibold">Most recent server export</h3>
+            <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+              <div><dt className="text-foreground-secondary">File</dt><dd className="mt-1 break-words font-mono">{record.fileName ?? "Not recorded"}</dd></div>
+              <div><dt className="text-foreground-secondary">Recorded at</dt><dd className="mt-1">{displayDate(record.createdAt)}</dd></div>
+              <div><dt className="text-foreground-secondary">Profile / revision</dt><dd className="mt-1 break-words font-mono">{record.profileId}{record.profileVersion ? ` · v${record.profileVersion}` : ""} · rev {record.revision}{record.rowCount !== null && record.rowCount !== undefined ? ` · ${record.rowCount} rows` : ""}</dd></div>
+              <div><dt className="text-foreground-secondary">Exported by</dt><dd className="mt-1 break-words">{record.exportedBy ?? "Not recorded"}</dd></div>
+            </dl>
+            <p className="break-words font-mono text-xs text-muted-foreground">Event {record.id}</p>
+            {record.checksumSha256 ? <div className="space-y-2"><p className="break-all text-sm"><span className="text-foreground-secondary">SHA-256: </span><span className="font-mono">{record.checksumSha256}</span></p><Button type="button" variant="outline" size="sm" onClick={() => void copyChecksum(record.checksumSha256!)}>{checksumCopy?.copiedHash === record.checksumSha256 ? <Check className="size-4" aria-hidden="true" /> : <Copy className="size-4" aria-hidden="true" />}{checksumCopy?.copiedHash === record.checksumSha256 ? "Checksum copied" : "Copy checksum"}</Button></div> : null}
+          </section> : null}
         </div>
+
+        <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border p-4 sm:px-6">
+          <Button type="button" variant="outline" size="sm" disabled={loading || downloading} onClick={refreshPreflight}><RefreshCw className="size-4" aria-hidden="true" />Refresh preflight</Button>
+          <Button type="button" size="sm" disabled={!canDownload} loading={downloading} onClick={() => void downloadCsv()}><Download className="size-4" aria-hidden="true" />{shipmentStatus === "EXPORTED" ? "Re-download CSV" : "Download guarded CSV"}</Button>
+        </footer>
       </div>
     </dialog>
   );

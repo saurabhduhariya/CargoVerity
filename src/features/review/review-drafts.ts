@@ -1,0 +1,138 @@
+import type {
+  FieldDraft,
+  ManualFieldBase,
+  ManualFieldEntry,
+  ReviewWorkspaceDocument,
+  ReviewWorkspaceField,
+  ReviewWorkspaceInitialData,
+} from "./review-types";
+
+export type ReviewState = {
+  incoming: ReviewWorkspaceInitialData;
+  snapshot: ReviewWorkspaceInitialData;
+  drafts: Record<string, FieldDraft>;
+  refreshRequired: boolean;
+};
+
+export function createReviewState(data: ReviewWorkspaceInitialData): ReviewState {
+  return { incoming: data, snapshot: data, drafts: {}, refreshRequired: false };
+}
+
+export function reconcileFieldDrafts(drafts: Record<string, FieldDraft>, documents: ReviewWorkspaceDocument[]): Record<string, FieldDraft> {
+  const fields = new Map(documents.flatMap((doc) => doc.fields.map((field) => [field.id, field] as const)));
+  return Object.fromEntries(Object.entries(drafts).map(([id, draft]) => {
+    const field = fields.get(id);
+    const changed = field && (
+      field.currentValue !== draft.baseValue || field.reviewStatus !== draft.baseStatus ||
+      field.unit !== draft.baseUnit || (field.reviewReason ?? null) !== draft.baseReason ||
+      field.pageNumber !== draft.basePage
+    );
+    return [id, { ...draft, conflict: !field ? "removed" : changed ? "changed" : undefined }];
+  }));
+}
+
+export function manualFieldBase(doc: ReviewWorkspaceDocument, fieldKey: string): ManualFieldBase {
+  const field = doc.fields.find((item) => item.fieldKey === fieldKey);
+  return {
+    runId: doc.latestRunId ?? null,
+    fieldId: field?.id ?? null,
+    value: field?.currentValue ?? null,
+    unit: field?.unit ?? null,
+    status: field?.reviewStatus ?? null,
+    reason: field?.reviewReason ?? null,
+    page: field?.pageNumber ?? null,
+  };
+}
+
+export function manualDraftConflict(entry: ManualFieldEntry | undefined, doc: ReviewWorkspaceDocument | undefined): "changed" | "removed" | undefined {
+  if (!entry?.base || !entry.draft.fieldKey) return undefined;
+  if (!doc) return "removed";
+  const current = manualFieldBase(doc, entry.draft.fieldKey);
+  return (Object.keys(current) as Array<keyof ManualFieldBase>).some((key) => current[key] !== entry.base?.[key]) ? "changed" : undefined;
+}
+
+/** A confirmation is single-use and applies to the revision and check run that were inspected. */
+export type ReviewActionBase = { shipmentId?: string; revision: number; runId: string | null };
+
+export function isReviewActionCurrent(
+  action: ReviewActionBase,
+  snapshot: ReviewWorkspaceInitialData,
+): boolean {
+  return (!action.shipmentId || action.shipmentId === snapshot.shipment.id) &&
+    action.revision === snapshot.shipment.currentRevision && action.runId === (snapshot.latestCheckRun?.id ?? null);
+}
+
+type ReviewStateAction =
+  | { type: "incoming"; data: ReviewWorkspaceInitialData }
+  | { type: "snapshot"; data: ReviewWorkspaceInitialData; savedFieldId?: string }
+  | { type: "draft"; doc: ReviewWorkspaceDocument; field: ReviewWorkspaceField; patch: Partial<Pick<FieldDraft, "value" | "reason" | "error">> }
+  | { type: "discard"; fieldId: string }
+  | { type: "acknowledge"; fieldId: string }
+  | { type: "document-url"; documentId: string; url: string }
+  | { type: "refresh-required" };
+
+export function reviewStateReducer(state: ReviewState, action: ReviewStateAction): ReviewState {
+  if (action.type === "incoming") {
+    if (action.data.shipment.id !== state.snapshot.shipment.id) return createReviewState(action.data);
+    if (action.data.shipment.currentRevision < state.snapshot.shipment.currentRevision) return { ...state, incoming: action.data };
+    return { incoming: action.data, snapshot: action.data, drafts: reconcileFieldDrafts(state.drafts, action.data.documents), refreshRequired: false };
+  }
+  if (action.type === "snapshot") {
+    if (action.data.shipment.id !== state.snapshot.shipment.id || action.data.shipment.currentRevision < state.snapshot.shipment.currentRevision) return state;
+    const drafts = { ...state.drafts };
+    if (action.savedFieldId) delete drafts[action.savedFieldId];
+    return { ...state, snapshot: action.data, drafts: reconcileFieldDrafts(drafts, action.data.documents) };
+  }
+  if (action.type === "refresh-required") return { ...state, refreshRequired: true };
+  if (action.type === "document-url") {
+    return {
+      ...state,
+      snapshot: { ...state.snapshot, documents: state.snapshot.documents.map((doc) => doc.id === action.documentId ? { ...doc, signedUrl: action.url } : doc) },
+    };
+  }
+  if (action.type === "discard") {
+    const drafts = { ...state.drafts };
+    delete drafts[action.fieldId];
+    return { ...state, drafts };
+  }
+  if (action.type === "acknowledge") {
+    const field = state.snapshot.documents.flatMap((doc) => doc.fields).find((item) => item.id === action.fieldId);
+    const draft = state.drafts[action.fieldId];
+    if (!field || !draft || state.refreshRequired) return state;
+    return {
+      ...state,
+      drafts: {
+        ...state.drafts,
+        [field.id]: {
+          ...draft,
+          baseValue: field.currentValue,
+          baseStatus: field.reviewStatus,
+          baseUnit: field.unit,
+          baseReason: field.reviewReason ?? null,
+          basePage: field.pageNumber,
+          baseRevision: state.snapshot.shipment.currentRevision,
+          conflict: undefined,
+          error: undefined,
+        },
+      },
+    };
+  }
+  const { doc, field, patch } = action;
+  const base: FieldDraft = state.drafts[field.id] ?? {
+    documentId: doc.id,
+    docType: doc.docType,
+    fieldKey: field.fieldKey,
+    value: field.currentValue ?? "",
+    reason: "",
+    baseValue: field.currentValue,
+    baseStatus: field.reviewStatus,
+    baseUnit: field.unit,
+    baseReason: field.reviewReason ?? null,
+    basePage: field.pageNumber,
+    baseRevision: state.snapshot.shipment.currentRevision,
+  };
+  const draft: FieldDraft = { ...base, error: undefined, ...patch };
+  const drafts = { ...state.drafts, [field.id]: draft };
+  if (draft.value === (field.currentValue ?? "") && !draft.reason && !draft.conflict && !draft.error) delete drafts[field.id];
+  return { ...state, drafts };
+}

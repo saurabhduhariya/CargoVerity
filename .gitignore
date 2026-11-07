@@ -34,6 +34,10 @@
 *.log
 .kiro/
 .vscode/
+.impeccable/
+.opencode/
+.playwright-mcp/
+opencode.json
 
 # local tooling caches
 /.cache/

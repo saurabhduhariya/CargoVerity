@@ -4,8 +4,9 @@ import { requirePageAppUser } from "@/lib/auth-page";
 import { getPrisma } from "@/lib/db";
 import {
   ReviewWorkspace,
-  ReviewWorkspaceInitialData,
 } from "@/features/review/review-workspace";
+import type { ReviewWorkspaceInitialData } from "@/features/review/review-types";
+import { DOCUMENT_FIELD_POLICIES } from "@/lib/ai/review-policy.service";
 import { getAuthorizedDocumentDownloadUrl } from "@/lib/documents/storage";
 import { getLatestCrossCheckRun } from "@/lib/crosschecks/service";
 import { listActiveLineMappings } from "@/lib/crosschecks/line-mapping";
@@ -21,6 +22,7 @@ export default async function ReviewPage({
   const { id } = await params;
   const { appUser } = await requirePageAppUser(`/review/${encodeURIComponent(id)}`);
   const prisma = getPrisma();
+  let requestedDocument: { id: string; docType: string } | null = null;
 
   // 1. Try resolving as Shipment ID
   let shipment = await prisma.shipment.findFirst({
@@ -36,9 +38,9 @@ export default async function ReviewPage({
         include: {
           extractionRuns: {
             where: { status: "COMPLETED" },
-            orderBy: { createdAt: "desc" },
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
             take: 1,
-            include: { fields: true, lineItems: true },
+            include: { fields: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] }, lineItems: { orderBy: { lineNumber: "asc" } } },
           },
           pages: { orderBy: { pageNumber: "asc" } },
         },
@@ -50,9 +52,10 @@ export default async function ReviewPage({
   if (!shipment) {
     const doc = await prisma.document.findUnique({
       where: { id },
-      select: { shipmentId: true },
+      select: { id: true, shipmentId: true, docType: true },
     });
     if (doc) {
+      requestedDocument = doc;
       shipment = await prisma.shipment.findFirst({
         where: {
           id: doc.shipmentId,
@@ -66,9 +69,9 @@ export default async function ReviewPage({
             include: {
               extractionRuns: {
                 where: { status: "COMPLETED" },
-                orderBy: { createdAt: "desc" },
+                orderBy: [{ createdAt: "desc" }, { id: "desc" }],
                 take: 1,
-                include: { fields: true, lineItems: true },
+                include: { fields: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] }, lineItems: { orderBy: { lineNumber: "asc" } } },
               },
               pages: { orderBy: { pageNumber: "asc" } },
             },
@@ -88,6 +91,11 @@ export default async function ReviewPage({
     revision: shipment.currentRevision,
     prismaClient: prisma,
   });
+  const lastStoredRun = latestRun ?? await prisma.crossCheckRun.findFirst({
+    where: { shipmentId: shipment.id },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { id: true, revision: true },
+  });
 
   // 4. Resolve signed URLs and format documents
   const documents = await Promise.all(
@@ -100,10 +108,8 @@ export default async function ReviewPage({
         });
         if (authUrlResult?.signedUrl) signedUrl = authUrlResult.signedUrl;
       } catch {
-        signedUrl = `/sample-docs/${doc.originalFileName}`;
-      }
-      if (!signedUrl) {
-        signedUrl = `/sample-docs/${doc.originalFileName}`;
+        // Private evidence stays unavailable until the authorized secure-link retry succeeds.
+        // A public sample is not evidence for this shipment.
       }
 
       const run = doc.extractionRuns[0] ?? null;
@@ -118,6 +124,8 @@ export default async function ReviewPage({
         signedUrl,
         extractionStatus: doc.extractionStatus,
         latestRunId: run?.id ?? null,
+        extractionProvider: run?.provider ?? null,
+        manualFieldOptions: Object.entries(DOCUMENT_FIELD_POLICIES[doc.selectedDocType]).map(([fieldKey, policy]) => ({ fieldKey, required: policy.requirement === "REQUIRED", isNumeric: policy.isNumeric, isDate: policy.isDate })),
         pages: doc.pages.map((p) => ({
           id: p.id,
           pageNumber: p.pageNumber,
@@ -131,7 +139,7 @@ export default async function ReviewPage({
           modelValue: f.modelValue,
           currentValue: f.currentValue,
           unit: f.unit,
-          modelConfidence: f.modelConfidence ? Number(f.modelConfidence) : null,
+          modelConfidence: f.modelConfidence !== null ? Number(f.modelConfidence) : null,
           sourceQuote: f.sourceQuote,
           pageNumber: f.pageNumber,
           reviewStatus: f.reviewStatus,
@@ -142,10 +150,10 @@ export default async function ReviewPage({
           lineNumber: item.lineNumber,
           description: item.description,
           hsnCode: item.hsnCode,
-          quantity: item.quantity ? String(item.quantity) : null,
+          quantity: item.quantity !== null ? String(item.quantity) : null,
           quantityUnit: item.quantityUnit,
-          unitPrice: item.unitPrice ? String(item.unitPrice) : null,
-          lineTotal: item.lineTotal ? String(item.lineTotal) : null,
+          unitPrice: item.unitPrice !== null ? String(item.unitPrice) : null,
+          lineTotal: item.lineTotal !== null ? String(item.lineTotal) : null,
           currency: item.currency,
           sourceQuote: item.sourceQuote,
           pageNumber: item.pageNumber,
@@ -176,7 +184,10 @@ export default async function ReviewPage({
       supplier: shipment.supplier,
     },
     currentUserRole: appUser.role,
+    initialDocumentId: requestedDocument ? documents.find((doc) => doc.id === requestedDocument.id)?.id ?? documents.find((doc) => doc.docType === requestedDocument.docType)?.id : undefined,
     documents,
+    latestCheckRun: latestRun ? { id: latestRun.id, revision: latestRun.revision, createdAt: latestRun.createdAt } : null,
+    crossChecksStale: Boolean(lastStoredRun && lastStoredRun.revision !== shipment.currentRevision),
     lineMappings: lineMappings.map((mapping) => ({
       id: mapping.id,
       invoiceLineId: mapping.invoiceLineItemId,
@@ -229,5 +240,5 @@ export default async function ReviewPage({
     })),
   };
 
-  return <ReviewWorkspace initialData={initialData} />;
+  return <ReviewWorkspace key={shipment.id} initialData={initialData} />;
 }

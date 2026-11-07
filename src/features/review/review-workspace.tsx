@@ -1,2569 +1,574 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
 import Link from "next/link";
-import {
-  AlertCircle,
-  AlertTriangle,
-  ArrowLeft,
-  Check,
-  CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
-  ExternalLink,
-  Eye,
-  FileCheck,
-  FileDown,
-  FileSpreadsheet,
-  FileText,
-  History,
-  Lock,
-  Package,
-  PlusCircle,
-  RefreshCw,
-  RotateCw,
-  Save,
-  Scale,
-  Send,
-  ShieldCheck,
-  XCircle,
-  ZoomIn,
-  ZoomOut,
-} from "lucide-react";
+import { useRouter } from "next/navigation";
+import { ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, FileDown, FileText, Lock, RefreshCw, RotateCw, Send, ShieldCheck, X, ZoomIn, ZoomOut } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { FOCUS_RING_STYLES } from "@/components/ui/control-styles";
+import { FeedbackState } from "@/components/ui/feedback-state";
 import { Input } from "@/components/ui/input";
-import { DocumentViewer } from "@/features/review/document-viewer";
-import {
-  ExportPreviewDialog,
-} from "@/features/review/export-preview-dialog";
-import { LineMappingPanel } from "@/features/review/line-mapping-panel";
-import { nextUncertainFieldId } from "@/features/review/next-uncertain";
-import type { ExportRecordSummary } from "@/lib/export/preview";
+import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
+import { ChecksInspector, type ActiveResolutionEditor } from "./checks-inspector";
+import { DocumentViewer } from "./document-viewer";
+import { ExportPreviewDialog } from "./export-preview-dialog";
+import { FieldsInspector } from "./fields-inspector";
+import { HistoryInspector } from "./history-inspector";
+import { mappingSelectionIssue } from "./line-mapping-panel";
+import { nextUncertainFieldId } from "./next-uncertain";
+import { isReviewActionCurrent, manualDraftConflict, manualFieldBase, type ReviewActionBase } from "./review-drafts";
+import { blockingAcceptedExceptions, calculateNextRotation, calculateNextZoom, canEnterManualField, checkDisplayStatus, checkLabel, DOCUMENT_LABELS, DOCUMENT_TYPES, formatFieldLabel, isFieldUncertain, validateManagerDecision } from "./review-presentation";
+import { useReviewController } from "./use-review-controller";
+import type { CrossCheckResolutionData, EvidenceTarget, FieldCategory, InspectorTab, ManualFieldDraft, ManualFieldEntry, ResolutionDraft, ReviewWorkspaceCrossCheck, ReviewWorkspaceDocument, ReviewWorkspaceInitialData } from "./review-types";
 
-export type ReviewWorkspaceField = {
-  id: string;
-  fieldKey: string;
-  modelValue: string | null;
-  currentValue: string | null;
-  unit: string | null;
-  modelConfidence: number | string | null;
-  sourceQuote: string | null;
-  pageNumber: number | null;
-  reviewStatus: string;
-  reviewReason?: string | null;
-};
+// Preserve the feature's public imports while keeping state and presentation independently testable.
+export type * from "./review-types";
+export { calculateNextRotation, calculateNextZoom, categorizeFieldKey, deriveEffectiveCheckStatus, formatFieldLabel, isAllowedPreApprovalStatus, isFieldUncertain, validateFieldCorrection } from "./review-presentation";
 
-export type ReviewWorkspaceLineItem = {
-  id: string;
-  lineNumber?: number;
-  description: string | null;
-  hsnCode?: string | null;
-  sku?: string | null;
-  quantity: string | number | null;
-  quantityUnit: string | null;
-  unitPrice?: string | number | null;
-  lineTotal: string | number | null;
-  currency: string | null;
-  sourceQuote?: string | null;
-  pageNumber?: number | null;
-};
-
-export type ReviewWorkspacePage = {
-  id: string;
-  pageNumber: number;
-  isReadable: boolean;
-  manualEntryRequired: boolean;
-  reviewNote: string | null;
-};
-
-export type ReviewWorkspaceDocument = {
-  id: string;
-  docType: "INVOICE" | "PACKING_LIST" | "BILL_OF_LADING";
-  originalFileName: string;
-  mimeType: string;
-  documentVersion: number;
-  pageCount: number | null;
-  signedUrl: string;
-  pages: ReviewWorkspacePage[];
-  fields: ReviewWorkspaceField[];
-  lineItems: ReviewWorkspaceLineItem[];
-  extractionStatus: string;
-  latestRunId?: string | null;
-};
-
-export type CrossCheckResolutionData = {
-  id: string;
-  type: "SOURCE_CORRECTED" | "DOCUMENT_REPLACEMENT" | "ACCEPTED_EXCEPTION";
-  reason: string;
-  evidence?: string | null;
-  managerApprovedAt?: string | Date | null;
-  createdAt?: string | Date;
-  resolvedBy?: {
-    id: string;
-    email?: string;
-    fullName?: string | null;
-    role?: string;
-  };
-};
-
-export type ReviewWorkspaceCrossCheck = {
-  id?: string;
-  ruleKey: string;
-  ruleCode?: string;
-  status: "PASS" | "MISMATCH" | "INCOMPLETE" | "NOT_APPLICABLE";
-  severity?: "BLOCKING" | "WARNING";
-  effectiveStatus?: string;
-  /** Server-derived display status (HUMAN_CLEARED / PENDING_MANAGER_APPROVAL are never stored). */
-  derivedStatus?: string;
-  runId?: string | null;
-  clearedForSubmission?: boolean;
-  clearedForApproval?: boolean;
-  activeResolution?: CrossCheckResolutionData | null;
-  resolutions?: CrossCheckResolutionData[];
-  details: {
-    message?: string;
-    note?: string;
-    difference?: string | null;
-    differenceKg?: string | null;
-    comparedValuesKg?: Record<string, string>;
-    unreconciledReason?: string;
-    [key: string]: unknown;
-  };
-};
-
-export type ReviewWorkspaceAuditEvent = {
-  id: string;
-  action: string;
-  entityType: string;
-  actorEmail?: string | null;
-  actorRole?: string | null;
-  metadata?: Record<string, unknown> | null;
-  createdAt: string | Date;
-};
-
-export type ReviewWorkspaceInitialData = {
-  shipment: {
-    id: string;
-    reference: string;
-    status: string;
-    currentRevision: number;
-    importerName?: string | null;
-    exporterName?: string | null;
-    supplier?: { id: string; name: string } | null;
-  };
-  currentUserRole?: "EXECUTIVE" | "MANAGER";
-  documents: ReviewWorkspaceDocument[];
-  crossChecks: ReviewWorkspaceCrossCheck[];
-  lineMappings?: ReviewWorkspaceLineMapping[];
-  auditHistory?: ReviewWorkspaceAuditEvent[];
-};
-
-export type ReviewWorkspaceLineMapping = {
-  id: string;
-  invoiceLineId: string;
-  packingListLineId: string;
-  reason: string;
-  createdAt: string;
-  createdBy: string | null;
-};
-
-export type FieldCategory = "parties" | "identifiers" | "commercial" | "logistics" | "other";
-
-export function categorizeFieldKey(fieldKey: string): FieldCategory {
-  const k = fieldKey.toLowerCase();
-  if (
-    k.includes("exporter") ||
-    k.includes("importer") ||
-    k.includes("shipper") ||
-    k.includes("consignee") ||
-    k.includes("notify") ||
-    k.includes("carrier")
-  ) {
-    return "parties";
-  }
-  if (
-    k.includes("number") ||
-    k.includes("code") ||
-    k.includes("reference") ||
-    k.includes("date") ||
-    k.includes("invnum") ||
-    k.includes("blnum")
-  ) {
-    return "identifiers";
-  }
-  if (
-    k.includes("weight") ||
-    k.includes("package") ||
-    k.includes("vessel") ||
-    k.includes("voyage") ||
-    k.includes("port") ||
-    k.includes("container") ||
-    k.includes("delivery") ||
-    k.includes("loading") ||
-    k.includes("discharge")
-  ) {
-    return "logistics";
-  }
-  if (
-    k.includes("total") ||
-    k.includes("amount") ||
-    k.includes("price") ||
-    k.includes("currency") ||
-    k.includes("tax") ||
-    k.includes("freight") ||
-    k.includes("insurance") ||
-    k.includes("discount") ||
-    (!k.includes("discharge") && k.includes("charge"))
-  ) {
-    return "commercial";
-  }
-  return "other";
+const DESKTOP_QUERY = "(min-width: 1024px)";
+function subscribeDesktop(onChange: () => void) {
+  const query = window.matchMedia(DESKTOP_QUERY);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
 }
-
-export function formatFieldLabel(key: string): string {
-  return key
-    .replace(/([A-Z])/g, " $1")
-    .replace(/^./, (str) => str.toUpperCase())
-    .trim();
-}
-
-export function isFieldUncertain(
-  field: Pick<ReviewWorkspaceField, "modelConfidence" | "reviewStatus" | "sourceQuote">,
-): boolean {
-  const conf = Number(field.modelConfidence);
-  return (
-    !Number.isFinite(conf) ||
-    conf < 0.85 ||
-    field.reviewStatus === "REQUIRES_REVIEW" ||
-    !field.sourceQuote
-  );
-}
-
-export function calculateNextZoom(current: number, direction: "in" | "out"): number {
-  if (direction === "in") return Math.min(current + 25, 200);
-  return Math.max(current - 25, 50);
-}
-
-export function calculateNextRotation(current: number): number {
-  return (current + 90) % 360;
-}
-
-/** Mirrors the server's editable states (`EDITABLE_FIELD_STATUSES` in `@/lib/review/field-actions`). */
-export function isAllowedPreApprovalStatus(status: string): boolean {
-  return status !== "APPROVED" && status !== "EXPORTED" && status !== "EXTRACTING";
-}
-
-export function validateFieldCorrection(
-  action: "CONFIRMED" | "CORRECTED" | "MANUAL_ENTRY",
-  value: string | null | undefined,
-  currentValue: string | null | undefined,
-  reason: string | null | undefined,
-): { valid: boolean; error?: string; isMaterialChange: boolean } {
-  const isMaterialChange = action !== "CONFIRMED" && value !== currentValue;
-  if (action !== "CONFIRMED") {
-    if (!reason || reason.trim().length < 3) {
-      return {
-        valid: false,
-        error: "A meaningful reason (at least 3 characters) is required.",
-        isMaterialChange,
-      };
+function getDesktopSnapshot() { return window.matchMedia(DESKTOP_QUERY).matches; }
+function getDesktopServerSnapshot() { return true; }
+function focusReviewElement(id: string, fallbackId?: string) {
+  requestAnimationFrame(() => {
+    const element = document.getElementById(id) ?? (fallbackId ? document.getElementById(fallbackId) : null);
+    for (let parent = element?.parentElement; parent; parent = parent.parentElement) {
+      if (parent instanceof HTMLDetailsElement) parent.open = true;
     }
-  }
-  return { valid: true, isMaterialChange };
+    element?.scrollIntoView({ block: "nearest" });
+    element?.focus({ preventScroll: true });
+  });
 }
+function blankManualDraft(page: number): ManualFieldDraft { return { fieldKey: "", value: "", unit: "", reason: "", page }; }
+function manualIsDirty(draft: ManualFieldDraft) { return Boolean(draft.fieldKey || draft.value || draft.unit || draft.reason); }
+function resolutionIsDirty(draft: ResolutionDraft) { return Boolean(draft.reason || draft.evidence || draft.valuesConfirmed); }
 
-/**
- * Display chip for a check. Mirrors the server's shared clearance rules
- * (`@/lib/crosschecks/resolution-state`): only a valid ACCEPTED_EXCEPTION clears a failure
- * (pending until manager sign-off). SOURCE_CORRECTED / DOCUMENT_REPLACEMENT are audit links and
- * never show a current failure as cleared. When the server supplies `derivedStatus`, it wins.
- */
-export function deriveEffectiveCheckStatus(
-  status: "PASS" | "MISMATCH" | "INCOMPLETE" | "NOT_APPLICABLE",
-  activeResolution?: CrossCheckResolutionData | null,
-  derivedStatus?: string | null,
-): { label: string; badgeClass: string; isHumanCleared: boolean; isPendingApproval: boolean } {
-  if (status === "PASS") {
-    return {
-      label: "PASS",
-      badgeClass: "bg-emerald-100 text-emerald-800 border-emerald-300",
-      isHumanCleared: false,
-      isPendingApproval: false,
-    };
-  }
-
-  const exceptionIsValid =
-    activeResolution?.type === "ACCEPTED_EXCEPTION" &&
-    (activeResolution.reason ?? "").trim().length >= 5 &&
-    (activeResolution.evidence ?? "").trim().length >= 3;
-  const effective =
-    derivedStatus ??
-    (exceptionIsValid ? (activeResolution?.managerApprovedAt ? "HUMAN_CLEARED" : "PENDING_MANAGER_APPROVAL") : status);
-
-  if (effective === "HUMAN_CLEARED") {
-    return {
-      label: "HUMAN CLEARED (Exception Approved)",
-      badgeClass: "bg-purple-100 text-purple-900 border-purple-300",
-      isHumanCleared: true,
-      isPendingApproval: false,
-    };
-  }
-  if (effective === "PENDING_MANAGER_APPROVAL") {
-    return {
-      label: "PENDING MANAGER APPROVAL",
-      badgeClass: "bg-amber-100 text-amber-900 border-amber-300 animate-pulse",
-      isHumanCleared: false,
-      isPendingApproval: true,
-    };
-  }
-
-  if (status === "MISMATCH") {
-    return {
-      label: "MISMATCH",
-      badgeClass: "bg-rose-100 text-rose-800 border-rose-300 font-semibold",
-      isHumanCleared: false,
-      isPendingApproval: false,
-    };
-  }
-
-  if (status === "INCOMPLETE") {
-    return {
-      label: "INCOMPLETE",
-      badgeClass: "bg-amber-100 text-amber-800 border-amber-300",
-      isHumanCleared: false,
-      isPendingApproval: false,
-    };
-  }
-
-  return {
-    label: status,
-    badgeClass: "bg-slate-100 text-slate-700 border-slate-300",
-    isHumanCleared: false,
-    isPendingApproval: false,
-  };
-}
+type EvidenceReturn = { tab: InspectorTab; docType: ReviewWorkspaceDocument["docType"]; page: number; rotation: number; elementId: string; label: string };
+type PendingAction = ReviewActionBase & { title: string; description: string; confirmLabel: string; execute: () => Promise<boolean> };
+type ManualPageTarget = ReviewActionBase & { documentId: string; page: number };
 
 export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceInitialData }) {
-  const { shipment } = initialData;
-  const [documents, setDocuments] = useState<ReviewWorkspaceDocument[]>(initialData.documents);
-  const [crossChecks, setCrossChecks] = useState<ReviewWorkspaceCrossCheck[]>(initialData.crossChecks);
-  const [shipmentRevision, setShipmentRevision] = useState<number>(shipment.currentRevision);
-  const [shipmentStatus, setShipmentStatus] = useState<string>(shipment.status);
-  const isReadOnly = !isAllowedPreApprovalStatus(shipmentStatus);
-
-  // Active Document Tab
-  const availableDocTypes: Array<"INVOICE" | "PACKING_LIST" | "BILL_OF_LADING"> = [
-    "INVOICE",
-    "PACKING_LIST",
-    "BILL_OF_LADING",
-  ];
-  const firstAvailable = documents[0]?.docType ?? "INVOICE";
-  const [activeDocType, setActiveDocType] = useState<"INVOICE" | "PACKING_LIST" | "BILL_OF_LADING">(
-    firstAvailable,
-  );
-
-  // Viewer Controls
-  const [currentPage, setCurrentPage] = useState<number>(1);
-  const [zoomLevel, setZoomLevel] = useState<number>(100);
-  const [rotation, setRotation] = useState<number>(0);
+  const router = useRouter();
+  const controller = useReviewController(initialData);
+  const { snapshot, drafts, feedback, setFeedback, busy, isRefreshing, refreshRequired, isReadOnly, dispatch } = controller;
+  const { shipment, documents, crossChecks } = snapshot;
+  const isDesktop = useSyncExternalStore(subscribeDesktop, getDesktopSnapshot, getDesktopServerSnapshot);
+  const initialDocType = documents.find((doc) => doc.id === initialData.initialDocumentId)?.docType ?? DOCUMENT_TYPES.find((type) => documents.some((doc) => doc.docType === type)) ?? "INVOICE";
+  const [activeDocType, setActiveDocType] = useState<ReviewWorkspaceDocument["docType"]>(initialDocType);
+  const [entryDocumentId, setEntryDocumentId] = useState(initialData.initialDocumentId);
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("fields");
+  const [mobilePane, setMobilePane] = useState("review");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [zoomLevel, setZoomLevel] = useState(100);
+  const [rotation, setRotation] = useState(0);
   const [pdfPageCounts, setPdfPageCounts] = useState<Record<string, number>>({});
   const [focusedUncertainId, setFocusedUncertainId] = useState<string | null>(null);
+  const [category, setCategory] = useState<FieldCategory | "all">("all");
+  const [reviewFilter, setReviewFilter] = useState<"all" | "uncertain" | "pending">("all");
+  const [evidenceReturn, setEvidenceReturn] = useState<EvidenceReturn | null>(null);
+  const activeDoc = documents.find((doc) => doc.docType === activeDocType);
+  const [viewerDocumentId, setViewerDocumentId] = useState(activeDoc?.id);
 
-  const handlePdfPageCount = useCallback((documentId: string, count: number) => {
-    setPdfPageCounts((prev) => (prev[documentId] === count ? prev : { ...prev, [documentId]: count }));
-  }, []);
+  // A document-ID entry selects that document. Ordinary refreshes do not reset the selection.
+  if (entryDocumentId !== initialData.initialDocumentId) {
+    setEntryDocumentId(initialData.initialDocumentId);
+    if (initialData.initialDocumentId) setActiveDocType(initialDocType);
+  }
+  if (viewerDocumentId !== activeDoc?.id) {
+    setViewerDocumentId(activeDoc?.id);
+    setCurrentPage(1);
+    setRotation(0);
+    setFocusedUncertainId(null);
+  }
+  const maxPages = Math.max(1, activeDoc ? pdfPageCounts[activeDoc.id] ?? activeDoc.pageCount ?? 1 : 1);
+  const page = Math.min(currentPage, maxPages);
+  const activePage = activeDoc?.pages.find((item) => item.pageNumber === page);
+  const isManager = snapshot.currentUserRole === "MANAGER";
+  const disabled = Boolean(busy || isRefreshing || refreshRequired);
+  const documentReadOnly = isReadOnly || activeDoc?.extractionStatus === "PROCESSING";
 
-  // Signed URLs are short-lived; fetch a fresh one before the viewer retries.
-  const requestFreshDocumentUrl = useCallback(async (documentId: string) => {
-    const response = await fetch(`/api/documents/${documentId}`, { cache: "no-store" });
-    if (!response.ok) return null;
-    const data = (await response.json()) as { signedUrl?: string };
-    if (!data.signedUrl) return null;
-    setDocuments((prev) => prev.map((doc) => (doc.id === documentId ? { ...doc, signedUrl: data.signedUrl! } : doc)));
-    return data.signedUrl;
-  }, []);
-
-  // Field Edit States
-  const [editedValues, setEditedValues] = useState<Record<string, string>>({});
-  const [reasons, setReasons] = useState<Record<string, string>>({});
-  const [activeCategory, setActiveCategory] = useState<FieldCategory | "all">("all");
-  const [mobileTab, setMobileTab] = useState<"document" | "fields" | "checks">("fields");
-
-  // Manual Field Addition State
-  const [showAddManualField, setShowAddManualField] = useState(false);
-  const [newFieldKey, setNewFieldKey] = useState("");
-  const [newFieldValue, setNewFieldValue] = useState("");
-  const [newFieldReason, setNewFieldReason] = useState("");
-
-  // Resolution State (Week 4 Step 8)
-  const [resolvingCheckId, setResolvingCheckId] = useState<string | null>(null);
-  const [resolutionType, setResolutionType] = useState<
-    "SOURCE_CORRECTED" | "DOCUMENT_REPLACEMENT" | "ACCEPTED_EXCEPTION"
-  >("ACCEPTED_EXCEPTION");
-  const [resolutionReason, setResolutionReason] = useState("");
-  const [resolutionEvidence, setResolutionEvidence] = useState("");
-  const [valuesConfirmed, setValuesConfirmed] = useState(false);
-  const [showHistoryForCheckId, setShowHistoryForCheckId] = useState<string | null>(null);
-
-  const [crossChecksStale, setCrossChecksStale] = useState(false);
-
-  // Line mapping state (Week 4 Step 4)
-  const [lineMappings, setLineMappings] = useState<ReviewWorkspaceLineMapping[]>(initialData.lineMappings ?? []);
+  const [manualEntries, setManualEntries] = useState<Record<string, ManualFieldEntry>>({});
+  const [manualError, setManualError] = useState<string | null>(null);
+  const manualEntry = activeDoc ? manualEntries[activeDoc.id] : undefined;
+  const manualDraft = manualEntry?.draft ?? blankManualDraft(page);
+  const manualConflict = manualDraftConflict(manualEntry, activeDoc);
   const [mappingSelections, setMappingSelections] = useState<Record<string, string>>({});
   const [mappingReason, setMappingReason] = useState("");
-
-  const [busy, setBusy] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [submitBlockers, setSubmitBlockers] = useState<string[] | null>(null);
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
-
-  // Manager Decision & Review State (Week 5 Step 2)
-  const isManager = initialData.currentUserRole === "MANAGER";
+  const [resolutionEntries, setResolutionEntries] = useState<Record<string, { check: ReviewWorkspaceCrossCheck; type: CrossCheckResolutionData["type"]; draft: ResolutionDraft }>>({});
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
+  const resolving = resolvingId ? resolutionEntries[resolvingId] : undefined;
+  const resolution: ActiveResolutionEditor | null = resolving && resolvingId ? { checkId: resolvingId, type: resolving.type, draft: resolving.draft } : null;
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const pendingActionRef = useRef<PendingAction | null>(null);
+  const [manualPageTarget, setManualPageTarget] = useState<ManualPageTarget | null>(null);
+  const [pageNote, setPageNote] = useState("");
+  const [managerTarget, setManagerTarget] = useState<ReviewActionBase | null>(null);
+  const [managerDecision, setManagerDecision] = useState<"APPROVE" | "REJECT">("APPROVE");
   const [managerComment, setManagerComment] = useState("");
-  const [managerActionBusy, setManagerActionBusy] = useState(false);
-  const [showManagerAudit, setShowManagerAudit] = useState(false);
-  const auditHistory = initialData.auditHistory ?? [];
+  const [dialogError, setDialogError] = useState<string | null>(null);
+  const [leaveHref, setLeaveHref] = useState<string | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
 
-  // Export Preview & Guard State (Week 5 Step 5)
-  const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
-  const [, setRecentExportRecord] = useState<ExportRecordSummary | null>(null);
+  const dirtyManualEntries = Object.entries(manualEntries).filter(([, entry]) => manualIsDirty(entry.draft));
+  const dirtyResolutions = Object.entries(resolutionEntries).filter(([, entry]) => resolutionIsDirty(entry.draft));
+  const hasMappingDraft = Boolean(mappingReason || Object.values(mappingSelections).some(Boolean));
+  const fieldDraftCount = Object.keys(drafts).length;
+  const draftCount = fieldDraftCount + dirtyManualEntries.length + dirtyResolutions.length + Number(hasMappingDraft);
+  const hasFieldDrafts = fieldDraftCount > 0 || dirtyManualEntries.length > 0;
+  const hasDrafts = draftCount > 0;
+  const checksStale = Boolean(snapshot.crossChecksStale || !snapshot.latestCheckRun || snapshot.latestCheckRun.revision !== shipment.currentRevision);
+  const canResolve = ["DRAFT", "IN_REVIEW", "NEEDS_REVIEW"].includes(shipment.status) && !hasFieldDrafts && !checksStale;
+  const acceptedExceptions = blockingAcceptedExceptions(crossChecks);
+  const pendingExceptions = acceptedExceptions.filter((check) => checkDisplayStatus(check) === "PENDING_MANAGER_APPROVAL");
+  const approvedExceptions = acceptedExceptions.filter((check) => checkDisplayStatus(check) === "HUMAN_CLEARED").length;
+  const managerCommentRequired = managerDecision === "REJECT" || acceptedExceptions.length > 0;
+  const uncertainTotal = documents.reduce((count, doc) => count + doc.fields.filter(isFieldUncertain).length, 0);
+  const modifiedCount = documents.reduce((count, doc) => count + doc.fields.filter((field) => field.modelValue !== field.currentValue || ["CORRECTED", "MANUAL_ENTRY"].includes(field.reviewStatus)).length, 0);
 
-  // AI-to-current differences: corrected values and values a person entered where the AI had none.
-  const modifiedFields = documents.flatMap((doc) =>
-    doc.fields
-      .filter(
-        (f) =>
-          (f.modelValue ?? null) !== (f.currentValue ?? null) ||
-          f.reviewStatus === "CORRECTED" ||
-          f.reviewStatus === "MANUAL_ENTRY",
-      )
-      .map((f) => ({ ...f, docType: doc.docType })),
-  );
-  const failedOrClearedChecks = crossChecks.filter((c) => c.status === "MISMATCH" || c.status === "INCOMPLETE");
+  useEffect(() => {
+    if (!hasDrafts && !managerComment) return;
+    function beforeUnload(event: BeforeUnloadEvent) { event.preventDefault(); event.returnValue = ""; }
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => window.removeEventListener("beforeunload", beforeUnload);
+  }, [hasDrafts, managerComment]);
 
-  const activeDoc = documents.find((d) => d.docType === activeDocType);
-  const maxPages = (activeDoc ? pdfPageCounts[activeDoc.id] : undefined) ?? activeDoc?.pageCount ?? 1;
-
-  // Cross-Check Summary Counts (Rule 8 & 11)
-  const passedCount = crossChecks.filter((c) => c.status === "PASS").length;
-  const humanClearedCount = crossChecks.filter((c) => {
-    const eff = deriveEffectiveCheckStatus(c.status, c.activeResolution ?? c.resolutions?.[0], c.derivedStatus ?? c.effectiveStatus);
-    return eff.isHumanCleared;
-  }).length;
-  const pendingApprovalCount = crossChecks.filter((c) => {
-    const eff = deriveEffectiveCheckStatus(c.status, c.activeResolution ?? c.resolutions?.[0], c.derivedStatus ?? c.effectiveStatus);
-    return eff.isPendingApproval;
-  }).length;
-  const mismatchCount = crossChecks.filter((c) => {
-    if (c.status !== "MISMATCH") return false;
-    const eff = deriveEffectiveCheckStatus(c.status, c.activeResolution ?? c.resolutions?.[0], c.derivedStatus ?? c.effectiveStatus);
-    return !eff.isHumanCleared && !eff.isPendingApproval;
-  }).length;
-  const incompleteCount = crossChecks.filter((c) => {
-    if (c.status !== "INCOMPLETE") return false;
-    const eff = deriveEffectiveCheckStatus(c.status, c.activeResolution ?? c.resolutions?.[0], c.derivedStatus ?? c.effectiveStatus);
-    return !eff.isHumanCleared && !eff.isPendingApproval;
-  }).length;
-  const warningCount = crossChecks.filter((c) => c.severity === "WARNING").length;
-
-  // Zoom handlers
-  function handleZoomIn() {
-    setZoomLevel((prev) => calculateNextZoom(prev, "in"));
-  }
-  function handleZoomOut() {
-    setZoomLevel((prev) => calculateNextZoom(prev, "out"));
-  }
-  function handleResetZoom() {
-    setZoomLevel(100);
-    setRotation(0);
-  }
-  function handleRotate() {
-    setRotation((prev) => calculateNextRotation(prev));
-  }
-
-  // Jump to page when clicking source quote
-  function jumpToPage(page: number | null | undefined) {
-    if (page && page >= 1) {
-      setCurrentPage(page);
-      setMobileTab("document");
-    }
-  }
-
-  // Navigate to the next uncertain field, cycling and wrapping (Week 4 Step 6).
-  // Focus moves to the field card (not its input) so pressing "N" again keeps cycling.
   const goToNextUncertainField = useCallback(() => {
-    const currentFields = activeDoc?.fields ?? [];
-    const uncertainFields = currentFields.filter(isFieldUncertain);
-    const nextId = nextUncertainFieldId(
-      uncertainFields.map((field) => field.id),
-      focusedUncertainId,
-    );
-    const nextField = uncertainFields.find((field) => field.id === nextId);
-    if (!nextField) {
-      setStatusMessage("No uncertain fields requiring review on this document.");
+    const fields = activeDoc?.fields.filter(isFieldUncertain) ?? [];
+    const id = nextUncertainFieldId(fields.map((field) => field.id), focusedUncertainId);
+    const field = fields.find((item) => item.id === id);
+    if (!field) {
+      setFeedback({ kind: "info", message: "No uncertain fields require review on this document. Pending values may still need confirmation." });
       return;
     }
-    setFocusedUncertainId(nextField.id);
-    setActiveCategory("all");
-    if (nextField.pageNumber) {
-      setCurrentPage(nextField.pageNumber);
-    }
-    setMobileTab("fields");
-    if (typeof document !== "undefined") {
-      setTimeout(() => {
-        const el = document.getElementById(`field-card-${nextField.id}`);
-        if (el) {
-          el.scrollIntoView({ behavior: "smooth", block: "center" });
-          el.focus({ preventScroll: true });
-        }
-      }, 80);
-    }
-    const position = uncertainFields.indexOf(nextField) + 1;
-    setStatusMessage(
-      `Uncertain field ${position} of ${uncertainFields.length}: ${formatFieldLabel(nextField.fieldKey)}`,
-    );
-  }, [activeDoc?.fields, focusedUncertainId, setStatusMessage]);
+    setFocusedUncertainId(field.id);
+    setCategory("all");
+    setReviewFilter("all");
+    setInspectorTab("fields");
+    setMobilePane("review");
+    if (field.pageNumber) setCurrentPage(field.pageNumber);
+    focusReviewElement(`field-card-${field.id}`);
+    setFeedback({ kind: "info", message: `Uncertain field ${fields.indexOf(field) + 1} of ${fields.length}: ${formatFieldLabel(field.fieldKey)}.` });
+  }, [activeDoc, focusedUncertainId, setFeedback]);
 
-  // Keyboard navigation shortcuts
   useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      const target = e.target as HTMLElement | null;
-      if (
-        target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.tagName === "SELECT" ||
-          target.isContentEditable)
-      ) {
-        return;
-      }
-      if (e.ctrlKey || e.metaKey) return;
-
-      if (e.key === "n" || e.key === "N") {
-        e.preventDefault();
-        goToNextUncertainField();
-      } else if (e.key === "[" || e.key === "PageUp") {
-        e.preventDefault();
-        setCurrentPage((prev) => Math.max(prev - 1, 1));
-      } else if (e.key === "]" || e.key === "PageDown") {
-        e.preventDefault();
-        setCurrentPage((prev) => Math.min(prev + 1, maxPages));
-      } else if (e.key === "+" || e.key === "=") {
-        e.preventDefault();
-        setZoomLevel((prev) => calculateNextZoom(prev, "in"));
-      } else if (e.key === "-" || e.key === "_") {
-        e.preventDefault();
-        setZoomLevel((prev) => calculateNextZoom(prev, "out"));
-      } else if (e.key === "0") {
-        e.preventDefault();
-        handleResetZoom();
-      } else if (e.key === "r" || e.key === "R") {
-        e.preventDefault();
-        setRotation((prev) => calculateNextRotation(prev));
+    function handleKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      if (event.ctrlKey || event.metaKey || event.altKey || document.querySelector("dialog[open]") || target?.closest("input, textarea, select, [contenteditable=true]")) return;
+      const key = event.key.toLowerCase();
+      if (key === "n") { event.preventDefault(); goToNextUncertainField(); }
+      else if (activeDoc && ["[", "]", "PageUp", "PageDown", "+", "=", "-", "_", "0", "r"].includes(event.key === "R" ? "r" : event.key)) {
+        event.preventDefault();
+        if (event.key === "[" || event.key === "PageUp") setCurrentPage((value) => Math.max(1, value - 1));
+        else if (event.key === "]" || event.key === "PageDown") setCurrentPage((value) => Math.min(maxPages, value + 1));
+        else if (key === "+" || key === "=") setZoomLevel((value) => calculateNextZoom(value, "in"));
+        else if (key === "-" || key === "_") setZoomLevel((value) => calculateNextZoom(value, "out"));
+        else if (key === "0") { setZoomLevel(100); setRotation(0); }
+        else if (key === "r") setRotation((value) => calculateNextRotation(value));
       }
     }
-
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [goToNextUncertainField, maxPages]);
+  }, [activeDoc, goToNextUncertainField, maxPages]);
 
-  // Save Field Action (Confirm, Manual, Correct)
-  async function saveFieldAction(
-    field: ReviewWorkspaceField,
-    action: "CONFIRMED" | "CORRECTED" | "MANUAL_ENTRY",
-  ) {
-    if (isReadOnly) {
-      setStatusMessage("Cannot edit fields on an approved or exported shipment.");
-      return;
-    }
+  const reportPageCount = useCallback((documentId: string, count: number) => setPdfPageCounts((previous) => previous[documentId] === count ? previous : { ...previous, [documentId]: count }), []);
 
-    const targetVal = editedValues[field.id] ?? field.currentValue;
-    const reasonText = reasons[field.id]?.trim();
-    const validation = validateFieldCorrection(action, targetVal, field.currentValue, reasonText);
+  function actionBase(): ReviewActionBase {
+    return { shipmentId: shipment.id, revision: shipment.currentRevision, runId: snapshot.latestCheckRun?.id ?? null };
+  }
 
-    if (!validation.valid) {
-      setStatusMessage(validation.error ?? "Invalid field review action.");
-      if (typeof document !== "undefined") {
-        const rInput = document.getElementById(`field-reason-${field.id}`) as HTMLInputElement | null;
-        if (rInput) rInput.focus();
-      }
-      return;
-    }
+  async function requestFreshDocumentUrl(documentId: string) {
+    const response = await fetch(`/api/documents/${documentId}`, { cache: "no-store" });
+    if (!response.ok) return null;
+    const body = await response.json() as { signedUrl?: string };
+    if (!body.signedUrl) return null;
+    dispatch({ type: "document-url", documentId, url: body.signedUrl });
+    return body.signedUrl;
+  }
 
-    setBusy(true);
-    setStatusMessage(null);
+  async function openOriginal(doc: ReviewWorkspaceDocument) {
+    const tab = window.open("about:blank", "_blank");
+    if (tab) tab.opener = null;
     try {
-      const response = await fetch(`/api/fields/${field.id}/review`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          status: action,
-          value: targetVal,
-          reason: reasonText ?? (action === "CONFIRMED" ? undefined : "Verified in review workspace"),
-          expectedRevision: shipmentRevision,
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        if (response.status === 409) {
-          setStatusMessage(`Conflict (409): ${data.error ?? "Stale shipment revision. Refresh to see the latest version."}`);
-        } else {
-          setStatusMessage(data.error ?? "Failed to save field review.");
-        }
-      } else {
-        // Update local field state
-        setDocuments((prevDocs) =>
-          prevDocs.map((doc) =>
-            doc.id === activeDoc?.id
-              ? {
-                  ...doc,
-                  fields: doc.fields.map((f) =>
-                    f.id === field.id
-                      ? {
-                          ...f,
-                          // The server canonicalizes values (e.g. "3,165" -> "3165").
-                          currentValue: data.field?.currentValue ?? targetVal,
-                          reviewStatus: action,
-                          reviewReason: action === "CONFIRMED" ? null : reasonText,
-                        }
-                      : f,
-                  ),
-                }
-              : doc,
-          ),
-        );
-        if (data.revision) {
-          setShipmentRevision(data.revision);
-        }
-        if (data.shipmentStatus) {
-          setShipmentStatus(data.shipmentStatus);
-        }
-        if (data.crossChecks) {
-          setCrossChecks(data.crossChecks);
-        }
-        setCrossChecksStale(Boolean(data.crossChecksStale));
-        const notes = [
-          `Field "${formatFieldLabel(field.fieldKey)}" saved (${action.toLowerCase().replace("_", " ")}).`,
-          data.approvalInvalidated ? "The submission for approval was withdrawn; resubmit after review." : null,
-          data.crossChecksStale ? "Cross-checks could not be refreshed; re-run checks." : null,
-        ].filter(Boolean);
-        setStatusMessage(notes.join(" "));
-      }
+      const url = await requestFreshDocumentUrl(doc.id);
+      if (!url) throw new Error("Secure evidence is unavailable");
+      if (tab) tab.location.href = url;
+      else setFeedback({ kind: "warning", message: "The browser blocked the new tab. Allow pop-ups, then open the original document again." });
     } catch {
-      setStatusMessage("Network error saving field.");
-    } finally {
-      setBusy(false);
+      tab?.close();
+      setFeedback({ kind: "error", message: "The private document could not be opened. Retry the secure document or check storage availability." });
     }
   }
 
-  // Mark page as unreadable / manual fallback
-  async function markPageUnreadable(pageNum: number) {
+  function inspectEvidence(target: EvidenceTarget, elementId: string) {
+    const doc = documents.find((item) => item.id === target.documentId);
+    if (!doc) {
+      setFeedback({ kind: "warning", message: "This evidence belongs to a document that is no longer current. Inspect its preserved check snapshot in History." });
+      return;
+    }
+    setEvidenceReturn({ tab: inspectorTab, docType: activeDocType, page, rotation, elementId, label: target.label });
+    setActiveDocType(doc.docType);
+    setViewerDocumentId(doc.id);
+    setCurrentPage(Math.max(1, Math.min(target.page, pdfPageCounts[doc.id] ?? doc.pageCount ?? target.page)));
+    if (doc.id !== activeDoc?.id) setRotation(0);
+    setMobilePane("document");
+    focusReviewElement("document-pane-heading");
+  }
+
+  function returnFromEvidence() {
+    if (!evidenceReturn) return;
+    setActiveDocType(evidenceReturn.docType);
+    setViewerDocumentId(documents.find((doc) => doc.docType === evidenceReturn.docType)?.id);
+    setCurrentPage(evidenceReturn.page);
+    setRotation(evidenceReturn.rotation);
+    setInspectorTab(evidenceReturn.tab);
+    setMobilePane("review");
+    if (evidenceReturn.tab === "fields") { setCategory("all"); setReviewFilter("all"); }
+    focusReviewElement(evidenceReturn.elementId, `review-${evidenceReturn.tab}-heading`);
+    setEvidenceReturn(null);
+  }
+
+  function requestRunChange(execute: () => Promise<boolean>, title = "Start a new check run?") {
+    if (disabled || isReadOnly) return;
+    if (crossChecks.some((check) => check.resolutions?.length || check.activeResolution) || dirtyResolutions.length > 0) {
+      const action: PendingAction = {
+        ...actionBase(), title,
+        description: "This action recomputes checks from saved values. Existing exceptions and sign-offs will not carry into the new run. Earlier results and resolutions remain in History; unsaved resolution drafts remain available for comparison.",
+        confirmLabel: "Continue with new run", execute,
+      };
+      pendingActionRef.current = action;
+      setPendingAction(action);
+    } else void execute();
+  }
+
+  function closePendingAction() { pendingActionRef.current = null; setPendingAction(null); }
+  function confirmPendingAction() {
+    if (busy || isRefreshing) return;
+    const action = pendingActionRef.current;
+    if (!action) return;
+    // Consume before awaiting. A failed mutation must not leave an old captured closure retryable.
+    closePendingAction();
+    if (refreshRequired || isReadOnly || !isReviewActionCurrent(action, snapshot)) {
+      setFeedback({ kind: "warning", message: "The shipment or its current check run changed. Refresh and reopen the action after reviewing the latest data. Your drafts are retained." });
+      return;
+    }
+    void action.execute();
+  }
+
+  function startResolution(check: ReviewWorkspaceCrossCheck, type: CrossCheckResolutionData["type"]) {
+    if (!check.id || disabled || !canResolve) return;
+    setFeedback(null);
+    setResolutionEntries((entries) => ({ ...entries, [check.id!]: { check, type, draft: entries[check.id!]?.draft ?? { reason: "", evidence: "", valuesConfirmed: false } } }));
+    setResolvingId(check.id);
+  }
+  function changeResolution(draft: ResolutionDraft) {
+    if (!resolvingId || !resolving) return;
+    setFeedback(null);
+    setResolutionEntries((entries) => ({ ...entries, [resolvingId]: { ...resolving, draft } }));
+  }
+  async function saveResolution(check: ReviewWorkspaceCrossCheck) {
+    if (!resolvingId || !resolving || !canResolve || disabled) return false;
+    if (resolving.type === "ACCEPTED_EXCEPTION" && !crossChecks.some((current) => current.id === check.id)) {
+      setFeedback({ kind: "warning", message: "This exception draft belongs to an older run. Review the latest compared values and start an exception on the current check." });
+      return false;
+    }
+    const saved = await controller.resolveCheck(check, resolving.type, resolving.draft);
+    if (saved) {
+      setResolutionEntries((entries) => { const next = { ...entries }; delete next[resolvingId]; return next; });
+      setResolvingId(null);
+    }
+    return saved;
+  }
+
+  function setManualDraft(draft: ManualFieldDraft) {
     if (!activeDoc) return;
-    if (isReadOnly) {
-      setStatusMessage("Cannot edit page readability on an approved or exported shipment.");
-      return;
-    }
-    setBusy(true);
-    setStatusMessage(null);
-    try {
-      const response = await fetch(`/api/documents/${activeDoc.id}/pages/manual`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pageNumber: pageNum,
-          manualEntryRequired: true,
-          reviewNote: "Marked unreadable in review workspace shell",
-          expectedRevision: shipmentRevision,
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        setStatusMessage(
-          response.status === 409
-            ? `Conflict (409): ${data.error ?? "Stale revision. Refresh to see the latest data."}`
-            : data.error ?? "Failed to mark page as unreadable.",
-        );
-      } else {
-        // The server keeps the AI's readability evidence and records the human manual-entry flag.
-        setDocuments((prev) =>
-          prev.map((d) => {
-            if (d.id !== activeDoc.id) return d;
-            const exists = d.pages.some((p) => p.pageNumber === pageNum);
-            return {
-              ...d,
-              pages: exists
-                ? d.pages.map((p) => (p.pageNumber === pageNum ? { ...p, manualEntryRequired: true } : p))
-                : [
-                    ...d.pages,
-                    {
-                      id: data.page?.id ?? `page-${pageNum}`,
-                      pageNumber: pageNum,
-                      isReadable: data.page?.isReadable ?? true,
-                      manualEntryRequired: true,
-                      reviewNote: data.page?.reviewNote ?? null,
-                    },
-                  ],
-            };
-          }),
-        );
-        if (data.revision) setShipmentRevision(data.revision);
-        if (data.shipmentStatus) setShipmentStatus(data.shipmentStatus);
-        setStatusMessage(`Page ${pageNum} marked for manual entry. Enter its values with "Add manual field".`);
-      }
-    } catch {
-      setStatusMessage("Error updating page readability.");
-    } finally {
-      setBusy(false);
-    }
+    setManualError(null);
+    setManualEntries((entries) => {
+      const previous = entries[activeDoc.id];
+      const base = !draft.fieldKey ? null : previous?.draft.fieldKey === draft.fieldKey && previous.base
+        ? previous.base : manualFieldBase(activeDoc, draft.fieldKey);
+      return { ...entries, [activeDoc.id]: { open: previous?.open ?? true, draft, base } };
+    });
+  }
+  function setManualOpen(open: boolean) {
+    if (!activeDoc) return;
+    setManualError(null);
+    setManualEntries((entries) => {
+      const entry = entries[activeDoc.id];
+      return { ...entries, [activeDoc.id]: { open, draft: entry && manualIsDirty(entry.draft) ? entry.draft : blankManualDraft(page), base: entry?.base ?? null } };
+    });
+  }
+  function acknowledgeManualDraft() {
+    if (!activeDoc || !manualEntry || disabled || documentReadOnly) return;
+    setManualError(null);
+    setManualEntries((entries) => ({ ...entries, [activeDoc.id]: { ...manualEntry, base: manualFieldBase(activeDoc, manualDraft.fieldKey) } }));
+  }
+  function saveManualDraft() {
+    if (!activeDoc || disabled || documentReadOnly || manualConflict || !manualDraft.fieldKey ||
+      manualDraft.reason.trim().length < 3 || !canEnterManualField(activeDoc, manualDraft.fieldKey, manualDraft.page)) return;
+    const doc = activeDoc;
+    const form = manualDraft;
+    requestRunChange(async () => {
+      const saved = await controller.saveManualField(doc, form);
+      if (saved) setManualEntries((entries) => ({ ...entries, [doc.id]: { open: false, draft: blankManualDraft(form.page), base: null } }));
+      else setManualError("The manual value was not saved. Check the response above; your draft is retained.");
+      return saved;
+    });
+  }
+  function resumeManualDraft(documentId: string) {
+    const doc = documents.find((item) => item.id === documentId);
+    const entry = manualEntries[documentId];
+    if (!doc || !entry) return;
+    setActiveDocType(doc.docType);
+    setViewerDocumentId(doc.id);
+    setCurrentPage(entry.draft.page);
+    setRotation(0);
+    setInspectorTab("fields");
+    setMobilePane("review");
+    setManualEntries((entries) => ({ ...entries, [documentId]: { ...entry, open: true } }));
+    focusReviewElement("manual-field-key");
   }
 
-  // Add field manually
-  async function handleAddManualField() {
-    if (!activeDoc || !newFieldKey.trim() || !newFieldReason.trim()) {
-      setStatusMessage("Field key and reason are required for manual fallback entry.");
-      return;
-    }
-    if (isReadOnly) {
-      setStatusMessage("Cannot add fields to an approved or exported shipment.");
-      return;
-    }
-    setBusy(true);
-    setStatusMessage(null);
-    try {
-      const response = await fetch(`/api/documents/${activeDoc.id}/fields/manual`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fieldKey: newFieldKey.trim(),
-          value: newFieldValue.trim() || null,
-          reason: newFieldReason.trim(),
-          // Link the value to the page being inspected so unreadable-page gates can see it.
-          pageNumber: currentPage,
-          expectedRevision: shipmentRevision,
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        if (response.status === 409) {
-          setStatusMessage(`Conflict (409): ${data.error ?? "Stale revision. Refresh to see the latest data."}`);
-        } else {
-          setStatusMessage(data.error ?? "Failed to add manual field.");
-        }
-      } else {
-        if (data.revision) {
-          setShipmentRevision(data.revision);
-        }
-        if (data.shipmentStatus) {
-          setShipmentStatus(data.shipmentStatus);
-        }
-        if (data.crossChecks) {
-          setCrossChecks(data.crossChecks);
-        }
-        setStatusMessage(`Manual field "${newFieldKey}" added.`);
-        setNewFieldKey("");
-        setNewFieldValue("");
-        setNewFieldReason("");
-        setShowAddManualField(false);
-        // Refresh documents
-        const docRes = await fetch(`/api/documents/${activeDoc.id}`);
-        if (docRes.ok) {
-          const docData = await docRes.json();
-          const latestRun = docData.document.extractionRuns?.[0] ?? null;
-          setDocuments((prev) =>
-            prev.map((d) =>
-              d.id === activeDoc.id
-                ? {
-                    ...d,
-                    fields: latestRun?.fields ?? d.fields,
-                  }
-                : d,
-            ),
-          );
-        }
+  function saveMapping(invoiceId: string) {
+    if (disabled || isReadOnly || hasFieldDrafts || checksStale) return;
+    const check = crossChecks.find((item) => item.ruleKey === "invoice_quantity_vs_packing_list");
+    const issue = mappingSelectionIssue(check, documents, snapshot.lineMappings ?? [], mappingSelections, invoiceId);
+    if (issue) { setFeedback({ kind: "warning", message: issue }); return; }
+    const packingId = mappingSelections[invoiceId];
+    const reason = mappingReason;
+    requestRunChange(async () => {
+      const saved = await controller.mapLines(invoiceId, packingId, reason);
+      if (saved) {
+        const next = { ...mappingSelections };
+        delete next[invoiceId];
+        setMappingSelections(next);
+        if (!Object.values(next).some(Boolean)) setMappingReason("");
       }
-    } catch {
-      setStatusMessage("Error creating manual field.");
-    } finally {
-      setBusy(false);
-    }
+      return saved;
+    });
   }
 
-  // Inspect document source for compared values (Week 4 Step 8 Rule 2)
-  function inspectDocumentSource(docType: string) {
-    const valid = availableDocTypes.find((d) => d.toLowerCase() === docType.toLowerCase());
-    if (valid) {
-      setActiveDocType(valid);
-      setCurrentPage(1);
-      setMobileTab("document");
-      setStatusMessage(`Switched document viewer to ${valid.replaceAll("_", " ")}.`);
-    }
-  }
-
-  // Resolve Failed Cross-Check (Week 4 Step 8 Rules 3, 4, 5, 6, 7)
-  async function handleResolveCheck(check: ReviewWorkspaceCrossCheck) {
-    if (!check.id) {
-      setStatusMessage("Cannot resolve: Cross-check result ID is missing.");
+  function markManualPage() {
+    if (!manualPageTarget || busy || isRefreshing) return;
+    const doc = documents.find((item) => item.id === manualPageTarget.documentId);
+    if (refreshRequired || isReadOnly || !doc || doc.extractionStatus === "PROCESSING" || !isReviewActionCurrent(manualPageTarget, snapshot)) {
+      setDialogError("The shipment or its check run changed. Close this dialog, review the latest source, then mark the page again.");
       return;
     }
-    if (!valuesConfirmed) {
-      setStatusMessage("You must confirm that you have reviewed the compared values and inspected the source documents.");
+    if (pageNote.trim().length < 3) { setDialogError("Give a reason of at least 3 characters for manual entry."); return; }
+    const targetPage = manualPageTarget.page;
+    void controller.markPage(doc, targetPage, pageNote).then((saved) => {
+      if (!saved) return;
+      setManualPageTarget(null);
+      setPageNote("");
+      setInspectorTab("fields");
+      setMobilePane("review");
+      setManualEntries((entries) => {
+        const entry = entries[doc.id];
+        return { ...entries, [doc.id]: { open: true, draft: entry && manualIsDirty(entry.draft) ? entry.draft : blankManualDraft(targetPage), base: entry?.base ?? null } };
+      });
+    });
+  }
+
+  function confirmManagerDecision() {
+    if (!managerTarget || busy || isRefreshing) return;
+    if (!isReviewActionCurrent(managerTarget, snapshot)) {
+      setDialogError("The shipment or its latest checks changed. Close this dialog and review the latest revision before deciding.");
       return;
     }
-    if (!resolutionReason.trim() || resolutionReason.trim().length < 5) {
-      setStatusMessage("A detailed reason (minimum 5 characters) is required for resolution.");
-      return;
-    }
-    if (resolutionType === "ACCEPTED_EXCEPTION" && (!resolutionEvidence.trim() || resolutionEvidence.trim().length < 3)) {
-      setStatusMessage("An external evidence or query reference (minimum 3 characters) is required for accepted exceptions.");
-      return;
-    }
-
-    setBusy(true);
-    setStatusMessage(null);
-    try {
-      const response = await fetch(`/api/crosschecks/${check.id}/resolve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: resolutionType,
-          reason: resolutionReason.trim(),
-          evidence: resolutionEvidence.trim() || undefined,
-          valuesConfirmed: true,
-          expectedRevision: shipmentRevision,
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        setStatusMessage(
-          response.status === 409
-            ? `Conflict (409): ${data.error ?? "The shipment or check changed. Refresh to see the latest version."}`
-            : data.error ?? "Failed to record resolution.",
-        );
-      } else {
-        const newResolution: CrossCheckResolutionData = {
-          id: data.resolution.id,
-          type: data.resolution.type,
-          reason: data.resolution.reason,
-          evidence: data.resolution.evidence,
-          managerApprovedAt: data.resolution.managerApprovedAt,
-          createdAt: data.resolution.createdAt,
-          resolvedBy: data.resolution.resolvedBy,
-        };
-
-        setCrossChecks((prev) =>
-          prev.map((c) =>
-            c.id === check.id
-              ? {
-                  ...c,
-                  effectiveStatus: data.effectiveStatus,
-                  activeResolution: newResolution,
-                  resolutions: [newResolution, ...(c.resolutions ?? [])],
-                }
-              : c,
-          ),
-        );
-
-        if (data.latestRun?.results) {
-          setCrossChecks(data.latestRun.results);
-        }
-
-        setStatusMessage(`Cross-check resolution recorded as ${resolutionType.replaceAll("_", " ")}.`);
-        setResolvingCheckId(null);
-        setResolutionReason("");
-        setResolutionEvidence("");
-        setValuesConfirmed(false);
-      }
-    } catch {
-      setStatusMessage("Network error recording resolution.");
-    } finally {
-      setBusy(false);
-    }
+    const error = validateManagerDecision(managerDecision, managerComment, crossChecks, { hasDrafts, refreshRequired, checksStale });
+    if (error) { setDialogError(error); return; }
+    void controller.decide(managerDecision, managerComment).then((saved) => {
+      if (saved) { setManagerTarget(null); setManagerComment(""); }
+    });
   }
 
-  // Re-run checks
-  async function triggerCrossChecks() {
-    setBusy(true);
-    setStatusMessage(null);
-    try {
-      const response = await fetch(`/api/shipments/${shipment.id}/crosschecks`, {
-        method: "POST",
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        setStatusMessage(data.error ?? "Failed to run cross-checks.");
-      } else {
-        setCrossChecks(data.results ?? []);
-        setCrossChecksStale(false);
-        setStatusMessage(`Cross-checks evaluated for revision ${data.revision}.`);
-      }
-    } catch {
-      setStatusMessage("Error executing cross-checks.");
-    } finally {
-      setBusy(false);
-    }
+  function guardLink(event: MouseEvent<HTMLAnchorElement>) {
+    if ((!hasDrafts && !managerComment) || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    setLeaveHref(event.currentTarget.getAttribute("href"));
   }
+  const shipmentLink = <Link href={`/shipments/${shipment.id}`} onClick={guardLink} className={cn("inline-flex min-h-[var(--control-height)] items-center gap-2 text-sm font-medium text-primary", FOCUS_RING_STYLES)}>Open shipment<FileText className="size-4" aria-hidden="true" /></Link>;
 
-  // Executive line mapping (Week 4 Step 4): map an unmatched invoice line to a packing-list line.
-  async function createLineMapping(invoiceLineId: string) {
-    const packingListLineId = mappingSelections[invoiceLineId];
-    if (!packingListLineId) {
-      setStatusMessage("Choose the packing list line to map to.");
-      return;
-    }
-    if (mappingReason.trim().length < 5) {
-      setStatusMessage("Give a reason for the mapping (at least 5 characters).");
-      return;
-    }
-    setBusy(true);
-    setStatusMessage(null);
-    try {
-      const response = await fetch(`/api/shipments/${shipment.id}/line-mappings`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          invoiceLineId,
-          packingListLineId,
-          reason: mappingReason.trim(),
-          expectedRevision: shipmentRevision,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        setStatusMessage(
-          response.status === 409
-            ? `Conflict (409): ${data.error ?? "The shipment changed. Refresh to see the latest version."}`
-            : data.error ?? "Failed to map lines.",
-        );
-        return;
-      }
-      setLineMappings((prev) => [
-        ...prev.filter((m) => !(data.supersededMappingIds ?? []).includes(m.id)),
-        {
-          id: data.mapping.id,
-          invoiceLineId: data.mapping.invoiceLineItemId,
-          packingListLineId: data.mapping.packingListLineItemId,
-          reason: data.mapping.reason,
-          createdAt: data.mapping.createdAt,
-          createdBy: null,
-        },
-      ]);
-      if (data.revision) setShipmentRevision(data.revision);
-      if (data.shipmentStatus) setShipmentStatus(data.shipmentStatus);
-      if (data.crossChecks) setCrossChecks(data.crossChecks);
-      setCrossChecksStale(false);
-      setMappingSelections((prev) => {
-        const next = { ...prev };
-        delete next[invoiceLineId];
-        return next;
-      });
-      setMappingReason("");
-      setStatusMessage("Lines mapped. Cross-checks were re-run.");
-    } catch {
-      setStatusMessage("Network error mapping lines.");
-    } finally {
-      setBusy(false);
-    }
-  }
+  const documentPane = (
+    <section aria-label="Document evidence viewer" className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-panel border border-border bg-surface" data-testid="document-pane">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2">
+        <h2 id="document-pane-heading" tabIndex={-1} className={cn("min-w-0 flex-1 truncate text-sm font-medium", FOCUS_RING_STYLES)} title={activeDoc?.originalFileName}>{activeDoc?.originalFileName ?? `${DOCUMENT_LABELS[activeDocType]} not supplied`}</h2>
+        <Button type="button" variant="ghost" size="icon" disabled={!activeDoc} aria-label="Rotate document 90 degrees" title="Rotate 90° (R)" onClick={() => setRotation((value) => calculateNextRotation(value))}><RotateCw className="size-4" aria-hidden="true" /></Button>
+        <Button type="button" variant="ghost" size="icon" disabled={!activeDoc} aria-label="Open original secure document in new tab" onClick={() => activeDoc && void openOriginal(activeDoc)}><ExternalLink className="size-4" aria-hidden="true" /></Button>
+      </div>
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2" aria-label="Document controls">
+        <div className="flex items-center gap-1">
+          <Button type="button" size="icon" variant="ghost" disabled={!activeDoc || page <= 1} aria-label="Previous page" title="Previous page ([)" onClick={() => setCurrentPage((value) => Math.max(1, value - 1))}><ChevronLeft className="size-4" aria-hidden="true" /></Button>
+          <Label htmlFor="document-page" className="sr-only">Document page</Label>
+          <Input id="document-page" type="number" className="w-14 px-2 text-center font-mono" value={page} min={1} max={maxPages} disabled={!activeDoc} onChange={(event) => { const next = Number(event.target.value); if (Number.isInteger(next) && next >= 1 && next <= maxPages) setCurrentPage(next); }} />
+          <span className="whitespace-nowrap text-sm text-muted-foreground">/ {maxPages}</span>
+          <Button type="button" size="icon" variant="ghost" disabled={!activeDoc || page >= maxPages} aria-label="Next page" title="Next page (])" onClick={() => setCurrentPage((value) => Math.min(maxPages, value + 1))}><ChevronRight className="size-4" aria-hidden="true" /></Button>
+        </div>
+        <div className="flex items-center gap-1">
+          <Button type="button" size="icon" variant="ghost" disabled={!activeDoc || zoomLevel <= 50} aria-label="Zoom out" onClick={() => setZoomLevel((value) => calculateNextZoom(value, "out"))}><ZoomOut className="size-4" aria-hidden="true" /></Button>
+          <Button type="button" size="sm" variant="ghost" className="px-2 font-mono" disabled={!activeDoc} aria-label="Fit width and reset rotation" title="Fit width (0)" onClick={() => { setZoomLevel(100); setRotation(0); }}>{zoomLevel}%</Button>
+          <Button type="button" size="icon" variant="ghost" disabled={!activeDoc || zoomLevel >= 200} aria-label="Zoom in" onClick={() => setZoomLevel((value) => calculateNextZoom(value, "in"))}><ZoomIn className="size-4" aria-hidden="true" /></Button>
+        </div>
+      </div>
+      {evidenceReturn ? <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-info-border bg-info-surface px-4 py-2">
+        <p className="text-sm text-info">Evidence for {evidenceReturn.label}</p>
+        <Button type="button" variant="link" size="sm" className="px-0" onClick={returnFromEvidence}><ArrowLeft className="size-4" aria-hidden="true" />Back to {evidenceReturn.tab === "fields" ? "field" : evidenceReturn.tab === "checks" ? "check" : "history"}</Button>
+      </div> : null}
+      <div className="min-h-0 flex-1 bg-viewer-background">
+        {activeDoc ? <DocumentViewer key={activeDoc.id} url={activeDoc.signedUrl} mimeType={activeDoc.mimeType} fileName={activeDoc.originalFileName} page={page} zoom={zoomLevel} rotation={rotation} onPageCount={(count) => reportPageCount(activeDoc.id, count)} onRequestFreshUrl={() => requestFreshDocumentUrl(activeDoc.id)} /> : <FeedbackState kind="empty" title={`${DOCUMENT_LABELS[activeDocType]} not supplied`} description="Upload the document on the shipment page to inspect its evidence." className="p-6" action={shipmentLink} />}
+      </div>
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-2">
+        <p className="text-xs text-muted-foreground">{activePage?.manualEntryRequired ? `Page ${page} · manual entry enabled` : activePage?.isReadable === false ? `Page ${page} · model could not read this page` : `Page ${page} · ${zoomLevel === 100 ? "fit width" : `${zoomLevel}% zoom`}${rotation ? ` · ${rotation}°` : ""}`}</p>
+        {activeDoc && !documentReadOnly && !activePage?.manualEntryRequired ? <Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => { setPageNote(""); setDialogError(null); setManualPageTarget({ ...actionBase(), documentId: activeDoc.id, page }); }}>Mark page for manual entry</Button> : null}
+      </div>
+    </section>
+  );
 
-  async function removeLineMapping(mappingId: string) {
-    setBusy(true);
-    setStatusMessage(null);
-    try {
-      const response = await fetch(`/api/shipments/${shipment.id}/line-mappings/${mappingId}`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ expectedRevision: shipmentRevision }),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        setStatusMessage(
-          response.status === 409
-            ? `Conflict (409): ${data.error ?? "The shipment changed. Refresh to see the latest version."}`
-            : data.error ?? "Failed to remove the mapping.",
-        );
-        return;
-      }
-      setLineMappings((prev) => prev.filter((m) => m.id !== mappingId));
-      if (data.revision) setShipmentRevision(data.revision);
-      if (data.shipmentStatus) setShipmentStatus(data.shipmentStatus);
-      if (data.crossChecks) setCrossChecks(data.crossChecks);
-      setCrossChecksStale(false);
-      setStatusMessage("Mapping removed. Cross-checks were re-run.");
-    } catch {
-      setStatusMessage("Network error removing the mapping.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleSubmitForApproval() {
-    setSubmitting(true);
-    setStatusMessage(null);
-    setSubmitBlockers(null);
-
-    try {
-      const response = await fetch(`/api/shipments/${shipment.id}/submit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ expectedRevision: shipmentRevision }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        if (response.status === 422 && Array.isArray(data.blockingReasons)) {
-          setSubmitBlockers(data.blockingReasons);
-          setStatusMessage("Submission blocked by validation gates. Please review the issues below.");
-          return;
-        }
-        if (response.status === 409) {
-          setStatusMessage(`Conflict (409): ${data.error ?? "The shipment changed. Refresh to see the latest version."}`);
-          return;
-        }
-        throw new Error(data.error || "Failed to submit shipment for approval.");
-      }
-
-      setShipmentStatus("READY_FOR_APPROVAL");
-      const pending = (data.guard?.pendingManagerExceptions ?? []) as Array<{ checkRuleKey: string }>;
-      setStatusMessage(
-        pending.length > 0
-          ? `Submitted for manager approval. ${pending.length} accepted exception(s) await manager sign-off: ${pending
-              .map((p) => p.checkRuleKey.replaceAll("_", " "))
-              .join(", ")}.`
-          : "Shipment successfully submitted for manager approval!",
-      );
-      setSubmitBlockers(null);
-    } catch (err) {
-      setStatusMessage(err instanceof Error ? err.message : "Submission failed.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function handleManagerDecision(decision: "APPROVE" | "REJECT") {
-    setManagerActionBusy(true);
-    setStatusMessage(null);
-
-    try {
-      const response = await fetch(`/api/shipments/${shipment.id}/decision`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          decision,
-          comment: managerComment,
-          expectedRevision: shipmentRevision,
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        if (response.status === 409) {
-          setStatusMessage(`Conflict (409): ${data.error ?? "The shipment changed. Refresh to review the latest version."}`);
-          return;
-        }
-        throw new Error(data.error || `Failed to ${decision.toLowerCase()} shipment.`);
-      }
-
-      setShipmentStatus(data.shipment?.status ?? (decision === "APPROVE" ? "APPROVED" : "NEEDS_REVIEW"));
-      if (data.shipment?.currentRevision) setShipmentRevision(data.shipment.currentRevision);
-      if (decision === "APPROVE" && Array.isArray(data.signedOffExceptionIds) && data.signedOffExceptionIds.length > 0) {
-        const signedOff = new Set<string>(data.signedOffExceptionIds);
-        const now = new Date().toISOString();
-        setCrossChecks((prev) =>
-          prev.map((check) =>
-            check.activeResolution && signedOff.has(check.activeResolution.id)
-              ? {
-                  ...check,
-                  derivedStatus: "HUMAN_CLEARED",
-                  effectiveStatus: "HUMAN_CLEARED",
-                  activeResolution: { ...check.activeResolution, managerApprovedAt: now },
-                }
-              : check,
-          ),
-        );
-      }
-      setStatusMessage(
-        decision === "APPROVE"
-          ? "Shipment successfully approved! Ready for export."
-          : "Shipment rejected and returned to Needs Review.",
-      );
-      setManagerComment("");
-    } catch (err) {
-      setStatusMessage(err instanceof Error ? err.message : "Manager action failed.");
-    } finally {
-      setManagerActionBusy(false);
-    }
-  }
-
-  const activePageData = activeDoc?.pages.find((p) => p.pageNumber === currentPage);
-  const isPageUnreadable = activePageData && (!activePageData.isReadable || activePageData.manualEntryRequired);
-
-  // Grouped Fields
-  const filteredFields = (activeDoc?.fields ?? []).filter((f) => {
-    if (activeCategory === "all") return true;
-    return categorizeFieldKey(f.fieldKey) === activeCategory;
-  });
+  const inspector = (
+    <section aria-label="Document review inspector" className="h-full min-h-0 min-w-0 overflow-hidden rounded-panel border border-border bg-surface" data-testid="review-inspector">
+      <Tabs value={inspectorTab} onValueChange={(value) => setInspectorTab(value as InspectorTab)} className="flex h-full min-h-0 flex-col">
+        <TabsList aria-label="Review inspector" className="shrink-0 px-3 py-2">
+          <TabsTrigger value="fields">Fields{activeDoc ? ` (${activeDoc.fields.length})` : ""}</TabsTrigger>
+          <TabsTrigger value="checks">Checks ({crossChecks.length})</TabsTrigger>
+          <TabsTrigger value="history">History</TabsTrigger>
+        </TabsList>
+        <TabsContent value="fields" className="min-h-0 flex-1 pt-0" tabIndex={-1}>
+          <FieldsInspector
+            doc={activeDoc} drafts={drafts} category={category} reviewFilter={reviewFilter} focusedId={focusedUncertainId}
+            disabled={disabled} readOnly={documentReadOnly} manualOpen={manualEntry?.open ?? false} manualDraft={manualDraft}
+            manualError={manualError} manualConflict={manualConflict} onCategory={setCategory} onReviewFilter={setReviewFilter}
+            onNext={goToNextUncertainField} onManualOpen={setManualOpen} onManualDraft={setManualDraft}
+            onManualSave={saveManualDraft} onManualAcknowledge={acknowledgeManualDraft}
+            onDraft={(doc, field, patch) => dispatch({ type: "draft", doc, field, patch })}
+            onSave={(doc, field, action) => requestRunChange(() => controller.saveField(doc, field, action), "Save and recompute checks?")}
+            onDiscard={(fieldId) => dispatch({ type: "discard", fieldId })} onAcknowledge={(fieldId) => dispatch({ type: "acknowledge", fieldId })}
+            onEvidence={inspectEvidence} shipmentLink={shipmentLink}
+          />
+        </TabsContent>
+        <TabsContent value="checks" className="min-h-0 flex-1 pt-0" tabIndex={-1}>
+          <ChecksInspector
+            checks={crossChecks} documents={documents} mappings={snapshot.lineMappings ?? []} run={snapshot.latestCheckRun}
+            revision={shipment.currentRevision} stale={checksStale} disabled={disabled || hasFieldDrafts}
+            canResolve={canResolve} canRecheck={!isReadOnly} mappingSelections={mappingSelections} mappingReason={mappingReason}
+            resolution={resolution} resolutionError={resolving && feedback?.kind === "error" ? feedback.message : null}
+            onRecheck={() => requestRunChange(controller.recheck)} onHistory={() => setInspectorTab("history")} onEvidence={inspectEvidence}
+            onStartResolution={startResolution} onResolutionChange={changeResolution} onResolutionClose={() => setResolvingId(null)}
+            onResolve={(check) => void saveResolution(check)}
+            onMappingSelect={(invoiceId, packingId) => setMappingSelections((previous) => ({ ...previous, [invoiceId]: packingId }))}
+            onMappingReason={setMappingReason} onMap={saveMapping}
+            onRemoveMapping={(id) => requestRunChange(() => controller.removeMapping(id), "Remove mapping and recompute checks?")}
+            submissionBlockers={controller.submitBlockers}
+          />
+        </TabsContent>
+        <TabsContent value="history" className="min-h-0 flex-1 pt-0" tabIndex={-1}>
+          <HistoryInspector
+            data={snapshot} active={inspectorTab === "history"} disabled={disabled} canResolve={canResolve}
+            resolution={resolution} resolutionError={resolving && feedback?.kind === "error" ? feedback.message : null}
+            onRefresh={controller.refreshLatest} onEvidence={inspectEvidence} onStartResolution={startResolution}
+            onResolutionChange={changeResolution} onResolutionClose={() => setResolvingId(null)} onResolve={(check) => void saveResolution(check)}
+          />
+        </TabsContent>
+      </Tabs>
+    </section>
+  );
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 pb-12">
-      {/* Top Navigation & Shipment Header (Rule 2) */}
-      <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur px-4 py-3 sm:px-6">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <Link
-              href={`/shipments/${shipment.id}`}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
-            >
-              <ArrowLeft className="size-3.5" /> Back
-            </Link>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-lg font-bold tracking-tight text-slate-950 font-mono">
-                  {shipment.reference}
-                </h1>
-                <Badge className="bg-slate-100 text-slate-700 border-slate-300">
-                  Rev {shipmentRevision}
-                </Badge>
-                <Badge
-                  className={
-                    shipmentStatus === "APPROVED"
-                      ? "bg-emerald-100 text-emerald-800"
-                      : shipmentStatus === "NEEDS_REVIEW"
-                        ? "bg-amber-100 text-amber-900"
-                        : "bg-blue-100 text-blue-800"
-                  }
-                >
-                  {shipmentStatus.replaceAll("_", " ")}
-                </Badge>
-              </div>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Supplier: <span className="font-semibold text-slate-700">{shipment.supplier?.name || "Unknown"}</span>
-                {shipment.importerName ? ` · Importer: ${shipment.importerName}` : ""}
-              </p>
+    <div className="flex h-dvh min-h-[560px] w-full flex-col bg-background text-foreground" data-testid="review-workspace" data-layout={isDesktop ? "desktop" : "mobile"}>
+      <header className="shrink-0 border-b border-border bg-surface px-4 py-3 sm:px-6">
+        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+          <div className="flex min-w-0 items-start gap-3">
+            <Link href={`/shipments/${shipment.id}`} onClick={guardLink} aria-label="Back to shipment" className={cn("inline-flex size-[var(--control-height)] shrink-0 items-center justify-center rounded-control text-foreground-secondary hover:bg-surface-subtle", FOCUS_RING_STYLES)}><ArrowLeft className="size-5" aria-hidden="true" /></Link>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2"><h1 className="text-xl font-semibold leading-7">Document review</h1><StatusBadge status={shipment.status} /><Badge variant="outline">Rev {shipment.currentRevision}</Badge></div>
+              <p className="mt-1 break-words text-sm text-foreground-secondary"><span className="font-mono tabular-nums text-foreground">{shipment.reference}</span><span className="hidden sm:inline"> · {shipment.supplier?.name ?? "Supplier not specified"}</span></p>
             </div>
           </div>
-
-          {/* Cross-Check Summary Badges (Rule 11) */}
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <div className="flex items-center gap-1 rounded-md bg-emerald-50 px-2.5 py-1 text-emerald-800 border border-emerald-200 font-medium">
-              <CheckCircle2 className="size-3.5 text-emerald-600" />
-              <span>{passedCount} Passed</span>
-            </div>
-            {humanClearedCount > 0 ? (
-              <div className="flex items-center gap-1 rounded-md bg-purple-50 px-2.5 py-1 text-purple-900 border border-purple-200 font-medium">
-                <Check className="size-3.5 text-purple-600" />
-                <span>{humanClearedCount} Cleared</span>
-              </div>
-            ) : null}
-            {pendingApprovalCount > 0 ? (
-              <div className="flex items-center gap-1 rounded-md bg-amber-50 px-2.5 py-1 text-amber-900 border border-amber-300 font-medium">
-                <AlertTriangle className="size-3.5 text-amber-600" />
-                <span>{pendingApprovalCount} Pending Approval</span>
-              </div>
-            ) : null}
-            {mismatchCount > 0 ? (
-              <div className="flex items-center gap-1 rounded-md bg-rose-50 px-2.5 py-1 text-rose-800 border border-rose-200 font-medium">
-                <AlertCircle className="size-3.5 text-rose-600" />
-                <span>{mismatchCount} Mismatch</span>
-              </div>
-            ) : null}
-            {incompleteCount > 0 ? (
-              <div className="flex items-center gap-1 rounded-md bg-amber-50 px-2.5 py-1 text-amber-800 border border-amber-200 font-medium">
-                <AlertTriangle className="size-3.5 text-amber-600" />
-                <span>{incompleteCount} Incomplete</span>
-              </div>
-            ) : null}
-            {warningCount > 0 ? (
-              <div className="flex items-center gap-1 rounded-md bg-yellow-50 px-2.5 py-1 text-yellow-800 border border-yellow-200 font-medium">
-                <AlertTriangle className="size-3.5 text-yellow-600" />
-                <span>{warningCount} Warning{warningCount > 1 ? "s" : ""}</span>
-              </div>
-            ) : null}
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs border-slate-300"
-              disabled={busy || submitting}
-              onClick={() => void triggerCrossChecks()}
-            >
-              <RefreshCw className="size-3 mr-1" /> Re-check
-            </Button>
-
-            {/* Week 5 Step 5: Export Preview & Guarded Download Trigger */}
-            <Button
-              size="sm"
-              variant={shipmentStatus === "APPROVED" ? "default" : "outline"}
-              className={`h-7 text-xs ${
-                shipmentStatus === "APPROVED"
-                  ? "bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-xs"
-                  : shipmentStatus === "EXPORTED"
-                    ? "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
-                    : "border-slate-300 text-slate-700 hover:bg-slate-50"
-              }`}
-              onClick={() => setIsExportDialogOpen(true)}
-            >
-              {shipmentStatus === "EXPORTED" ? (
-                <>
-                  <FileCheck className="size-3 mr-1 text-emerald-600" />
-                  Exported CSV
-                </>
-              ) : shipmentStatus === "APPROVED" ? (
-                <>
-                  <FileDown className="size-3 mr-1 text-white" />
-                  Export CSV
-                </>
-              ) : (
-                <>
-                  <FileDown className="size-3 mr-1 text-slate-500" />
-                  Export Preview
-                </>
-              )}
-            </Button>
-
-            {shipmentStatus !== "READY_FOR_APPROVAL" &&
-            shipmentStatus !== "APPROVED" &&
-            shipmentStatus !== "EXPORTED" ? (
-              <Button
-                size="sm"
-                className="h-7 text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-medium"
-                disabled={busy || submitting}
-                onClick={() => void handleSubmitForApproval()}
-              >
-                <Send className="size-3 mr-1" />
-                {submitting ? "Submitting..." : "Submit to Manager"}
-              </Button>
-            ) : shipmentStatus === "READY_FOR_APPROVAL" ? (
-              <Badge className="bg-amber-100 text-amber-900 border-amber-300 text-xs px-2.5 py-1">
-                Awaiting Manager Approval
-              </Badge>
-            ) : null}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" size="sm" variant="outline" disabled={Boolean(busy || isRefreshing)} loading={isRefreshing} onClick={controller.refreshLatest} aria-label="Refresh latest shipment"><RefreshCw className="size-4" aria-hidden="true" />Refresh</Button>
+            <Button type="button" size="sm" variant="outline" disabled={Boolean(busy)} onClick={() => setExportOpen(true)}><FileDown className="size-4" aria-hidden="true" />Export preview</Button>
+            {isManager && shipment.status === "READY_FOR_APPROVAL" ? <Button type="button" size="sm" disabled={disabled || hasDrafts} onClick={() => { setManagerDecision("APPROVE"); setDialogError(null); setManagerTarget(actionBase()); }}><ShieldCheck className="size-4" aria-hidden="true" />Manager decision</Button> : !isManager && snapshot.currentUserRole === "EXECUTIVE" && !isReadOnly && shipment.status !== "READY_FOR_APPROVAL" ? <Button type="button" size="sm" disabled={disabled || hasDrafts || checksStale} loading={busy === "Submitting shipment"} onClick={() => { void controller.submit().then((saved) => { if (!saved) { setInspectorTab("checks"); setMobilePane("review"); } }); }}><Send className="size-4" aria-hidden="true" />Submit to manager</Button> : null}
           </div>
         </div>
       </header>
 
-      {/* Main Workspace Canvas */}
-      <main className="mx-auto max-w-7xl px-4 py-5 sm:px-6">
-        {/* Approved Shipment Ready for Export Banner (Week 5 Step 5) */}
-        {shipmentStatus === "APPROVED" && (
-          <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50/90 p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs text-emerald-950 shadow-xs">
-            <div className="flex items-center gap-2.5">
-              <ShieldCheck className="size-5 text-emerald-600 shrink-0" />
-              <div>
-                <strong className="block text-emerald-900 font-semibold">
-                  Shipment Approved & Ready for Customs Export
-                </strong>
-                <span className="text-emerald-700">
-                  Manager approval is recorded for revision {shipmentRevision}. You can preview the demo-v1 mapping and generate the official CSV.
-                </span>
-              </div>
-            </div>
-            <Button
-              size="sm"
-              className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
-              onClick={() => setIsExportDialogOpen(true)}
-            >
-              <FileDown className="size-3.5 mr-1" />
-              Preview & Download CSV
-            </Button>
-          </div>
-        )}
-        {/* Document Tabs (Rule 3) */}
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
-          <div className="flex flex-wrap gap-2">
-            {availableDocTypes.map((docType) => {
-              const doc = documents.find((d) => d.docType === docType);
-              const isActive = activeDocType === docType;
-              const hasFile = Boolean(doc);
-
-              return (
-                <button
-                  key={docType}
-                  type="button"
-                  onClick={() => {
-                    setActiveDocType(docType);
-                    setCurrentPage(1);
-                  }}
-                  className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                    isActive
-                      ? "bg-slate-900 text-white shadow-sm"
-                      : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
-                  }`}
-                >
-                  {docType === "INVOICE" ? (
-                    <FileText className="size-3.5" />
-                  ) : docType === "PACKING_LIST" ? (
-                    <FileSpreadsheet className="size-3.5" />
-                  ) : (
-                    <Package className="size-3.5" />
-                  )}
-                  <span>{docType.replaceAll("_", " ")}</span>
-                  {hasFile ? (
-                    <span
-                      className={`ml-1 rounded px-1.5 py-0.2 text-[10px] ${
-                        isActive ? "bg-slate-800 text-slate-200" : "bg-slate-100 text-slate-600"
-                      }`}
-                    >
-                      v{doc?.documentVersion}
-                    </span>
-                  ) : (
-                    <span className="text-[10px] text-slate-400 italic">Missing</span>
-                  )}
-                </button>
-              );
+      <main className="flex min-h-0 flex-1 flex-col gap-3 px-3 py-3 sm:px-6" aria-label="Shipment review workspace">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
+          <div role="group" aria-label="Choose a document" className="flex min-w-0 flex-wrap gap-1">
+            {DOCUMENT_TYPES.map((type) => {
+              const doc = documents.find((item) => item.docType === type);
+              return <Button key={type} type="button" size="sm" variant="ghost" aria-pressed={activeDocType === type} className={cn("gap-2", activeDocType === type && "bg-selected text-primary enabled:hover:bg-selected")} onClick={() => { setActiveDocType(type); setCurrentPage(1); setEvidenceReturn(null); setFocusedUncertainId(null); }}><span>{DOCUMENT_LABELS[type]}</span><span className="font-mono text-xs">{doc ? `v${doc.documentVersion}` : "Missing"}</span></Button>;
             })}
           </div>
-
-          {/* Narrow Screen Switcher (Rule 12) */}
-          <div className="flex lg:hidden rounded-lg border border-slate-200 bg-white p-0.5 text-xs font-medium">
-            <button
-              type="button"
-              className={`px-2.5 py-1 rounded-md ${mobileTab === "document" ? "bg-slate-900 text-white" : "text-slate-600"}`}
-              onClick={() => setMobileTab("document")}
-            >
-              Document
-            </button>
-            <button
-              type="button"
-              className={`px-2.5 py-1 rounded-md ${mobileTab === "fields" ? "bg-slate-900 text-white" : "text-slate-600"}`}
-              onClick={() => setMobileTab("fields")}
-            >
-              Fields
-            </button>
-            <button
-              type="button"
-              className={`px-2.5 py-1 rounded-md ${mobileTab === "checks" ? "bg-slate-900 text-white" : "text-slate-600"}`}
-              onClick={() => setMobileTab("checks")}
-            >
-              Checks ({crossChecks.length})
-            </button>
-          </div>
+          <p className="hidden text-xs text-muted-foreground xl:block">N: next uncertain · [ / ]: pages · + / −: zoom · R: rotate</p>
         </div>
+        {isReadOnly ? <p className="flex shrink-0 items-start gap-2 text-sm text-foreground-secondary"><Lock className="mt-0.5 size-4 shrink-0" aria-hidden="true" />{shipment.status === "EXTRACTING" ? "Extraction is running. Review edits are locked until it finishes." : `Read-only ${shipment.status.toLowerCase()} revision. Saved values, source evidence and history remain available.`}</p> : shipment.status === "READY_FOR_APPROVAL" ? <p className="shrink-0 text-sm text-foreground-secondary">Awaiting manager approval. Saving any review change withdraws this submission.</p> : activeDoc?.extractionStatus === "PROCESSING" ? <p className="shrink-0 text-sm text-foreground-secondary">This document is being extracted. Its saved values are read-only until extraction finishes.</p> : null}
 
-        {submitBlockers && submitBlockers.length > 0 ? (
-          <div
-            role="alert"
-            className="mb-4 rounded-lg border border-rose-300 bg-rose-50 p-4 text-xs text-rose-950 shadow-sm"
-          >
-            <div className="flex items-center justify-between pb-2 border-b border-rose-200">
-              <div className="flex items-center gap-2 font-semibold text-rose-900">
-                <AlertCircle className="size-4 text-rose-600 shrink-0" />
-                <span>Submission Blocked ({submitBlockers.length} issues to resolve before manager approval)</span>
-              </div>
-              <button
-                type="button"
-                className="hover:opacity-75 font-bold ml-2 text-rose-700"
-                onClick={() => setSubmitBlockers(null)}
-              >
-                ✕
-              </button>
-            </div>
-            <ul className="mt-2 list-disc list-inside space-y-1 text-slate-800">
-              {submitBlockers.map((reason, idx) => (
-                <li key={idx} className="font-medium text-rose-950">
-                  {reason}
-                </li>
-              ))}
-            </ul>
+        {hasDrafts ? <details className="shrink-0 rounded-control border border-warning-border bg-warning-surface px-3 py-2 text-sm text-warning">
+          <summary className={cn("cursor-pointer font-medium", FOCUS_RING_STYLES)}>{draftCount} unsaved draft{draftCount === 1 ? "" : "s"} · save or discard before submitting, approving or downloading</summary>
+          <div className="max-h-52 space-y-3 overflow-y-auto pt-3">
+            {Object.entries(drafts).map(([id, draft]) => <div key={id} className="flex flex-wrap items-start justify-between gap-2"><p className="min-w-0 flex-1 break-words">{DOCUMENT_LABELS[draft.docType]} · {formatFieldLabel(draft.fieldKey)}: <span className="font-mono">{draft.value || "Empty"}</span>{draft.conflict ? " · conflict requires review" : ""}</p><Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => dispatch({ type: "discard", fieldId: id })}>Discard field draft</Button></div>)}
+            {dirtyManualEntries.map(([id, entry]) => {
+              const doc = documents.find((item) => item.id === id);
+              return <div key={id} className="space-y-1">
+                <p className="break-words">{doc ? DOCUMENT_LABELS[doc.docType] : "Replaced document"} · Manual field {formatFieldLabel(entry.draft.fieldKey)}: <span className="font-mono">{entry.draft.value}</span>{manualDraftConflict(entry, doc) ? " · conflict requires review" : ""}</p>
+                <p className="break-words">Reason: {entry.draft.reason || "Not supplied"}</p>
+                <div className="flex flex-wrap gap-2">{doc ? <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => resumeManualDraft(id)}>Resume manual draft</Button> : null}<Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => setManualEntries((entries) => ({ ...entries, [id]: { open: false, draft: blankManualDraft(entry.draft.page), base: null } }))}>Discard manual draft</Button></div>
+              </div>;
+            })}
+            {dirtyResolutions.map(([id, entry]) => {
+              const current = crossChecks.some((check) => check.id === id);
+              return <div key={id} className="space-y-1">
+                <p className="font-medium">{checkLabel(entry.check)} · {current ? "Current resolution draft" : "Retained draft from an earlier run"}</p>
+                <p className="break-words">Reason: {entry.draft.reason || "Not supplied"}</p>
+                {entry.draft.evidence ? <p className="break-words">Evidence: {entry.draft.evidence}</p> : null}
+                <div className="flex flex-wrap gap-2">{current || entry.type !== "ACCEPTED_EXCEPTION" ? <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => { setResolvingId(id); setInspectorTab(current ? "checks" : "history"); setMobilePane("review"); focusReviewElement(current ? `check-card-${id}` : `history-check-${id}`); }}>Resume resolution draft</Button> : null}<Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => { setResolutionEntries((entries) => { const next = { ...entries }; delete next[id]; return next; }); if (resolvingId === id) setResolvingId(null); }}>Discard resolution draft</Button></div>
+              </div>;
+            })}
+            {hasMappingDraft ? <div className="space-y-1"><p>Unsaved line selection or mapping reason</p>{mappingReason ? <p className="break-words">Reason: {mappingReason}</p> : null}<Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => { setMappingReason(""); setMappingSelections({}); }}>Discard mapping draft</Button></div> : null}
           </div>
-        ) : null}
+        </details> : null}
 
-        {/* Manager Decision & Review Panel (Week 5 Step 2) */}
-        {isManager || shipmentStatus === "READY_FOR_APPROVAL" ? (
-          <Card className="mb-6 border-indigo-200 bg-gradient-to-br from-indigo-50/50 via-white to-slate-50 shadow-sm">
-            <CardHeader className="border-b border-indigo-100 bg-indigo-50/60 px-4 py-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck className="size-4 text-indigo-700" />
-                  <CardTitle className="text-sm font-bold text-indigo-950">
-                    Manager Review & Decision Flow
-                  </CardTitle>
-                  <Badge className="bg-indigo-100 text-indigo-800 border-indigo-300 text-xs">
-                    Revision {shipmentRevision}
-                  </Badge>
-                  {shipmentStatus === "READY_FOR_APPROVAL" ? (
-                    <Badge className="bg-amber-100 text-amber-900 border-amber-300 text-xs animate-pulse">
-                      Pending Manager Decision
-                    </Badge>
-                  ) : null}
-                </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7 text-xs border-indigo-200 text-indigo-900 hover:bg-indigo-100"
-                  aria-expanded={showManagerAudit}
-                  onClick={() => setShowManagerAudit(!showManagerAudit)}
-                >
-                  <History className="size-3 mr-1" />
-                  {showManagerAudit ? "Hide Audit History" : `View Audit History (${auditHistory.length})`}
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="p-4 space-y-4">
-              {/* Summary Stats: Documents, AI Diffs, Exceptions (Rules 2, 3, 4) */}
-              <div className="grid gap-3 sm:grid-cols-3">
-                {/* Rule 2: Current documents and extraction status */}
-                <div className="rounded-lg border border-slate-200 bg-white p-3">
-                  <span className="text-[11px] font-semibold uppercase text-slate-500">
-                    Documents ({documents.length})
-                  </span>
-                  <div className="mt-1 space-y-1 text-xs">
-                    {documents.map((d) => (
-                      <div key={d.id} className="flex items-center justify-between">
-                        <span className="font-medium text-slate-700 truncate max-w-[130px]">{d.docType} v{d.documentVersion}</span>
-                        <Badge className="text-[10px] bg-slate-100 text-slate-700 border-slate-200">
-                          {d.extractionStatus}
-                        </Badge>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+        {feedback || busy || isRefreshing || refreshRequired ? <div role={feedback?.kind === "error" || feedback?.kind === "warning" || refreshRequired ? "alert" : "status"} data-feedback={feedback?.kind ?? "loading"} className={cn("flex shrink-0 items-start justify-between gap-3 rounded-control border px-3 py-2 text-sm", feedback?.kind === "error" ? "border-danger-border bg-danger-surface text-danger" : feedback?.kind === "warning" || refreshRequired ? "border-warning-border bg-warning-surface text-warning" : feedback?.kind === "success" ? "border-success-border bg-success-surface text-success" : "border-info-border bg-info-surface text-info")}>
+          <div className="min-w-0"><p className="break-words">{busy ? `${busy}…` : isRefreshing ? "Refreshing saved values and audit history. Drafts are retained…" : feedback?.message ?? "Refresh the latest shipment before saving. Drafts are retained."}</p>{refreshRequired ? <Button type="button" variant="link" size="sm" disabled={Boolean(busy || isRefreshing)} className="px-0" onClick={controller.refreshLatest}>Refresh latest; keep drafts</Button> : null}</div>
+          {!busy && !isRefreshing && !refreshRequired ? <Button type="button" size="icon" variant="ghost" aria-label="Dismiss review feedback" onClick={() => setFeedback(null)}><X className="size-4" aria-hidden="true" /></Button> : null}
+        </div> : null}
 
-                {/* Rule 3: AI-to-current value differences */}
-                <div className="rounded-lg border border-slate-200 bg-white p-3">
-                  <span className="text-[11px] font-semibold uppercase text-slate-500">
-                    AI vs Human Edits ({modifiedFields.length})
-                  </span>
-                  <p className="mt-1 text-xs text-slate-600">
-                    {modifiedFields.length === 0
-                      ? "No manual edits made (all values match initial AI proposals)."
-                      : `${modifiedFields.length} field(s) corrected or manually entered.`}
-                  </p>
-                  {modifiedFields.length > 0 ? (
-                    <div className="mt-1.5 max-h-40 overflow-y-auto space-y-1 text-[11px]">
-                      {modifiedFields.map((f) => (
-                        <div key={f.id} className="text-slate-700">
-                          <span className="font-semibold">{formatFieldLabel(f.fieldKey)}:</span>{" "}
-                          <span className="line-through text-slate-400">{f.modelValue ?? "empty"}</span> →{" "}
-                          <span className="font-bold text-indigo-700">{f.currentValue}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-
-                {/* Rule 4: Unresolved & Human-Cleared Checks */}
-                <div className="rounded-lg border border-slate-200 bg-white p-3">
-                  <span className="text-[11px] font-semibold uppercase text-slate-500">
-                    Cross-Checks Status
-                  </span>
-                  <div className="mt-1 flex flex-wrap gap-1 text-[11px]">
-                    <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-medium">{passedCount} Passed</span>
-                    <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 font-medium">{humanClearedCount} Cleared</span>
-                    {pendingApprovalCount > 0 ? (
-                      <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 font-medium animate-pulse">{pendingApprovalCount} Pending Approval</span>
-                    ) : null}
-                    {mismatchCount > 0 ? (
-                      <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-medium">{mismatchCount} Mismatch</span>
-                    ) : null}
-                  </div>
-                  {pendingApprovalCount > 0 ? (
-                    <p className="mt-1.5 text-[11px] text-amber-900 font-medium">
-                      ⚠️ {pendingApprovalCount} exception(s) awaiting manager sign-off.
-                    </p>
-                  ) : null}
-                </div>
-              </div>
-
-              {/* Rule 4: every failed check with its state and resolution history */}
-              {failedOrClearedChecks.length > 0 ? (
-                <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2" data-testid="manager-check-list">
-                  <h4 className="text-xs font-bold text-slate-800">Failed checks and their resolutions</h4>
-                  <ul className="space-y-1.5 text-[11px]">
-                    {failedOrClearedChecks.map((check) => {
-                      const eff = deriveEffectiveCheckStatus(
-                        check.status,
-                        check.activeResolution ?? check.resolutions?.[0],
-                        check.derivedStatus ?? check.effectiveStatus,
-                      );
-                      const history = check.resolutions ?? (check.activeResolution ? [check.activeResolution] : []);
-                      return (
-                        <li key={check.id ?? check.ruleKey} className="rounded border border-slate-100 p-2">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <span className="font-semibold text-slate-900">
-                              {check.ruleKey.replaceAll("_", " ")}
-                              {check.severity === "WARNING" ? " (warning)" : ""}
-                            </span>
-                            <Badge className={`${eff.badgeClass} text-[10px]`}>{eff.label}</Badge>
-                          </div>
-                          {check.details?.message || check.details?.note ? (
-                            <p className="mt-0.5 text-slate-600">{String(check.details.message ?? check.details.note)}</p>
-                          ) : null}
-                          {history.length === 0 ? (
-                            <p className="mt-0.5 text-rose-700">No resolution recorded.</p>
-                          ) : (
-                            <ul className="mt-1 space-y-0.5 text-slate-600">
-                              {history.map((res) => (
-                                <li key={res.id}>
-                                  <span className="font-medium">{res.type.replaceAll("_", " ")}</span> by{" "}
-                                  {res.resolvedBy?.fullName ?? res.resolvedBy?.email ?? "reviewer"}: {res.reason}
-                                  {res.evidence ? <span className="font-mono"> · evidence {res.evidence}</span> : null}
-                                  {res.type === "ACCEPTED_EXCEPTION"
-                                    ? res.managerApprovedAt
-                                      ? " · manager signed off"
-                                      : " · awaiting manager sign-off"
-                                    : ""}
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              ) : null}
-
-              {/* Rule 5: Audit History (collapsible) with the details that matter for a decision */}
-              {showManagerAudit ? (
-                <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
-                  <h4 className="text-xs font-bold text-slate-800">Correction & Resolution Audit Trail</h4>
-                  {auditHistory.length === 0 ? (
-                    <p className="text-[11px] text-slate-500">No audit events recorded yet.</p>
-                  ) : (
-                    <div className="max-h-64 overflow-y-auto divide-y divide-slate-100 text-[11px]">
-                      {auditHistory.map((item) => {
-                        const meta = (item.metadata ?? {}) as Record<string, unknown>;
-                        const detail = [
-                          typeof meta.fieldKey === "string" ? meta.fieldKey : null,
-                          "previousValue" in meta || "newValue" in meta || "value" in meta
-                            ? `${meta.previousValue ?? "empty"} → ${meta.newValue ?? meta.value ?? "empty"}`
-                            : null,
-                          typeof meta.ruleKey === "string" ? `${meta.ruleKey}${meta.type ? ` (${String(meta.type)})` : ""}` : null,
-                          typeof meta.reason === "string" && meta.reason ? `reason: ${meta.reason}` : null,
-                          typeof meta.evidence === "string" && meta.evidence ? `evidence: ${meta.evidence}` : null,
-                          typeof meta.comment === "string" && meta.comment ? `“${meta.comment}”` : null,
-                          typeof meta.revision === "number" ? `rev ${meta.revision}` : null,
-                        ].filter(Boolean);
-                        return (
-                          <div key={item.id} className="py-1.5 flex items-start justify-between gap-2">
-                            <div>
-                              <Badge className="mr-2 text-[10px] bg-slate-100 text-slate-800 border-slate-200">{item.action}</Badge>
-                              <span className="text-slate-600">{item.actorEmail || "System"}</span>
-                              {detail.length > 0 ? <div className="mt-0.5 text-slate-500">{detail.join(" · ")}</div> : null}
-                            </div>
-                            <span className="text-slate-400 font-mono text-[10px] shrink-0">
-                              {new Date(item.createdAt).toLocaleString()}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              ) : null}
-
-              {isManager && shipmentStatus !== "READY_FOR_APPROVAL" && shipmentStatus !== "APPROVED" && shipmentStatus !== "EXPORTED" ? (
-                <p className="text-[11px] text-slate-600">
-                  Approve and reject become available once an Executive submits this shipment for approval.
-                </p>
-              ) : null}
-
-              {/* Manager Actions (Rules 6, 7, 8, 10, 11): only for a submitted shipment */}
-              {isManager && shipmentStatus === "READY_FOR_APPROVAL" ? (
-                <div className="rounded-lg border border-indigo-200 bg-white p-3 space-y-3">
-                  <div className="space-y-1">
-                    <label htmlFor="manager-decision-comment" className="text-xs font-semibold text-slate-800">
-                      Manager Decision Comment {pendingApprovalCount > 0 ? "(Mandatory for exception approval)" : "(Mandatory for rejection)"}
-                    </label>
-                    <textarea
-                      id="manager-decision-comment"
-                      value={managerComment}
-                      onChange={(e) => setManagerComment(e.target.value)}
-                      placeholder={
-                        pendingApprovalCount > 0
-                          ? "Reason for approving accepted exceptions (minimum 5 characters)..."
-                          : "Enter decision comments (minimum 5 characters if rejecting)..."
-                      }
-                      rows={2}
-                      className="w-full rounded-md border border-slate-300 p-2 text-xs focus:border-indigo-500 focus:outline-none"
-                    />
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-end gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-8 border-rose-300 text-rose-700 hover:bg-rose-50 hover:text-rose-800 text-xs font-medium"
-                      disabled={managerActionBusy}
-                      onClick={() => void handleManagerDecision("REJECT")}
-                    >
-                      <XCircle className="size-3.5 mr-1 text-rose-600" />
-                      Reject Shipment (Return to Review)
-                    </Button>
-                    <Button
-                      size="sm"
-                      className="h-8 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold"
-                      disabled={managerActionBusy}
-                      onClick={() => void handleManagerDecision("APPROVE")}
-                    >
-                      <CheckCircle2 className="size-3.5 mr-1" />
-                      Approve Shipment
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
-            </CardContent>
-          </Card>
-        ) : null}
-
-        {isReadOnly ? (
-          <div
-            role="status"
-            className="mb-4 rounded-lg border border-slate-300 bg-slate-100 px-4 py-2.5 text-xs font-medium text-slate-800 flex items-center gap-2"
-          >
-            <Lock className="size-4 text-slate-500 shrink-0" />
-            <span>
-              This shipment is in {shipmentStatus.replaceAll("_", " ")} status. Field edits and corrections are locked in read-only mode.
-            </span>
-          </div>
-        ) : null}
-
-        {statusMessage ? (
-          <div
-            role="alert"
-            className={`mb-4 rounded-lg border px-4 py-2.5 text-xs font-medium flex items-center justify-between ${
-              statusMessage.includes("Conflict") || statusMessage.includes("409")
-                ? "border-amber-300 bg-amber-50 text-amber-950"
-                : statusMessage.includes("Error") ||
-                    statusMessage.includes("Failed") ||
-                    statusMessage.includes("required") ||
-                    statusMessage.includes("Cannot")
-                  ? "border-rose-300 bg-rose-50 text-rose-950"
-                  : "border-emerald-300 bg-emerald-50 text-emerald-950"
-            }`}
-          >
-            <span>{statusMessage}</span>
-            <button
-              type="button"
-              className="hover:opacity-75 font-bold ml-2"
-              onClick={() => setStatusMessage(null)}
-            >
-              ✕
-            </button>
-          </div>
-        ) : null}
-
-        {/* Dual-Pane Layout: Left: Document Viewer, Right: Extracted Fields / Line Items */}
-        <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
-          {/* ================= LEFT PANE: DOCUMENT VIEWER (Rules 4, 5, 6, 7) ================= */}
-          <section
-            aria-label="Document evidence viewer"
-            className={`space-y-3 ${mobileTab === "document" ? "block" : "hidden lg:block"}`}
-          >
-            <Card className="overflow-hidden border-slate-200 shadow-sm">
-              <CardHeader className="border-b border-slate-200 bg-slate-50/75 px-4 py-3">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-xs text-slate-800 truncate max-w-[200px]">
-                      {activeDoc?.originalFileName ?? "No document uploaded"}
-                    </span>
-                    {activeDoc ? (
-                      <Badge className="bg-slate-200 text-slate-700 border-slate-300 text-[10px]">
-                        {activeDoc.mimeType.includes("pdf") ? "PDF" : "IMAGE"}
-                      </Badge>
-                    ) : null}
-                  </div>
-
-                  {/* Viewer Toolbar: Zoom, Rotate, Page Navigation (Rule 6) */}
-                  <div className="flex items-center gap-1.5">
-                    <div className="flex items-center rounded-md border border-slate-300 bg-white">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 w-7 p-0"
-                        disabled={currentPage <= 1}
-                        onClick={() => setCurrentPage((p) => Math.max(p - 1, 1))}
-                        title="Previous page"
-                      >
-                        <ChevronLeft className="size-4" />
-                      </Button>
-                      <span className="px-2 text-[11px] font-mono font-medium text-slate-600">
-                        {currentPage} / {maxPages}
-                      </span>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 w-7 p-0"
-                        disabled={currentPage >= maxPages}
-                        onClick={() => setCurrentPage((p) => Math.min(p + 1, maxPages))}
-                        title="Next page"
-                      >
-                        <ChevronRight className="size-4" />
-                      </Button>
-                    </div>
-
-                    <div className="flex items-center rounded-md border border-slate-300 bg-white">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 w-7 p-0"
-                        onClick={handleZoomOut}
-                        title="Zoom out"
-                      >
-                        <ZoomOut className="size-3.5" />
-                      </Button>
-                      <button
-                        type="button"
-                        onClick={handleResetZoom}
-                        className="px-1.5 text-[10px] font-mono text-slate-600 hover:text-slate-900"
-                        title="Reset zoom"
-                      >
-                        {zoomLevel}%
-                      </button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 w-7 p-0"
-                        onClick={handleZoomIn}
-                        title="Zoom in"
-                      >
-                        <ZoomIn className="size-3.5" />
-                      </Button>
-                    </div>
-
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 w-7 p-0 border-slate-300"
-                      onClick={handleRotate}
-                      title="Rotate 90 degrees"
-                    >
-                      <RotateCw className="size-3.5" />
-                    </Button>
-
-                    {activeDoc ? (
-                      <a
-                        href={activeDoc.signedUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                        title="Open in new tab"
-                      >
-                        <ExternalLink className="size-3.5" />
-                      </a>
-                    ) : null}
-                  </div>
-                </div>
-              </CardHeader>
-
-              {/* Unreadable / Manual Entry Page Control (Rule 7) */}
-              {activeDoc ? (
-                <div className="border-b border-slate-200 bg-slate-100/60 px-4 py-2 flex items-center justify-between text-xs">
-                  <span className="text-slate-600">
-                    Inspecting Page <span className="font-semibold text-slate-900">{currentPage}</span> of{" "}
-                    {maxPages}
-                  </span>
-                  {!isPageUnreadable ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-6 text-[11px] border-amber-300 text-amber-900 bg-amber-50 hover:bg-amber-100"
-                      onClick={() => void markPageUnreadable(currentPage)}
-                    >
-                      <AlertTriangle className="size-3 mr-1 text-amber-600" />
-                      Mark page as unreadable
-                    </Button>
-                  ) : (
-                    <Badge className="bg-amber-200 text-amber-900 border-amber-300 text-[10px]">
-                      Page marked unreadable (manual entry active)
-                    </Badge>
-                  )}
-                </div>
-              ) : null}
-
-              {/* Viewer Content Canvas (Rules 4, 5) */}
-              <CardContent className="p-0 bg-slate-900/5 min-h-[560px] max-h-[720px] overflow-auto flex items-center justify-center">
-                {!activeDoc ? (
-                  <div className="p-8 text-center text-slate-400 text-xs">
-                    <p className="font-medium text-slate-600">Document not supplied for {activeDocType}.</p>
-                    <p className="mt-1">Upload the document on the shipment page to inspect evidence.</p>
-                  </div>
-                ) : (
-                  <DocumentViewer
-                    key={activeDoc.id}
-                    url={activeDoc.signedUrl}
-                    mimeType={activeDoc.mimeType}
-                    fileName={activeDoc.originalFileName}
-                    page={currentPage}
-                    zoom={zoomLevel}
-                    rotation={rotation}
-                    onPageCount={(count) => handlePdfPageCount(activeDoc.id, count)}
-                    onRequestFreshUrl={() => requestFreshDocumentUrl(activeDoc.id)}
-                  />
-                )}
-              </CardContent>
-            </Card>
-          </section>
-
-          {/* ================= RIGHT PANE: EXTRACTED FIELDS & CROSS-CHECKS ================= */}
-          <div className="space-y-5">
-            {/* Field Categorization Tabs (Rule 10) */}
-            <div
-              className={`space-y-4 ${
-                mobileTab === "fields" ? "block" : "hidden lg:block"
-              }`}
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap gap-1.5 text-xs">
-                  {(["all", "parties", "identifiers", "commercial", "logistics"] as const).map(
-                    (cat) => (
-                      <button
-                        key={cat}
-                        type="button"
-                        onClick={() => setActiveCategory(cat)}
-                        className={`rounded-md px-2.5 py-1 font-medium transition ${
-                          activeCategory === cat
-                            ? "bg-slate-900 text-white"
-                            : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
-                        }`}
-                      >
-                        {cat === "all"
-                          ? "All Fields"
-                          : cat === "parties"
-                            ? "Parties"
-                            : cat === "identifiers"
-                              ? "Identifiers"
-                              : cat === "commercial"
-                                ? "Commercial"
-                                : "Logistics"}
-                      </button>
-                    ),
-                  )}
-                </div>
-
-                <div className="flex items-center gap-1.5">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 text-xs border-amber-300 text-amber-900 bg-amber-50/50 hover:bg-amber-100/60"
-                    onClick={() => goToNextUncertainField()}
-                  >
-                    <AlertTriangle className="size-3 mr-1 text-amber-600" /> Next Uncertain
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 text-xs border-slate-300"
-                    onClick={() => setShowAddManualField((prev) => !prev)}
-                  >
-                    <PlusCircle className="size-3 mr-1" /> Add field
-                  </Button>
-                </div>
-              </div>
-
-              {/* Manual Field Creation Form */}
-              {showAddManualField ? (
-                <Card className="border-blue-200 bg-blue-50/50 text-xs">
-                  <CardHeader className="p-3">
-                    <CardTitle className="text-xs font-semibold text-blue-950">
-                      Add Manual Fallback Field
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="p-3 pt-0 space-y-2">
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      <Input
-                        placeholder="Field key (e.g. grossWeight)"
-                        className="h-8 bg-white text-xs"
-                        value={newFieldKey}
-                        onChange={(e) => setNewFieldKey(e.target.value)}
-                      />
-                      <Input
-                        placeholder="Value (e.g. 3120 kg)"
-                        className="h-8 bg-white text-xs"
-                        value={newFieldValue}
-                        onChange={(e) => setNewFieldValue(e.target.value)}
-                      />
-                    </div>
-                    <Input
-                      placeholder="Reason (e.g. read from invoice footer)"
-                      className="h-8 bg-white text-xs"
-                      value={newFieldReason}
-                      onChange={(e) => setNewFieldReason(e.target.value)}
-                    />
-                    <div className="flex justify-end gap-2 pt-1">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 text-xs"
-                        onClick={() => setShowAddManualField(false)}
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        size="sm"
-                        className="h-7 text-xs bg-blue-700 text-white"
-                        disabled={busy}
-                        onClick={() => void handleAddManualField()}
-                      >
-                        <Save className="size-3 mr-1" /> Save field
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ) : null}
-
-              {/* Extracted Fields List (Rules 8, 9, 10) */}
-              <div className="space-y-3">
-                {filteredFields.length === 0 ? (
-                  <Card>
-                    <CardContent className="p-6 text-center text-xs text-slate-500">
-                      No fields available under this category.
-                    </CardContent>
-                  </Card>
-                ) : (
-                  filteredFields.map((field) => {
-                    const confidenceNum = Number(field.modelConfidence);
-                    const isLowConfidence = isFieldUncertain(field);
-                    const isManual = field.reviewStatus === "MANUAL_ENTRY";
-                    const isConfirmed = field.reviewStatus === "CONFIRMED";
-
-                    return (
-                      <div
-                        key={field.id}
-                        id={`field-card-${field.id}`}
-                        tabIndex={-1}
-                        data-uncertain={isLowConfidence ? "true" : "false"}
-                        data-focused-uncertain={focusedUncertainId === field.id ? "true" : undefined}
-                        aria-label={`${formatFieldLabel(field.fieldKey)}${isLowConfidence ? " (needs review)" : ""}`}
-                        className={`rounded-xl border p-3.5 transition outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${
-                          focusedUncertainId === field.id ? "ring-2 ring-sky-500 " : ""
-                        }${
-                          isLowConfidence
-                            ? "border-amber-300 bg-amber-50/30"
-                            : "border-slate-200 bg-white"
-                        }`}
-                      >
-                        {/* Header: Label, Status, Confidence */}
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <span className="font-semibold text-xs text-slate-900 font-mono">
-                            {formatFieldLabel(field.fieldKey)}
-                          </span>
-                          <div className="flex items-center gap-1.5">
-                            {/* Confidence Badge (Rule 9) */}
-                            <Badge className="bg-slate-100 text-slate-700 border-slate-300 text-[10px]">
-                              {Number.isFinite(confidenceNum)
-                                ? `${Math.round(confidenceNum * 100)}% (model estimate)`
-                                : "Uncalibrated estimate"}
-                            </Badge>
-                            <Badge
-                              className={
-                                isManual
-                                  ? "bg-purple-100 text-purple-900 text-[10px]"
-                                  : isConfirmed
-                                    ? "bg-emerald-100 text-emerald-900 text-[10px]"
-                                    : isLowConfidence
-                                      ? "bg-amber-100 text-amber-900 text-[10px]"
-                                      : "bg-slate-100 text-slate-800 text-[10px]"
-                              }
-                            >
-                              {field.reviewStatus}
-                            </Badge>
-                          </div>
-                        </div>
-
-                        {/* Original AI Value Display (Rule 2) */}
-                        {field.modelValue !== null && field.currentValue !== field.modelValue ? (
-                          <div className="mt-1 flex items-center gap-1.5 text-[11px] text-slate-500">
-                            <span className="font-semibold text-slate-600">Original AI Value:</span>
-                            <span className="font-mono bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded text-[10px] line-through">
-                              {field.modelValue}
-                            </span>
-                            <Badge className="bg-blue-50 text-blue-700 border-blue-200 text-[9px] py-0 h-4">
-                              Modified
-                            </Badge>
-                          </div>
-                        ) : null}
-
-                        {/* Review Reason Alert */}
-                        {field.reviewReason ? (
-                          <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-amber-800 font-mono">
-                            <AlertTriangle className="size-3 text-amber-600 shrink-0" />
-                            <span>Reason: {field.reviewReason}</span>
-                          </div>
-                        ) : null}
-
-                        {/* Value Input and Actions */}
-                        <div className="mt-2.5 flex flex-wrap items-center gap-2">
-                          <Input
-                            id={`field-input-${field.id}`}
-                            disabled={isReadOnly || busy}
-                            className="h-8 flex-1 min-w-[140px] text-xs font-mono bg-white disabled:bg-slate-100 disabled:text-slate-500"
-                            value={editedValues[field.id] ?? field.currentValue ?? ""}
-                            onChange={(e) =>
-                              setEditedValues((prev) => ({
-                                ...prev,
-                                [field.id]: e.target.value,
-                              }))
-                            }
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                e.preventDefault();
-                                if (
-                                  editedValues[field.id] === undefined ||
-                                  editedValues[field.id] === field.currentValue
-                                ) {
-                                  void saveFieldAction(field, "CONFIRMED");
-                                } else {
-                                  const rInput = document.getElementById(
-                                    `field-reason-${field.id}`,
-                                  ) as HTMLInputElement | null;
-                                  if (rInput) {
-                                    rInput.focus();
-                                  } else {
-                                    setReasons((prev) => ({ ...prev, [field.id]: "" }));
-                                    setTimeout(() => {
-                                      const el = document.getElementById(`field-reason-${field.id}`);
-                                      if (el) el.focus();
-                                    }, 50);
-                                  }
-                                }
-                              }
-                            }}
-                          />
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-8 text-xs border-emerald-300 text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
-                            disabled={isReadOnly || busy}
-                            onClick={() => void saveFieldAction(field, "CONFIRMED")}
-                          >
-                            Confirm
-                          </Button>
-                          <Button
-                            size="sm"
-                            className="h-8 text-xs bg-slate-900 hover:bg-slate-800 text-white disabled:opacity-50"
-                            disabled={isReadOnly || busy}
-                            onClick={() => void saveFieldAction(field, "CORRECTED")}
-                          >
-                            Correct
-                          </Button>
-                        </div>
-
-                        {/* Correction Reason when modified or has reason */}
-                        {((editedValues[field.id] !== undefined &&
-                          editedValues[field.id] !== (field.currentValue ?? "")) ||
-                          reasons[field.id] !== undefined) &&
-                        !isReadOnly ? (
-                          <div className="mt-1.5 flex items-center gap-1.5">
-                            <Input
-                              id={`field-reason-${field.id}`}
-                              placeholder="Reason for correction (required, min 3 chars)"
-                              className="h-7 text-[11px] font-sans bg-white border-amber-200"
-                              value={reasons[field.id] ?? ""}
-                              onChange={(e) =>
-                                setReasons((prev) => ({
-                                  ...prev,
-                                  [field.id]: e.target.value,
-                                }))
-                              }
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") {
-                                  e.preventDefault();
-                                  void saveFieldAction(field, "CORRECTED");
-                                }
-                              }}
-                            />
-                          </div>
-                        ) : null}
-
-                        {/* Source Quote & Provenance (Rule 8) */}
-                        <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2 text-[11px] text-slate-600">
-                          <div className="flex items-center gap-1.5 flex-1 min-w-[200px]">
-                            <span className="font-semibold text-slate-700">Quote:</span>
-                            <span className="italic text-slate-800 truncate max-w-xs">
-                              &ldquo;{field.sourceQuote ?? "No direct quote available"}&rdquo;
-                            </span>
-                          </div>
-                          {field.pageNumber ? (
-                            <button
-                              type="button"
-                              onClick={() => jumpToPage(field.pageNumber)}
-                              className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono text-blue-700 hover:bg-blue-50 font-medium"
-                              title="Navigate document viewer to this page"
-                            >
-                              <Eye className="size-3" /> Page {field.pageNumber}
-                            </button>
-                          ) : null}
-                        </div>
-
-                        {/* Original AI value display if edited */}
-                        {field.modelValue && field.modelValue !== field.currentValue ? (
-                          <div className="mt-1 text-[10px] text-slate-500">
-                            Original AI value:{" "}
-                            <span className="font-mono text-slate-700">{field.modelValue}</span>
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-
-              {/* Line Items Table (Rule 10) */}
-              {activeDoc?.lineItems && activeDoc.lineItems.length > 0 ? (
-                <Card className="mt-4 border-slate-200">
-                  <CardHeader className="py-3 px-4">
-                    <CardTitle className="text-xs font-semibold text-slate-900">
-                      Line Items ({activeDoc.lineItems.length})
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="p-0 overflow-x-auto">
-                    <table className="w-full text-left text-xs">
-                      <thead className="bg-slate-100/80 text-[11px] font-semibold text-slate-600 border-b border-slate-200">
-                        <tr>
-                          <th className="py-2 px-3">#</th>
-                          <th className="py-2 px-3">Description</th>
-                          <th className="py-2 px-3">HSN</th>
-                          <th className="py-2 px-3 text-right">Qty</th>
-                          <th className="py-2 px-3">Unit</th>
-                          <th className="py-2 px-3 text-right">Price</th>
-                          <th className="py-2 px-3 text-right">Total</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {activeDoc.lineItems.map((item, idx) => (
-                          <tr key={item.id ?? idx} className="hover:bg-slate-50/50">
-                            <td className="py-2 px-3 font-mono text-slate-500">
-                              {item.lineNumber ?? idx + 1}
-                            </td>
-                            <td className="py-2 px-3 font-medium text-slate-900 max-w-[160px] truncate">
-                              {item.description ?? "—"}
-                            </td>
-                            <td className="py-2 px-3 font-mono text-slate-600">
-                              {item.hsnCode ?? "—"}
-                            </td>
-                            <td className="py-2 px-3 text-right font-mono font-medium text-slate-900">
-                              {item.quantity ? String(item.quantity) : "—"}
-                            </td>
-                            <td className="py-2 px-3 text-slate-600">
-                              {item.quantityUnit ?? "—"}
-                            </td>
-                            <td className="py-2 px-3 text-right font-mono text-slate-700">
-                              {item.unitPrice ? String(item.unitPrice) : "—"}
-                            </td>
-                            <td className="py-2 px-3 text-right font-mono font-semibold text-slate-900">
-                              {item.lineTotal ? String(item.lineTotal) : "—"}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </CardContent>
-                </Card>
-              ) : null}
-            </div>
-
-            {/* Cross-Checks Drawer/Tab (Rule 11 & 12) */}
-            <div
-              className={`space-y-3 ${
-                mobileTab === "checks" ? "block" : "hidden lg:block"
-              }`}
-            >
-              <Card className="border-slate-200">
-                <CardHeader className="py-3 px-4 border-b border-slate-100">
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-xs font-semibold text-slate-900 flex items-center gap-1.5">
-                      <Scale className="size-4 text-slate-700" />
-                      Deterministic Cross-Checks ({crossChecks.length})
-                    </CardTitle>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-6 text-[11px] border-slate-300"
-                      disabled={busy}
-                      onClick={() => void triggerCrossChecks()}
-                    >
-                      <RefreshCw className="size-3 mr-1" /> Re-run
-                    </Button>
-                  </div>
-                </CardHeader>
-                <CardContent className="p-3 space-y-2.5">
-                  {crossChecksStale ? (
-                    <div
-                      role="alert"
-                      className="flex items-center justify-between gap-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-900"
-                    >
-                      <span>
-                        Your change was saved, but cross-checks could not be refreshed. Results below may be out of date.
-                      </span>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-6 text-[11px] border-amber-400"
-                        disabled={busy}
-                        onClick={() => void triggerCrossChecks()}
-                      >
-                        <RefreshCw className="size-3 mr-1" aria-hidden="true" /> Re-run checks
-                      </Button>
-                    </div>
-                  ) : null}
-                  {crossChecks.length === 0 ? (
-                    <p className="text-xs text-slate-500 py-2 text-center">
-                      No cross-check results recorded for revision {shipmentRevision}.
-                    </p>
-                  ) : (
-                    crossChecks.map((check) => {
-                      const activeRes = check.activeResolution ?? check.resolutions?.[0];
-                      const eff = deriveEffectiveCheckStatus(check.status, activeRes, check.derivedStatus ?? check.effectiveStatus);
-
-                      return (
-                        <div
-                          key={check.id ?? check.ruleKey}
-                          className={`rounded-lg border p-3 text-xs transition ${
-                            eff.isHumanCleared
-                              ? "border-purple-200 bg-purple-50/20"
-                              : eff.isPendingApproval
-                                ? "border-amber-300 bg-amber-50/30"
-                                : check.status === "MISMATCH"
-                                  ? "border-rose-200 bg-rose-50/40"
-                                  : check.status === "INCOMPLETE"
-                                    ? "border-amber-200 bg-amber-50/40"
-                                    : "border-slate-200 bg-white"
-                          }`}
-                        >
-                          {/* Header: Rule Key, Severity, Status */}
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-semibold text-slate-900 font-mono">
-                                {check.ruleKey.replaceAll("_", " ")}
-                              </span>
-                              {check.ruleCode ? (
-                                <Badge className="bg-slate-100 text-slate-600 border-slate-200 text-[10px] py-0 h-4 font-mono">
-                                  {check.ruleCode}
-                                </Badge>
-                              ) : null}
-                              {check.severity === "WARNING" ? (
-                                <Badge className="bg-yellow-50 text-yellow-800 border-yellow-200 text-[10px] py-0 h-4">
-                                  Warning
-                                </Badge>
-                              ) : null}
-                            </div>
-                            <Badge className={`${eff.badgeClass} text-[10px]`}>
-                              {eff.label}
-                            </Badge>
-                          </div>
-
-                          {/* Compared Values and Units (Rule 1 & Rule 2) */}
-                          {check.details?.comparedValuesKg &&
-                          Object.keys(check.details.comparedValuesKg).length > 0 ? (
-                            <div className="mt-2 rounded-md bg-slate-50 border border-slate-200 p-2 text-[11px]">
-                              <div className="font-semibold text-slate-700 mb-1">
-                                Compared Source Values:
-                              </div>
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                                {Object.entries(check.details.comparedValuesKg).map(([docType, val]) => (
-                                  <div
-                                    key={docType}
-                                    className="flex items-center justify-between bg-white px-2 py-1 rounded border border-slate-200"
-                                  >
-                                    <span className="font-medium text-slate-700">{docType}:</span>
-                                    <span className="font-mono text-slate-900 font-semibold">{val} kg</span>
-                                    <button
-                                      type="button"
-                                      onClick={() => inspectDocumentSource(docType)}
-                                      className="text-[10px] text-blue-600 hover:underline flex items-center gap-0.5 font-medium ml-1"
-                                    >
-                                      Inspect <ExternalLink className="size-2.5" />
-                                    </button>
-                                  </div>
-                                ))}
-                              </div>
-                              {check.details?.differenceKg ? (
-                                <div className="mt-1.5 text-right font-mono font-bold text-rose-700 text-[11px]">
-                                  Difference: {check.details.differenceKg} kg
-                                  {typeof check.details.toleranceKg === "string" ? (
-                                    <span className="ml-1 font-normal text-slate-600">
-                                      (tolerance ±{check.details.toleranceKg} kg
-                                      {typeof check.details.tolerancePercent === "string"
-                                        ? `, ${check.details.tolerancePercent}% of larger value`
-                                        : ""}
-                                      )
-                                    </span>
-                                  ) : null}
-                                </div>
-                              ) : null}
-                              {check.details?.cause === "unknown" && check.status === "MISMATCH" ? (
-                                <p className="mt-1 text-[10px] text-slate-500">
-                                  Cause: not stated in the source documents.
-                                </p>
-                              ) : null}
-                            </div>
-                          ) : check.details?.difference ? (
-                            <p className="mt-1 font-mono font-medium text-rose-700 text-[11px]">
-                              Difference: {check.details.difference}
-                            </p>
-                          ) : null}
-
-                          {/* Message / Diagnostic Note */}
-                          {check.details?.note || check.details?.message ? (
-                            <p className="mt-1.5 text-[11px] text-slate-600">
-                              {check.details.note ?? check.details.message}
-                            </p>
-                          ) : null}
-
-                          {/* Active Resolution Display (Rules 7, 8, 10) */}
-                          {activeRes ? (
-                            <div className="mt-2 rounded-md bg-slate-50 border border-slate-200 p-2 text-[11px] space-y-1">
-                              <div className="flex items-center justify-between">
-                                <span className="font-semibold text-slate-800">
-                                  Resolution: {activeRes.type.replaceAll("_", " ")}
-                                </span>
-                                <span className="text-slate-500 text-[10px]">
-                                  By: {activeRes.resolvedBy?.fullName ?? activeRes.resolvedBy?.email ?? "Reviewer"}
-                                </span>
-                              </div>
-                              <p className="text-slate-700">Reason: {activeRes.reason}</p>
-                              {activeRes.evidence ? (
-                                <p className="text-slate-600 font-mono text-[10px]">
-                                  Evidence: {activeRes.evidence}
-                                </p>
-                              ) : null}
-
-                              {/* Historical Resolution Audit Trail (Rule 10) */}
-                              {check.resolutions && check.resolutions.length > 1 ? (
-                                <div className="pt-1">
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setShowHistoryForCheckId(
-                                        showHistoryForCheckId === check.id ? null : check.id ?? null,
-                                      )
-                                    }
-                                    className="text-[10px] text-blue-700 underline font-medium"
-                                  >
-                                    {showHistoryForCheckId === check.id
-                                      ? "Hide Resolution History"
-                                      : `View Resolution History (${check.resolutions.length})`}
-                                  </button>
-                                  {showHistoryForCheckId === check.id ? (
-                                    <div className="mt-1 space-y-1 border-t border-slate-200 pt-1 text-[10px] text-slate-600">
-                                      {check.resolutions.map((h, i) => (
-                                        <div key={h.id || i} className="p-1 rounded bg-white border border-slate-100">
-                                          <div className="font-medium text-slate-700">
-                                            {h.type} by {h.resolvedBy?.fullName ?? h.resolvedBy?.email ?? "User"}
-                                          </div>
-                                          <div>Reason: {h.reason}</div>
-                                          {h.evidence ? <div>Evidence: {h.evidence}</div> : null}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  ) : null}
-                                </div>
-                              ) : null}
-                            </div>
-                          ) : null}
-
-                          {/* Executive line mapping for unresolved line matches (Week 4 Step 4) */}
-                          {check.ruleKey === "invoice_quantity_vs_packing_list" ? (
-                            <LineMappingPanel
-                              check={check}
-                              documents={documents}
-                              mappings={lineMappings}
-                              selections={mappingSelections}
-                              reason={mappingReason}
-                              disabled={busy || isReadOnly}
-                              onSelect={(invoiceLineId, packingListLineId) =>
-                                setMappingSelections((prev) => ({ ...prev, [invoiceLineId]: packingListLineId }))
-                              }
-                              onReasonChange={setMappingReason}
-                              onMap={(invoiceLineId) => void createLineMapping(invoiceLineId)}
-                              onRemove={(mappingId) => void removeLineMapping(mappingId)}
-                            />
-                          ) : null}
-
-                          {/* Resolution Form or Trigger Button (Rules 3, 4, 5) */}
-                          {(check.status === "MISMATCH" || check.status === "INCOMPLETE") &&
-                          check.severity !== "WARNING" &&
-                          !isReadOnly ? (
-                            resolvingCheckId === (check.id ?? check.ruleKey) ? (
-                              <div className="mt-2.5 rounded-lg border border-blue-200 bg-blue-50/70 p-3 space-y-2.5">
-                                <div className="font-semibold text-xs text-blue-950 flex items-center justify-between">
-                                  <span>Resolve Discrepancy</span>
-                                  <Badge className="bg-blue-100 text-blue-800 text-[10px]">
-                                    {check.ruleCode ?? check.ruleKey}
-                                  </Badge>
-                                </div>
-
-                                {/* Step 1: Confirmation Checkbox (Rule 3) */}
-                                <label className="flex items-start gap-2 text-xs text-slate-800 cursor-pointer bg-white p-2 rounded border border-blue-100">
-                                  <input
-                                    type="checkbox"
-                                    checked={valuesConfirmed}
-                                    onChange={(e) => setValuesConfirmed(e.target.checked)}
-                                    className="mt-0.5 rounded border-slate-300 text-blue-600"
-                                  />
-                                  <span>
-                                    I confirm that I have reviewed the compared values and inspected the source documents.
-                                  </span>
-                                </label>
-
-                                {/* Step 2: Resolution Type (Rule 4) */}
-                                <div className="space-y-1">
-                                  <span className="text-[11px] font-semibold text-slate-700">
-                                    Select Resolution Type:
-                                  </span>
-                                  <div className="grid gap-1.5 sm:grid-cols-3 text-xs">
-                                    {(
-                                      [
-                                        "SOURCE_CORRECTED",
-                                        "DOCUMENT_REPLACEMENT",
-                                        "ACCEPTED_EXCEPTION",
-                                      ] as const
-                                    ).map((t) => {
-                                      // Checks shown here belong to the latest run, so audit links
-                                      // (which only document an already-fixed older failure) are disabled.
-                                      const isAuditLink = t !== "ACCEPTED_EXCEPTION";
-                                      return (
-                                        <label
-                                          key={t}
-                                          className={`flex items-start gap-1.5 p-1.5 rounded border ${
-                                            isAuditLink ? "cursor-not-allowed opacity-60" : "cursor-pointer"
-                                          } ${
-                                            resolutionType === t
-                                              ? "border-blue-500 bg-blue-100/40"
-                                              : "border-slate-200 bg-white"
-                                          }`}
-                                        >
-                                          <input
-                                            type="radio"
-                                            name={`resolution-type-${check.id ?? check.ruleKey}`}
-                                            checked={resolutionType === t}
-                                            disabled={isAuditLink}
-                                            onChange={() => setResolutionType(t)}
-                                          />
-                                          <span className="text-[10px] font-medium text-slate-800">
-                                            {t === "SOURCE_CORRECTED"
-                                              ? "Source Corrected"
-                                              : t === "DOCUMENT_REPLACEMENT"
-                                                ? "Doc Replacement"
-                                                : "Accepted Exception"}
-                                            {isAuditLink ? (
-                                              <span className="block font-normal text-slate-500">
-                                                Audit link only; does not clear a current failure
-                                              </span>
-                                            ) : (
-                                              <span className="block font-normal text-slate-500">
-                                                Needs evidence; manager sign-off
-                                              </span>
-                                            )}
-                                          </span>
-                                        </label>
-                                      );
-                                    })}
-                                  </div>
-                                  <p className="text-[10px] text-slate-600">
-                                    To fix a wrong value, correct the field instead; checks re-run automatically.
-                                  </p>
-                                </div>
-
-                                {/* Step 3: Reason (Rule 5) */}
-                                <Input
-                                  placeholder="Resolution reason (required, min 5 chars)"
-                                  className="h-8 bg-white text-xs"
-                                  value={resolutionReason}
-                                  onChange={(e) => setResolutionReason(e.target.value)}
-                                />
-
-                                {/* Step 4: Evidence (Rule 5) */}
-                                <Input
-                                  placeholder={
-                                    resolutionType === "ACCEPTED_EXCEPTION"
-                                      ? "Evidence / Query Reference (required, e.g. TKT-9821 or vendor email)"
-                                      : "Evidence / Query Reference (optional)"
-                                  }
-                                  className={`h-8 bg-white text-xs ${
-                                    resolutionType === "ACCEPTED_EXCEPTION" &&
-                                    (!resolutionEvidence || resolutionEvidence.trim().length < 3)
-                                      ? "border-amber-400"
-                                      : ""
-                                  }`}
-                                  value={resolutionEvidence}
-                                  onChange={(e) => setResolutionEvidence(e.target.value)}
-                                />
-
-                                <div className="flex justify-end gap-2 pt-1">
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    className="h-7 text-xs"
-                                    onClick={() => {
-                                      setResolvingCheckId(null);
-                                      setResolutionReason("");
-                                      setResolutionEvidence("");
-                                      setValuesConfirmed(false);
-                                    }}
-                                  >
-                                    Cancel
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    className="h-7 text-xs bg-blue-700 text-white hover:bg-blue-800"
-                                    disabled={
-                                      busy ||
-                                      !valuesConfirmed ||
-                                      resolutionReason.trim().length < 5 ||
-                                      (resolutionType === "ACCEPTED_EXCEPTION" &&
-                                        resolutionEvidence.trim().length < 3)
-                                    }
-                                    onClick={() => void handleResolveCheck(check)}
-                                  >
-                                    Submit Resolution
-                                  </Button>
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="mt-2 flex justify-end">
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-6 text-[11px] border-blue-200 text-blue-800 hover:bg-blue-50"
-                                  onClick={() => {
-                                    setResolvingCheckId(check.id ?? check.ruleKey);
-                                    setValuesConfirmed(false);
-                                    setResolutionReason("");
-                                    setResolutionEvidence("");
-                                    setResolutionType("ACCEPTED_EXCEPTION");
-                                  }}
-                                >
-                                  {activeRes ? "Update Resolution" : "Resolve Discrepancy"}
-                                </Button>
-                              </div>
-                            )
-                          ) : null}
-                        </div>
-                      );
-                    })
-                  )}
-                </CardContent>
-              </Card>
-            </div>
-          </div>
-        </div>
+        {isDesktop ? <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(390px,0.7fr)] gap-4">{documentPane}{inspector}</div> : <Tabs value={mobilePane} onValueChange={setMobilePane} className="flex min-h-0 flex-1 flex-col">
+          <TabsList aria-label="Workspace pane" className="mb-3 shrink-0 border-0 bg-surface p-1"><TabsTrigger value="document" className="flex-1">Document</TabsTrigger><TabsTrigger value="review" className="flex-1">Review{uncertainTotal ? ` (${uncertainTotal})` : ""}</TabsTrigger></TabsList>
+          <TabsContent value="document" className="min-h-0 flex-1 pt-0" tabIndex={-1}>{documentPane}</TabsContent>
+          <TabsContent value="review" className="min-h-0 flex-1 pt-0" tabIndex={-1}>{inspector}</TabsContent>
+        </Tabs>}
       </main>
 
-      {/* Week 5 Step 5: Export Preview Dialog */}
-      <ExportPreviewDialog
-        isOpen={isExportDialogOpen}
-        onClose={() => setIsExportDialogOpen(false)}
-        shipmentId={shipment.id}
-        shipmentReference={shipment.reference}
-        shipmentRevision={shipmentRevision}
-        shipmentStatus={shipmentStatus}
-        onExportSuccess={(record) => {
-          setShipmentStatus("EXPORTED");
-          setRecentExportRecord(record);
-          setStatusMessage(
-            `Shipment exported successfully (${record.fileName}). Checksum and audit event recorded.`,
-          );
-        }}
-      />
+      <ConfirmDialog open={Boolean(pendingAction)} onClose={closePendingAction} onConfirm={confirmPendingAction} title={pendingAction?.title ?? "Start a new check run?"} description={pendingAction?.description} confirmLabel={pendingAction?.confirmLabel} busy={Boolean(busy || isRefreshing)} />
+      <ConfirmDialog open={Boolean(manualPageTarget)} onClose={() => setManualPageTarget(null)} onConfirm={markManualPage} title={`Enable manual entry for page ${manualPageTarget?.page ?? page}?`} description="This records a human manual-entry flag and bumps the shipment revision. It does not change the model's readability evidence. Any existing submission is withdrawn and checks must be recomputed." confirmLabel="Mark for manual entry" busy={Boolean(busy || isRefreshing)}>
+        <div className="space-y-2"><Label htmlFor="page-manual-note">Why does this page need manual entry?</Label><Textarea id="page-manual-note" value={pageNote} maxLength={500} rows={3} disabled={Boolean(busy || isRefreshing)} aria-invalid={Boolean(dialogError)} onChange={(event) => { setPageNote(event.target.value); setDialogError(null); }} />{dialogError || feedback?.kind === "error" || feedback?.kind === "warning" ? <p role="alert" className="text-sm text-danger">{dialogError ?? feedback?.message}</p> : null}</div>
+      </ConfirmDialog>
+      <ConfirmDialog open={Boolean(managerTarget)} onClose={() => setManagerTarget(null)} onConfirm={confirmManagerDecision} title={`Manager decision · revision ${managerTarget?.revision ?? shipment.currentRevision}`} description="Decide on this exact saved revision after reviewing fields, checks and audit history. Server approval and revision guards are re-evaluated before recording the decision." confirmLabel={managerDecision === "APPROVE" ? "Approve shipment" : "Return to review"} variant={managerDecision === "REJECT" ? "destructive" : "default"} busy={Boolean(busy || isRefreshing)}>
+        <div className="space-y-3">
+          <p className="text-sm text-foreground-secondary">{documents.length} current documents · {modifiedCount} corrected or manually entered fields · {pendingExceptions.length} exceptions awaiting sign-off · {approvedExceptions} exceptions already approved</p>
+          {acceptedExceptions.length ? <p className="text-sm text-warning">Approval requires a meaningful comment for all accepted blocking exceptions, including earlier manager sign-offs. It does not change the original machine results.</p> : null}
+          <Label htmlFor="manager-decision">Decision</Label>
+          <Select id="manager-decision" value={managerDecision} disabled={Boolean(busy || isRefreshing)} onChange={(event) => { setManagerDecision(event.target.value as "APPROVE" | "REJECT"); setDialogError(null); }}><option value="APPROVE">Approve this revision</option><option value="REJECT">Return to review</option></Select>
+          <Label htmlFor="manager-decision-comment">Decision comment {managerCommentRequired ? "(required, at least 5 characters)" : "(optional)"}</Label>
+          <Textarea id="manager-decision-comment" value={managerComment} required={managerCommentRequired} minLength={managerCommentRequired ? 5 : undefined} maxLength={500} rows={3} disabled={Boolean(busy || isRefreshing)} aria-invalid={Boolean(dialogError)} onChange={(event) => { setManagerComment(event.target.value); setDialogError(null); }} />
+          {dialogError || feedback?.kind === "error" || feedback?.kind === "warning" ? <p role="alert" className="text-sm text-danger">{dialogError ?? feedback?.message}</p> : null}
+        </div>
+      </ConfirmDialog>
+      <ConfirmDialog open={Boolean(leaveHref)} onClose={() => setLeaveHref(null)} onConfirm={() => { if (leaveHref) router.push(leaveHref); }} title="Leave this review?" description="Unsaved values and reasons will be lost when leaving this workspace. Stay here to save or discard them deliberately." confirmLabel="Leave without saving" variant="destructive" />
+      <ExportPreviewDialog isOpen={exportOpen} onClose={() => setExportOpen(false)} shipmentId={shipment.id} shipmentReference={shipment.reference} shipmentRevision={shipment.currentRevision} shipmentStatus={shipment.status} hasUnsavedChanges={hasDrafts || disabled} onExportSuccess={controller.refreshLatest} onRequestRefresh={controller.refreshLatest} />
     </div>
   );
 }

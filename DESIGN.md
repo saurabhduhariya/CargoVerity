@@ -2,16 +2,18 @@
 
 ## Scope and identity
 
-This is the approved shared UI foundation, not a redesign of the application screens.
+This records the approved shared UI foundation and its document-review integration.
+Other application screens are outside this migration's scope.
 CargoVerity is a synthetic-demo customs-document verification workbench. Its interface
 must support fast, accurate human review: precise typography, neutral surfaces, one blue
 interaction accent, and explicit evidence and workflow states. No decorative gradients,
 3D effects, animated status pulses, or invented accuracy/clearance claims.
 
-Existing feature layouts, API contracts, authentication, role checks, audit history,
-revisions, submission guards, and export guards remain unchanged. The desktop review
-workspace must stay side by side in future screen work. Current feature-specific style
-overrides remain supported; migrating them is a separate screen-level task.
+Existing API contracts, authentication, role checks, audit history, revisions, submission
+guards, and export guards remain authoritative. The desktop review workspace stays side
+by side. Feature-specific style overrides remain supported; migrating other screens is a
+separate task. Review-specific behavior is recorded in
+`.impeccable/surfaces/src-app-review-id-page-tsx.md`.
 
 ## Tokens
 
@@ -127,7 +129,7 @@ class compatibility, status semantics, contrast pairs, and local font integrity.
 and makes no API/authentication requests. It covers form submission, tabs, draft retention,
 dialog states, numeric tables, and the 1440/1280/1024/390px viewport set.
 
-### Results — 2026-11-07
+### Shared-foundation results — 2026-11-07
 
 - `npm run lint`: passed, no warnings.
 - `npm run typecheck`: passed.
@@ -152,7 +154,69 @@ Screenshots and the unmodified confirmation report:
 `/tmp/opencode/cargoverity-design-system/confirmation/`.
 These are local QA artifacts, not application assets or committed visual goldens.
 Full application rendering, production Next.js build, authentication/connectivity,
-and application-level accessibility checks were not performed by this verification.
+and application-level accessibility checks were not performed at this foundation stage.
+The review-only integration was subsequently completed below; other screens and backend
+changes remain outside scope.
 
-Screen-level migration, review-controller decomposition, document-viewer changes,
-workflow fixtures/database preparation, and backend changes are deliberately deferred.
+### Review integration
+
+- `src/features/review/review-workspace.tsx` composes the responsive shell, inspector tabs,
+  evidence-return navigation, and guarded workflow dialogs using the shared controls.
+  Fields, checks, and history have separate inspector modules.
+- `use-review-controller.ts` owns requests and saved snapshots; `review-drafts.ts` reconciles
+  retained edits against incoming server data. Unsaved edits cannot be confirmed, submitted,
+  approved, or exported. Conflicting values require explicit acknowledgment before saving.
+- Confirmations bind to the reviewed shipment revision and check run. Captured new-run actions
+  are consumed before awaiting the request; stale or failed actions must be reopened.
+- Server review status determines uncertainty. Confirmed/corrected/manual decisions do not
+  re-enter the queue solely because of a low model estimate or absent source quote.
+- Private evidence failures show an explicit unavailable state and an authorized secure-link
+  retry, never a public sample. Audit timestamps render deterministically in UTC.
+- Export preflight and downloaded-byte SHA-256 must agree on checksum, filename, and profile.
+  Receipts come from the server. Clipboard feedback cannot overwrite export integrity warnings.
+
+### Review-integration results — 2026-11-08
+
+- `npm run lint` and `npm run typecheck`: passed after the clipboard fix.
+- `npm run test`: passed, **859 tests across 52 unit-test files**, including three clipboard
+  recovery regressions. This is the full configured unit suite, not a separate integration run.
+- `npm run build`: passed after the final source change with Next.js 16.4.4 / Turbopack,
+  including TypeScript and production prerendering. `git diff --check`: passed.
+- Actual authenticated Chromium application QA used Executive and Manager sessions and only
+  the authorized synthetic shipment `QA-REVIEW-20261107-01`. Desktop split and mobile switching
+  were confirmed at 1440×900, 1280×800, 1024×768, and 390×844. Twelve final populated screenshots
+  were inspected within the bounded confirmation; no further visual-polishing round was run.
+- Confirmed readable controls, aligned panes, contained text/tables, sampled text contrast,
+  44px mobile controls, 16px mobile inputs, keyboard table scrolling, evidence-return focus,
+  read-only approved fields, and loading/filtered-empty/error recovery.
+- Eight raw font failures were case-sensitive harness assertions: computed families are
+  `inter` and `jetBrainsMono`, and both bundled faces were loaded. Two raw modal Tab readings
+  were native out-of-document focus transfer: window blur, `document.hasFocus() === false`,
+  then return to the modal. No background application control received focus. Safe initial
+  focus, background inertness, Escape, and trigger restoration passed. The original report
+  is preserved unmodified alongside a separate reconciliation and targeted focus trace.
+- Draft/conflict recovery, source correction history, mapping removal/recomputation,
+  exception evidence/sign-off, submission withdrawal, role/stale/locked guards, manager
+  rejection/resubmission/approval, and guarded export recovery were exercised against real APIs.
+- One-byte export transport tampering produced no browser download, retained the real server
+  receipt, and disabled retry until fresh preflight. A clean re-download was 850 bytes and
+  matched the preview/server SHA-256. Clipboard denial followed by a successful retry cleared
+  only the clipboard error, preserving the independent integrity warning.
+
+Final synthetic state: revision **22**, `EXPORTED`; five machine checks pass, while gross
+weight remains `MISMATCH` with neutral **Exception approved** (`HUMAN_CLEARED`). Invoice
+importer/date were explicitly labeled QA assumptions supported by the Packing List and Bill
+of Lading, not Invoice-observed facts. `QA-REVIEW-20261107-01-MEMO` is synthetic exception
+evidence only, not supplier correspondence or customs clearance.
+
+Session artifacts: `/tmp/opencode/cargoverity-review-qa/` (browser captures/reports/downloads
+in `browser/`). They are local QA evidence, not application assets or committed visual goldens.
+No shipping raster assets were introduced. The surface brief records the exact receipt,
+checksum, workflow evidence, and verification limitations.
+
+Limits: live extraction was not validated successfully (Invoice validation failure; Packing
+List/Bill of Lading provider rate limits). Authorized deterministic fixtures enabled the
+remaining QA; no existing shipments were reseeded. Browser verification used emulated
+viewports in headless Chromium, not physical devices, other engines, or screen readers.
+It does not certify production deployment, AI accuracy, or customs compliance. Unsaved drafts
+are workspace-memory state; retention across full reload or route departure is not promised.
