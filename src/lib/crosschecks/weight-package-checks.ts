@@ -4,7 +4,11 @@ import {
   comparePackageDetails,
   normalizePackageDetails,
 } from "@/lib/normalizers/package";
-import { DEFAULT_TOLERANCES } from "@/lib/normalizers/tolerances";
+import {
+  DEFAULT_TOLERANCES,
+  weightToleranceKg,
+  type ToleranceConfig,
+} from "@/lib/normalizers/tolerances";
 
 export type CrossCheckDocType = "INVOICE" | "PACKING_LIST" | "BILL_OF_LADING";
 
@@ -20,7 +24,9 @@ export type WeightFieldCandidate = {
 export type GrossWeightCheckInput = {
   candidates: WeightFieldCandidate[];
   requiredDocuments?: CrossCheckDocType[];
+  /** Fixed absolute tolerance in kg. When omitted, the dynamic percentage tolerance applies. */
   toleranceKg?: Decimal | number | string;
+  tolerances?: Pick<ToleranceConfig, "weightKg" | "weightPercent">;
 };
 
 export type GrossWeightComparedValue = {
@@ -52,6 +58,13 @@ export type GrossWeightCheckResult = {
     invalidDocuments: GrossWeightInvalidValue[];
     differenceKg: string | null;
     toleranceKg: string;
+    tolerancePercent: string | null;
+    floorKg: string | null;
+    basisKg: string | null;
+    toleranceMode: "FIXED_KG" | "PERCENT_OF_LARGER";
+    /** Source documents do not state why weights differ; never inferred. */
+    cause: "unknown";
+    unit: "kg";
     sourceFieldIds: Partial<Record<CrossCheckDocType, string>>;
     note: string;
     message: string;
@@ -73,12 +86,26 @@ export type GrossWeightCheckResult = {
 export function checkGrossWeight(
   input: GrossWeightCheckInput,
 ): GrossWeightCheckResult {
-  const tolerance =
+  // An explicit `toleranceKg` is a fixed absolute tolerance (legacy/explicit callers).
+  // Otherwise the tolerance is dynamic: max(floor kg, larger weight x percent / 100).
+  const fixedTolerance =
     input.toleranceKg !== undefined
       ? typeof input.toleranceKg === "number"
         ? new Decimal(input.toleranceKg)
         : new Decimal(String(input.toleranceKg))
-      : DEFAULT_TOLERANCES.weightKg;
+      : null;
+  const toleranceConfig = input.tolerances ?? DEFAULT_TOLERANCES;
+  let tolerance = fixedTolerance ?? toleranceConfig.weightKg;
+  let basisKg: Decimal | null = null;
+
+  const toleranceDetails = () => ({
+    toleranceKg: tolerance.toString(),
+    tolerancePercent: fixedTolerance ? null : toleranceConfig.weightPercent.toString(),
+    floorKg: fixedTolerance ? null : toleranceConfig.weightKg.toString(),
+    basisKg: basisKg ? basisKg.toFixed(3) : null,
+    toleranceMode: fixedTolerance ? ("FIXED_KG" as const) : ("PERCENT_OF_LARGER" as const),
+    cause: "unknown" as const,
+  });
 
   const requiredDocuments = input.requiredDocuments ?? ["PACKING_LIST", "BILL_OF_LADING"];
 
@@ -168,13 +195,17 @@ export function checkGrossWeight(
     const minKg = Decimal.min(...validWeights.map((w) => w.kg));
     const diff = maxKg.minus(minKg);
     const diffKgStr = diff.toFixed(3);
+    if (!fixedTolerance) {
+      basisKg = maxKg;
+      tolerance = weightToleranceKg(maxKg, toleranceConfig);
+    }
 
-    // Rule 4: Return known mismatch when available values differ beyond tolerance
+    // Rule 4: Return known mismatch when available values differ beyond tolerance (inclusive bound)
     if (diff.greaterThan(tolerance)) {
       const breakdown = validWeights
         .map((w) => `${w.documentType}: ${w.kg.toFixed(3)} kg`)
         .join(", ");
-      const note = `Available documents differ by ${diffKgStr} kg (${breakdown}). Cause is not stated in source documents.`;
+      const note = `Available documents differ by ${diffKgStr} kg (${breakdown}); tolerance ±${tolerance.toString()} kg. Cause is not stated in source documents.`;
 
       return {
         ruleKey: "gross_weight_comparison",
@@ -186,7 +217,8 @@ export function checkGrossWeight(
           missingDocuments,
           invalidDocuments,
           differenceKg: diffKgStr,
-          toleranceKg: tolerance.toString(),
+          ...toleranceDetails(),
+          unit: "kg",
           sourceFieldIds,
           note,
           message: note,
@@ -209,7 +241,8 @@ export function checkGrossWeight(
           missingDocuments,
           invalidDocuments,
           differenceKg: diffKgStr,
-          toleranceKg: tolerance.toString(),
+          ...toleranceDetails(),
+          unit: "kg",
           sourceFieldIds,
           note,
           message: note,
@@ -231,7 +264,8 @@ export function checkGrossWeight(
           missingDocuments,
           invalidDocuments,
           differenceKg: diffKgStr,
-          toleranceKg: tolerance.toString(),
+          ...toleranceDetails(),
+          unit: "kg",
           sourceFieldIds,
           note,
           message: note,
@@ -250,7 +284,8 @@ export function checkGrossWeight(
         missingDocuments,
         invalidDocuments,
         differenceKg: diffKgStr,
-        toleranceKg: tolerance.toString(),
+        ...toleranceDetails(),
+        unit: "kg",
         sourceFieldIds,
         note,
         message: note,
@@ -279,7 +314,8 @@ export function checkGrossWeight(
         missingDocuments,
         invalidDocuments,
         differenceKg: null,
-        toleranceKg: tolerance.toString(),
+        ...toleranceDetails(),
+        unit: "kg",
         sourceFieldIds,
         note,
         message: note,
@@ -298,7 +334,8 @@ export function checkGrossWeight(
       missingDocuments,
       invalidDocuments,
       differenceKg: null,
-      toleranceKg: tolerance.toString(),
+      ...toleranceDetails(),
+      unit: "kg",
       sourceFieldIds,
       note,
       message: note,
@@ -851,6 +888,129 @@ export function checkPackageCount(
       difference: null,
       sourceFieldIds,
       unreconciledReason,
+      note,
+      message: note,
+    },
+  };
+}
+
+export type GrossNetDocumentInput = {
+  documentType: CrossCheckDocType;
+  grossWeight?: WeightFieldInput | null;
+  netWeight?: WeightFieldInput | null;
+};
+
+export type GrossNetDocumentOutcome = {
+  documentType: CrossCheckDocType;
+  status: "PASS" | "MISMATCH" | "INCOMPLETE" | "NOT_APPLICABLE";
+  grossWeight: string | null;
+  netWeight: string | null;
+  grossWeightKg: string | null;
+  netWeightKg: string | null;
+  differenceKg: string | null;
+  sourceFieldIds: { grossWeightFieldId?: string; netWeightFieldId?: string };
+  reason?: string;
+};
+
+export type GrossNetAggregateResult = {
+  ruleKey: "gross_weight_vs_net_weight";
+  ruleCode: "CHK_GROSS_NET_SANITY";
+  status: "PASS" | "MISMATCH" | "INCOMPLETE" | "NOT_APPLICABLE";
+  details: {
+    documents: GrossNetDocumentOutcome[];
+    checkedDocumentCount: number;
+    unit: "kg";
+    cause: "unknown";
+    note: string;
+    message: string;
+  };
+};
+
+function hasValue(field?: WeightFieldInput | null) {
+  return field?.value !== null && field?.value !== undefined && String(field.value).trim().length > 0;
+}
+
+/**
+ * Week 4 Step 3: Gross >= Net on every document that carries both values.
+ *
+ * - Runs on Invoice, Packing List and Bill of Lading.
+ * - A document with only one of the two weights is NOT_APPLICABLE (net weight is optional).
+ * - Unknown/ambiguous units or malformed values make that document INCOMPLETE.
+ * - Aggregate precedence: MISMATCH > INCOMPLETE > PASS > NOT_APPLICABLE.
+ */
+export function checkGrossNetSanityAggregate(input: { documents: GrossNetDocumentInput[] }): GrossNetAggregateResult {
+  const outcomes: GrossNetDocumentOutcome[] = input.documents.map((document) => {
+    const base = {
+      documentType: document.documentType,
+      grossWeight: hasValue(document.grossWeight) ? String(document.grossWeight?.value) : null,
+      netWeight: hasValue(document.netWeight) ? String(document.netWeight?.value) : null,
+      sourceFieldIds: {
+        grossWeightFieldId: document.grossWeight?.id,
+        netWeightFieldId: document.netWeight?.id,
+      },
+    };
+
+    if (!hasValue(document.grossWeight) || !hasValue(document.netWeight)) {
+      return {
+        ...base,
+        status: "NOT_APPLICABLE" as const,
+        grossWeightKg: null,
+        netWeightKg: null,
+        differenceKg: null,
+        reason: "BOTH_WEIGHTS_NOT_PRESENT",
+      };
+    }
+
+    const single = checkGrossNetSanity({
+      grossWeight: document.grossWeight,
+      netWeight: document.netWeight,
+      documentType: document.documentType,
+    });
+
+    return {
+      ...base,
+      status: single.status,
+      grossWeightKg: single.details.grossWeightKg,
+      netWeightKg: single.details.netWeightKg,
+      differenceKg: single.details.differenceKg,
+      ...(single.details.unreconciledReason ? { reason: single.details.unreconciledReason } : {}),
+    };
+  });
+
+  const statuses = new Set(outcomes.map((outcome) => outcome.status));
+  const status: GrossNetAggregateResult["status"] = statuses.has("MISMATCH")
+    ? "MISMATCH"
+    : statuses.has("INCOMPLETE")
+      ? "INCOMPLETE"
+      : statuses.has("PASS")
+        ? "PASS"
+        : "NOT_APPLICABLE";
+
+  const checked = outcomes.filter((outcome) => outcome.status !== "NOT_APPLICABLE");
+  const failing = outcomes.filter((outcome) => outcome.status === "MISMATCH");
+  const note =
+    status === "NOT_APPLICABLE"
+      ? "No document states both gross and net weight; gross ≥ net cannot be evaluated."
+      : status === "MISMATCH"
+        ? `Gross weight is less than net weight on ${failing
+            .map((outcome) => `${outcome.documentType} (gross ${outcome.grossWeightKg} kg, net ${outcome.netWeightKg} kg)`)
+            .join(", ")}. Cause is not stated in source documents.`
+        : status === "INCOMPLETE"
+          ? `Gross/net weights could not be normalized on ${outcomes
+              .filter((outcome) => outcome.status === "INCOMPLETE")
+              .map((outcome) => outcome.documentType)
+              .join(", ")}.`
+          : `Gross weight ≥ net weight on ${checked.map((outcome) => outcome.documentType).join(", ")}.`;
+
+  return {
+    ruleKey: "gross_weight_vs_net_weight",
+    ruleCode: "CHK_GROSS_NET_SANITY",
+    status,
+    details: {
+      documents: outcomes,
+      checkedDocumentCount: checked.length,
+      unit: "kg",
+      cause: "unknown",
       note,
       message: note,
     },

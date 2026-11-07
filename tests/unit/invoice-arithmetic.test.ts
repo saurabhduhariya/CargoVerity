@@ -41,33 +41,33 @@ describe("Invoice Arithmetic Check (Week 4 Step 2)", () => {
   });
 
   it("passes when arithmetic difference is within the configured monetary tolerance (Rounding Tolerance)", () => {
-    // 100.03 vs declared 100.00: difference 0.03 <= 0.05 default tolerance
+    // 100.01 vs declared 100.00: difference 0.01 <= 0.01 default tolerance (inclusive)
     const withinTolerance = checkInvoiceArithmetic({
       invoiceTotal: { value: "100.00" },
       currency: { value: "USD" },
       lineItems: [
-        { lineNumber: 1, description: "Item 1", lineTotal: "50.01" },
-        { lineNumber: 2, description: "Item 2", lineTotal: "50.02" },
+        { lineNumber: 1, description: "Item 1", lineTotal: "50.00" },
+        { lineNumber: 2, description: "Item 2", lineTotal: "50.01" },
       ],
     });
 
     expect(withinTolerance.status).toBe("PASS");
-    expect(withinTolerance.details.calculatedTotal).toBe("100.03");
-    expect(withinTolerance.details.difference).toBe("0.03");
+    expect(withinTolerance.details.calculatedTotal).toBe("100.01");
+    expect(withinTolerance.details.difference).toBe("0.01");
 
-    // 100.08 vs declared 100.00: difference 0.08 > 0.05 default tolerance
+    // 100.02 vs declared 100.00: difference 0.02 > 0.01 default tolerance
     const exceedsTolerance = checkInvoiceArithmetic({
       invoiceTotal: { value: "100.00" },
       currency: { value: "USD" },
       lineItems: [
-        { lineNumber: 1, description: "Item 1", lineTotal: "50.04" },
-        { lineNumber: 2, description: "Item 2", lineTotal: "50.04" },
+        { lineNumber: 1, description: "Item 1", lineTotal: "50.01" },
+        { lineNumber: 2, description: "Item 2", lineTotal: "50.01" },
       ],
     });
 
     expect(exceedsTolerance.status).toBe("MISMATCH");
-    expect(exceedsTolerance.details.calculatedTotal).toBe("100.08");
-    expect(exceedsTolerance.details.difference).toBe("0.08");
+    expect(exceedsTolerance.details.calculatedTotal).toBe("100.02");
+    expect(exceedsTolerance.details.difference).toBe("0.02");
   });
 
   it("calculates quantity × unitPrice when lineTotal is absent and marks it as derived", () => {
@@ -220,5 +220,90 @@ describe("Invoice Arithmetic Check (Week 4 Step 2)", () => {
 
     expect(noCurrency.status).toBe("INCOMPLETE");
     expect(noCurrency.details.unreconciledReason).toBe("MISSING_INVOICE_CURRENCY");
+  });
+});
+
+describe("Week 4 invoice arithmetic fixes", () => {
+  it("reads the currency from invoiceTotal.unit (where extraction stores it)", () => {
+    const result = checkInvoiceArithmetic({
+      invoiceTotal: { id: "tot", value: "16320.00", unit: "USD" },
+      lineItems: [{ id: "l1", lineNumber: 1, description: "Ball valves", quantity: "2400", unitPrice: "6.80", lineTotal: null }],
+    });
+    expect(result.status).toBe("PASS");
+    expect(result.details.currency).toBe("USD");
+    expect(result.details.derived).toEqual([{ lineItemId: "l1", lineNumber: 1, formula: "2400 × 6.8 = 16320" }]);
+  });
+
+  it("rejects non-ISO currencies and conflicting header currencies as INCOMPLETE", () => {
+    const invalid = checkInvoiceArithmetic({ invoiceTotal: { value: "10", unit: "ZZZ" }, lineItems: [{ description: "x", lineTotal: "10" }] });
+    expect(invalid.status).toBe("INCOMPLETE");
+    expect(invalid.details.unreconciledReason).toBe("INVALID_CURRENCY_CODE");
+
+    const conflict = checkInvoiceArithmetic({
+      invoiceTotal: { value: "10", unit: "USD" },
+      currency: { value: "EUR" },
+      lineItems: [{ description: "x", lineTotal: "10" }],
+    });
+    expect(conflict.status).toBe("INCOMPLETE");
+    expect(conflict.details.unreconciledReason).toBe("CURRENCY_CONFLICT");
+  });
+
+  it("reconciles goods + freight + insurance + tax - discount lines with signed charges", () => {
+    const result = checkInvoiceArithmetic({
+      invoiceTotal: { id: "tot", value: "1188.00", currency: "USD" },
+      lineItems: [
+        { id: "g1", lineNumber: 1, description: "Steel bolts M8", lineTotal: "1000.00" },
+        { id: "f", lineNumber: 2, description: "Ocean freight", lineTotal: "100.00" },
+        { id: "i", lineNumber: 3, description: "Marine insurance", lineTotal: "10.00" },
+        { id: "t", lineNumber: 4, description: "VAT 10%", lineTotal: "128.00" },
+        { id: "d", lineNumber: 5, description: "Discount", lineTotal: "-50.00" },
+      ],
+    });
+
+    expect(result.status).toBe("PASS");
+    expect(result.details.compared).toMatchObject({ goodsSubtotal: "1000", expectedTotal: "1188", invoiceTotal: "1188", currency: "USD" });
+    expect(result.details.compared.charges.map((c) => [c.kind, c.signedAmount])).toEqual([
+      ["TAX", "128"],
+      ["FREIGHT", "100"],
+      ["INSURANCE", "10"],
+      ["DISCOUNT", "-50"],
+    ]);
+    expect(result.details.goodsLineCount).toBe(1);
+    expect(result.details.chargeLineCount).toBe(4);
+    expect(result.details.sourceFieldIdList).toEqual(["tot", "g1", "f", "i", "t", "d"]);
+  });
+
+  it("a header charge field wins over a matching charge line; a disagreement is CHARGE_SOURCE_CONFLICT", () => {
+    const agree = checkInvoiceArithmetic({
+      invoiceTotal: { value: "1100.00", currency: "USD" },
+      freightAmount: { id: "frt", value: "100.00" },
+      lineItems: [
+        { description: "Bolts", lineTotal: "1000.00" },
+        { id: "fl", description: "Freight", lineTotal: "100.00" },
+      ],
+    });
+    expect(agree.status).toBe("PASS");
+    expect(agree.details.lines.find((l) => l.id === "fl")?.ignoredBecauseHeaderFieldPresent).toBe(true);
+
+    const disagree = checkInvoiceArithmetic({
+      invoiceTotal: { value: "1100.00", currency: "USD" },
+      freightAmount: { value: "120.00" },
+      lineItems: [
+        { description: "Bolts", lineTotal: "1000.00" },
+        { description: "Freight", lineTotal: "100.00" },
+      ],
+    });
+    expect(disagree.status).toBe("INCOMPLETE");
+    expect(disagree.details.unreconciledReason).toBe("CHARGE_SOURCE_CONFLICT");
+  });
+
+  it("a MISMATCH reports exact values and difference without inventing a cause", () => {
+    const result = checkInvoiceArithmetic({
+      invoiceTotal: { value: "1000.00", currency: "USD" },
+      lineItems: [{ description: "Bolts", lineTotal: "1000.02" }],
+    });
+    expect(result.status).toBe("MISMATCH");
+    expect(result.details).toMatchObject({ calculatedTotal: "1000.02", invoiceTotal: "1000", difference: "0.02", toleranceUsed: "0.01", unit: "USD", cause: "unknown" });
+    expect(result.details.message).toMatch(/Cause unknown/);
   });
 });

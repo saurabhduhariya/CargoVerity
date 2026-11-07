@@ -37,8 +37,28 @@ const SYMBOL_TO_CURRENCY: Record<string, string> = {
   kr: "SEK",
 };
 
+/** Active ISO 4217 alphabetic currency codes (static list; no network lookup). */
+export const ISO_4217_CODES: ReadonlySet<string> = new Set(
+  (
+    "AED AFN ALL AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB BRL BSD BTN BWP " +
+    "BYN BZD CAD CDF CHF CLP CNY COP CRC CUP CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP " +
+    "GEL GHS GIP GMD GNF GTQ GYD HKD HNL HTG HUF IDR ILS INR IQD IRR ISK JMD JOD JPY KES KGS KHR " +
+    "KMF KPW KRW KWD KYD KZT LAK LBP LKR LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK " +
+    "MXN MYR MZN NAD NGN NIO NOK NPR NZD OMR PAB PEN PGK PHP PKR PLN PYG QAR RON RSD RUB RWF SAR " +
+    "SBD SCR SDG SEK SGD SHP SLE SOS SRD SSP STN SVC SYP SZL THB TJS TMT TND TOP TRY TTD TWD TZS " +
+    "UAH UGX USD UYU UZS VES VND VUV WST XAF XCD XCG XOF XPF YER ZAR ZMW ZWG"
+  ).split(" "),
+);
+
+/** Strict ISO 4217 check for an already-uppercased 3-letter code. */
+export function isIsoCurrencyCode(code: string | null | undefined): boolean {
+  return typeof code === "string" && ISO_4217_CODES.has(code);
+}
+
 /**
- * Normalizes a currency string or symbol into a 3-letter ISO code.
+ * Normalizes a currency string or symbol into a 3-letter code.
+ * Returns the uppercased 3-letter form even when it is not ISO 4217; callers use
+ * `isIsoCurrencyCode` (or `normalizeMonetaryAmount`, which returns INVALID_CURRENCY_CODE) to validate.
  */
 export function normalizeCurrencyCode(rawCurrency: string | null | undefined): string | null {
   if (!rawCurrency) return null;
@@ -48,6 +68,12 @@ export function normalizeCurrencyCode(rawCurrency: string | null | undefined): s
   const upper = cleaned.toUpperCase().replace(/[^A-Z]/g, "");
   if (upper.length === 3) return upper;
   return null;
+}
+
+/** Normalizes and validates a currency against ISO 4217. Returns null when unknown. */
+export function normalizeIsoCurrency(rawCurrency: string | null | undefined): string | null {
+  const code = normalizeCurrencyCode(rawCurrency);
+  return code && ISO_4217_CODES.has(code) ? code : null;
 }
 
 /**
@@ -89,6 +115,16 @@ export function normalizeMonetaryAmount(params: {
     return {
       ok: false,
       error: "MISSING_CURRENCY",
+      rawAmount,
+      rawCurrency,
+      sourceQuote,
+    };
+  }
+
+  if (!ISO_4217_CODES.has(normalizedCurrency)) {
+    return {
+      ok: false,
+      error: "INVALID_CURRENCY_CODE",
       rawAmount,
       rawCurrency,
       sourceQuote,

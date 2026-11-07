@@ -97,7 +97,9 @@ export function normalizePackageDetails(params: {
 
   // If combined input supplied or countInput contains text
   if (combined && !rawCountStr) {
-    const match = combined.match(/^([+-]?\d+(?:[.,]\d+)?)\s*(.*)$/);
+    // Capture the full numeric token (including grouping commas); the strict decimal grammar
+    // below decides whether the grouping is valid ("1,200,000" ok, "1,2,3" rejected).
+    const match = combined.match(/^([+-]?\d[\d,]*(?:\.\d+)?)\s*(.*)$/);
     if (match) {
       rawCountStr = match[1];
       rawTypeStr = match[2].trim();
@@ -105,7 +107,7 @@ export function normalizePackageDetails(params: {
       rawCountStr = combined;
     }
   } else if (rawCountStr && !rawTypeStr) {
-    const match = rawCountStr.match(/^([+-]?\d+(?:[.,]\d+)?)\s*([A-Za-z]+.*)$/);
+    const match = rawCountStr.match(/^([+-]?\d[\d,]*(?:\.\d+)?)\s*([A-Za-z]+.*)$/);
     if (match) {
       rawCountStr = match[1];
       rawTypeStr = match[2].trim();

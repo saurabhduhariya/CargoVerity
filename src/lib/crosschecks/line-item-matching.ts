@@ -19,11 +19,24 @@ export type LineItemInput = {
 };
 
 export type ManualLineItemMapping = {
+  mappingId?: string;
   invoiceLineId: string;
   packingListLineId: string;
+  /** Actor user ID. */
   mappedBy?: string;
+  /** Human-readable actor label (name or email) for display. */
+  mappedByLabel?: string;
   reason?: string;
+  /** ISO timestamp when the mapping was created (alias: timestamp). */
+  createdAt?: string;
   timestamp?: string;
+};
+
+export type StaleManualMapping = {
+  mappingId?: string;
+  invoiceLineId: string;
+  packingListLineId: string;
+  reason: "LINE_NOT_IN_CURRENT_EXTRACTION" | "LINE_ALREADY_MAPPED";
 };
 
 export type LineItemMatchingInput = {
@@ -62,7 +75,10 @@ export type MatchedLinePair = {
   difference: string | null;
   status: LineItemMatchStatus;
   manualEvidence?: {
+    mappingId?: string;
     mappedBy?: string;
+    mappedByLabel?: string;
+    mappedAt?: string;
     reason?: string;
     timestamp?: string;
   };
@@ -77,6 +93,8 @@ export type UnmatchedLineItem = {
   quantity: string | null;
   unit: string | null;
   reason: "NO_CANDIDATE" | "AMBIGUOUS_DUPLICATE_CANDIDATES" | "ALREADY_MAPPED";
+  /** Competing candidate line IDs on the other document (sorted) when ambiguous. */
+  candidateLineIds?: string[];
 };
 
 export type LineItemMatchingResult = {
@@ -92,6 +110,7 @@ export type LineItemMatchingResult = {
     matchedPairs: MatchedLinePair[];
     unmatchedLines: UnmatchedLineItem[];
     manualMappingsApplied: number;
+    staleManualMappings: StaleManualMapping[];
     unresolvedReason?: string;
     note: string;
     message: string;
@@ -255,6 +274,12 @@ export function matchLineItems(
           })),
         ],
         manualMappingsApplied: 0,
+        staleManualMappings: (input.manualMappings ?? []).map((mapping) => ({
+          mappingId: mapping.mappingId,
+          invoiceLineId: mapping.invoiceLineId,
+          packingListLineId: mapping.packingListLineId,
+          reason: "LINE_NOT_IN_CURRENT_EXTRACTION" as const,
+        })),
         unresolvedReason: "LINE_ITEMS_MISSING",
         note,
         message: note,
@@ -284,206 +309,222 @@ export function matchLineItems(
   const usedInv = new Set<number>();
   const usedPl = new Set<number>();
   const matchedPairs: MatchedLinePair[] = [];
+  const staleManualMappings: StaleManualMapping[] = [];
   let manualMappingsApplied = 0;
 
-  // 1. Process Manual Mappings (Rule 5 & 9)
-  if (input.manualMappings && input.manualMappings.length > 0) {
-    for (const mapping of input.manualMappings) {
-      const invIdx = invItems.findIndex(
-        (i) => i.item.id === mapping.invoiceLineId || String(i.item.lineNumber) === mapping.invoiceLineId,
-      );
-      const plIdx = plItems.findIndex(
-        (p) => p.item.id === mapping.packingListLineId || String(p.item.lineNumber) === mapping.packingListLineId,
-      );
+  // Ambiguity evidence collected while matching (index -> competing candidate indices on the other side).
+  const ambiguousInv = new Map<number, Set<number>>();
+  const ambiguousPl = new Map<number, Set<number>>();
+  const noteAmbiguity = (map: Map<number, Set<number>>, index: number, others: Iterable<number>) => {
+    const set = map.get(index) ?? new Set<number>();
+    for (const other of others) set.add(other);
+    map.set(index, set);
+  };
 
-      if (invIdx !== -1 && plIdx !== -1 && !usedInv.has(invIdx) && !usedPl.has(plIdx)) {
-        usedInv.add(invIdx);
-        usedPl.add(plIdx);
-        manualMappingsApplied += 1;
+  const findLine = (items: typeof invItems, lineId: string) =>
+    items.findIndex((entry) => entry.item.id === lineId || (entry.item.id === undefined && String(entry.item.lineNumber) === lineId));
 
-        const inv = invItems[invIdx];
-        const pl = plItems[plIdx];
+  // 1. Manual mappings first (Executive-selected, with actor and timestamp evidence).
+  //    Sorted by creation time then ID so the outcome does not depend on input order.
+  const manualMappings = [...(input.manualMappings ?? [])].sort((a, b) => {
+    const left = a.createdAt ?? a.timestamp ?? "";
+    const right = b.createdAt ?? b.timestamp ?? "";
+    if (left !== right) return left < right ? -1 : 1;
+    return (a.mappingId ?? "").localeCompare(b.mappingId ?? "");
+  });
 
-        // Evaluate pair
-        const pair = evaluateMatchedPair({
-          inv,
-          pl,
-          mappingMethod: "MANUAL",
-          mappingConfidence: 1.0,
-          tolerance,
-          manualEvidence: {
-            mappedBy: mapping.mappedBy,
-            reason: mapping.reason,
-            timestamp: mapping.timestamp,
-          },
-        });
-        matchedPairs.push(pair);
-      }
-    }
-  }
+  for (const mapping of manualMappings) {
+    const invIdx = findLine(invItems, mapping.invoiceLineId);
+    const plIdx = findLine(plItems, mapping.packingListLineId);
 
-  // 2. Automated Matching: Priority 1 (Exact Description + HSN/SKU) (Rule 2)
-  for (let i = 0; i < invItems.length; i += 1) {
-    if (usedInv.has(i)) continue;
-    const inv = invItems[i];
-    if (!inv.normDesc.ok) continue;
-
-    // Check PL items that have matching HSN or SKU AND matching normalized description
-    const candidates: number[] = [];
-    for (let p = 0; p < plItems.length; p += 1) {
-      if (usedPl.has(p)) continue;
-      const pl = plItems[p];
-      if (!pl.normDesc.ok) continue;
-
-      const descMatches = inv.normDesc.normalized === pl.normDesc.normalized;
-      const hsnMatches = inv.hsn && pl.hsn && inv.hsn === pl.hsn;
-      const skuMatches = inv.sku && pl.sku && inv.sku === pl.sku;
-
-      if (descMatches && (hsnMatches || skuMatches)) {
-        candidates.push(p);
-      }
-    }
-
-    if (candidates.length === 1) {
-      const plIdx = candidates[0];
-      usedInv.add(i);
-      usedPl.add(plIdx);
-      matchedPairs.push(
-        evaluateMatchedPair({
-          inv,
-          pl: plItems[plIdx],
-          mappingMethod: "EXACT_DESCRIPTION_AND_CODE",
-          mappingConfidence: 1.0,
-          tolerance,
-        }),
-      );
-    }
-  }
-
-  // 3. Automated Matching: Priority 2 (Exact Normalized Description) (Rule 1 & 2)
-  for (let i = 0; i < invItems.length; i += 1) {
-    if (usedInv.has(i)) continue;
-    const inv = invItems[i];
-    if (!inv.normDesc.ok) continue;
-
-    const candidates: number[] = [];
-    for (let p = 0; p < plItems.length; p += 1) {
-      if (usedPl.has(p)) continue;
-      const pl = plItems[p];
-      if (!pl.normDesc.ok) continue;
-
-      if (inv.normDesc.normalized === pl.normDesc.normalized) {
-        candidates.push(p);
-      }
-    }
-
-    // Rule 3: Reject duplicate ambiguous matches as unresolved
-    if (candidates.length === 1) {
-      const plIdx = candidates[0];
-      usedInv.add(i);
-      usedPl.add(plIdx);
-      matchedPairs.push(
-        evaluateMatchedPair({
-          inv,
-          pl: plItems[plIdx],
-          mappingMethod: "EXACT_DESCRIPTION",
-          mappingConfidence: 1.0,
-          tolerance,
-        }),
-      );
-    }
-  }
-
-  // 4. Automated Matching: Priority 3 (Token Similarity Scoring)
-  for (let i = 0; i < invItems.length; i += 1) {
-    if (usedInv.has(i)) continue;
-    const inv = invItems[i];
-    if (!inv.normDesc.ok) continue;
-
-    const scoredCandidates: Array<{ plIdx: number; score: number }> = [];
-    for (let p = 0; p < plItems.length; p += 1) {
-      if (usedPl.has(p)) continue;
-      const pl = plItems[p];
-      if (!pl.normDesc.ok) continue;
-
-      const comp = compareItemDescriptions(
-        inv.item.description,
-        pl.item.description,
-      );
-      if (comp.isMatch) {
-        scoredCandidates.push({ plIdx: p, score: comp.similarityScore });
-      }
-    }
-
-    // Sort descending by score
-    scoredCandidates.sort((a, b) => b.score - a.score);
-
-    // Only match if top candidate exists and is unambiguous (not tied with second place)
-    if (
-      scoredCandidates.length === 1 ||
-      (scoredCandidates.length > 1 &&
-        scoredCandidates[0].score > scoredCandidates[1].score &&
-        scoredCandidates[0].score >= 0.85)
-    ) {
-      const top = scoredCandidates[0];
-      const plIdx = top.plIdx;
-      usedInv.add(i);
-      usedPl.add(plIdx);
-      matchedPairs.push(
-        evaluateMatchedPair({
-          inv,
-          pl: plItems[plIdx],
-          mappingMethod: "TOKEN_SIMILARITY",
-          mappingConfidence: top.score,
-          tolerance,
-        }),
-      );
-    }
-  }
-
-  // 5. Gather Unmatched Items (Rules 3, 4, 8)
-  const unmatchedLines: UnmatchedLineItem[] = [];
-
-  for (let i = 0; i < invItems.length; i += 1) {
-    if (!usedInv.has(i)) {
-      const inv = invItems[i];
-      // Check if it was ambiguous (multiple candidates matched description)
-      const duplicateCandidates = plItems.filter(
-        (p) =>
-          inv.normDesc.ok &&
-          p.normDesc.ok &&
-          inv.normDesc.normalized === p.normDesc.normalized,
-      );
-      const reason =
-        duplicateCandidates.length > 1
-          ? "AMBIGUOUS_DUPLICATE_CANDIDATES"
-          : "NO_CANDIDATE";
-
-      unmatchedLines.push({
-        documentType: "INVOICE",
-        lineId: inv.item.id,
-        lineNumber: inv.item.lineNumber ?? i + 1,
-        description: inv.item.description ?? `Invoice item ${i + 1}`,
-        quantity: inv.item.quantity ? String(inv.item.quantity) : null,
-        unit: inv.item.quantityUnit ?? null,
-        reason,
+    if (invIdx === -1 || plIdx === -1) {
+      staleManualMappings.push({
+        mappingId: mapping.mappingId,
+        invoiceLineId: mapping.invoiceLineId,
+        packingListLineId: mapping.packingListLineId,
+        reason: "LINE_NOT_IN_CURRENT_EXTRACTION",
       });
+      continue;
     }
+    if (usedInv.has(invIdx) || usedPl.has(plIdx)) {
+      staleManualMappings.push({
+        mappingId: mapping.mappingId,
+        invoiceLineId: mapping.invoiceLineId,
+        packingListLineId: mapping.packingListLineId,
+        reason: "LINE_ALREADY_MAPPED",
+      });
+      continue;
+    }
+
+    usedInv.add(invIdx);
+    usedPl.add(plIdx);
+    manualMappingsApplied += 1;
+    const mappedAt = mapping.createdAt ?? mapping.timestamp;
+    matchedPairs.push(
+      evaluateMatchedPair({
+        inv: invItems[invIdx],
+        pl: plItems[plIdx],
+        mappingMethod: "MANUAL",
+        mappingConfidence: 1.0,
+        tolerance,
+        manualEvidence: {
+          mappingId: mapping.mappingId,
+          mappedBy: mapping.mappedBy,
+          mappedByLabel: mapping.mappedByLabel,
+          mappedAt,
+          reason: mapping.reason,
+          timestamp: mappedAt,
+        },
+      }),
+    );
+  }
+
+  /**
+   * Symmetric tier matching. For the remaining (unused) lines, candidate sets are computed in
+   * BOTH directions before any pairing. A pair is accepted only when each line is the other's
+   * unique (binary tiers) or strictly best (similarity tier) candidate. Nothing is claimed
+   * greedily, so permuting either input list cannot change the result, and there is never an
+   * array-index fallback.
+   */
+  type Scored = { other: number; score: number };
+  const runTier = (
+    method: MatchedLinePair["mappingMethod"],
+    scoreOf: (inv: (typeof invItems)[number], pl: (typeof plItems)[number]) => number | null,
+    acceptBest: (sorted: Scored[]) => Scored | null,
+  ) => {
+    const invCandidates = new Map<number, Scored[]>();
+    const plCandidates = new Map<number, Scored[]>();
+
+    for (let i = 0; i < invItems.length; i += 1) {
+      if (usedInv.has(i) || !invItems[i].normDesc.ok) continue;
+      for (let p = 0; p < plItems.length; p += 1) {
+        if (usedPl.has(p) || !plItems[p].normDesc.ok) continue;
+        const score = scoreOf(invItems[i], plItems[p]);
+        if (score === null) continue;
+        (invCandidates.get(i) ?? invCandidates.set(i, []).get(i)!).push({ other: p, score });
+        (plCandidates.get(p) ?? plCandidates.set(p, []).get(p)!).push({ other: i, score });
+      }
+    }
+
+    const sortScored = (list: Scored[]) => [...list].sort((a, b) => b.score - a.score || a.other - b.other);
+    const accepted: Array<{ i: number; p: number; score: number }> = [];
+
+    for (const [i, list] of invCandidates) {
+      const best = acceptBest(sortScored(list));
+      if (!best) {
+        if (list.length > 1) noteAmbiguity(ambiguousInv, i, list.map((entry) => entry.other));
+        continue;
+      }
+      const reverse = plCandidates.get(best.other) ?? [];
+      const reverseBest = acceptBest(sortScored(reverse));
+      if (reverseBest && reverseBest.other === i) {
+        accepted.push({ i, p: best.other, score: best.score });
+      } else {
+        // The packing-list line is contested by several invoice lines.
+        noteAmbiguity(ambiguousInv, i, [best.other]);
+        noteAmbiguity(ambiguousPl, best.other, reverse.map((entry) => entry.other));
+      }
+    }
+    for (const [p, list] of plCandidates) {
+      if (list.length > 1 && !acceptBest(sortScored(list))) {
+        noteAmbiguity(ambiguousPl, p, list.map((entry) => entry.other));
+      }
+    }
+
+    for (const { i, p, score } of accepted) {
+      usedInv.add(i);
+      usedPl.add(p);
+      ambiguousInv.delete(i);
+      ambiguousPl.delete(p);
+      matchedPairs.push(
+        evaluateMatchedPair({ inv: invItems[i], pl: plItems[p], mappingMethod: method, mappingConfidence: score, tolerance }),
+      );
+    }
+  };
+
+  const uniqueOnly = (sorted: Scored[]) => (sorted.length === 1 ? sorted[0] : null);
+
+  // Tier 1: exact normalized description + matching HSN or SKU.
+  runTier(
+    "EXACT_DESCRIPTION_AND_CODE",
+    (inv, pl) => {
+      if (!inv.normDesc.ok || !pl.normDesc.ok) return null;
+      const descMatches = inv.normDesc.normalized === pl.normDesc.normalized;
+      const hsnMatches = Boolean(inv.hsn && pl.hsn && inv.hsn === pl.hsn);
+      const skuMatches = Boolean(inv.sku && pl.sku && inv.sku === pl.sku);
+      return descMatches && (hsnMatches || skuMatches) ? 1 : null;
+    },
+    uniqueOnly,
+  );
+
+  // Tier 2: exact normalized description.
+  runTier(
+    "EXACT_DESCRIPTION",
+    (inv, pl) => (inv.normDesc.ok && pl.normDesc.ok && inv.normDesc.normalized === pl.normDesc.normalized ? 1 : null),
+    uniqueOnly,
+  );
+
+  // Tier 3: token similarity; a sole candidate, or a strictly-best candidate scoring >= 0.85.
+  runTier(
+    "TOKEN_SIMILARITY",
+    (inv, pl) => {
+      const comparison = compareItemDescriptions(inv.item.description, pl.item.description);
+      return comparison.isMatch ? comparison.similarityScore : null;
+    },
+    (sorted) => {
+      if (sorted.length === 1) return sorted[0];
+      if (sorted.length > 1 && sorted[0].score > sorted[1].score && sorted[0].score >= 0.85) return sorted[0];
+      return null;
+    },
+  );
+
+  matchedPairs.sort(
+    (a, b) =>
+      (a.invoiceLineNumber ?? 0) - (b.invoiceLineNumber ?? 0) ||
+      String(a.invoiceLineId ?? "").localeCompare(String(b.invoiceLineId ?? "")),
+  );
+
+  // 5. Unmatched lines (never paired by position)
+  const unmatchedLines: UnmatchedLineItem[] = [];
+  const candidateIds = (items: typeof invItems, indices: Set<number> | undefined) =>
+    indices
+      ? [...indices]
+          .map((index) => items[index].item.id ?? String(items[index].item.lineNumber ?? index + 1))
+          .sort()
+      : undefined;
+  const quantityText = (value: LineItemInput["quantity"]) =>
+    value !== null && value !== undefined && String(value).trim().length > 0 ? String(value) : null;
+
+  for (let i = 0; i < invItems.length; i += 1) {
+    if (usedInv.has(i)) continue;
+    const inv = invItems[i];
+    const ambiguous = ambiguousInv.get(i);
+    unmatchedLines.push({
+      documentType: "INVOICE",
+      lineId: inv.item.id,
+      lineNumber: inv.item.lineNumber ?? i + 1,
+      description: inv.item.description ?? `Invoice item ${i + 1}`,
+      quantity: quantityText(inv.item.quantity),
+      unit: inv.item.quantityUnit ?? null,
+      reason: ambiguous ? "AMBIGUOUS_DUPLICATE_CANDIDATES" : "NO_CANDIDATE",
+      ...(ambiguous ? { candidateLineIds: candidateIds(plItems, ambiguous) } : {}),
+    });
   }
 
   for (let p = 0; p < plItems.length; p += 1) {
-    if (!usedPl.has(p)) {
-      const pl = plItems[p];
-      unmatchedLines.push({
-        documentType: "PACKING_LIST",
-        lineId: pl.item.id,
-        lineNumber: pl.item.lineNumber ?? p + 1,
-        description: pl.item.description ?? `Packing list item ${p + 1}`,
-        quantity: pl.quantityUnit ? String(pl.item.quantity) : null,
-        unit: pl.item.quantityUnit ?? null,
-        reason: "NO_CANDIDATE",
-      });
-    }
+    if (usedPl.has(p)) continue;
+    const pl = plItems[p];
+    const ambiguous = ambiguousPl.get(p);
+    unmatchedLines.push({
+      documentType: "PACKING_LIST",
+      lineId: pl.item.id,
+      lineNumber: pl.item.lineNumber ?? p + 1,
+      description: pl.item.description ?? `Packing list item ${p + 1}`,
+      quantity: quantityText(pl.item.quantity),
+      unit: pl.item.quantityUnit ?? null,
+      reason: ambiguous ? "AMBIGUOUS_DUPLICATE_CANDIDATES" : "NO_CANDIDATE",
+      ...(ambiguous ? { candidateLineIds: candidateIds(invItems, ambiguous) } : {}),
+    });
   }
 
   // 6. Overall Status Determination (Rules 7 & 8)
@@ -540,6 +581,7 @@ export function matchLineItems(
       matchedPairs,
       unmatchedLines,
       manualMappingsApplied,
+      staleManualMappings,
       unresolvedReason,
       note: message,
       message,

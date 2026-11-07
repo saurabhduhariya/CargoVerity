@@ -251,3 +251,78 @@ describe("Line-Item Matching Cross-Check (Week 4 Step 4 - CHK_LINE_QUANTITY)", (
   });
 });
 
+
+describe("Week 4 line matching fixes", () => {
+  const pl = (id: string, description: string, quantity = "10", unit: string | null = "pcs") => ({ id, lineNumber: Number(id.replace(/\D/g, "")) || 1, description, quantity, quantityUnit: unit });
+  const inv = pl;
+  const pairs = (result: ReturnType<typeof matchLineItems>) =>
+    result.details.matchedPairs.map((p) => `${p.invoiceLineId}->${p.packingListLineId}`).sort();
+
+  it("is order-independent: permuting either list gives identical pairs", () => {
+    const invoiceLines = [inv("i1", "Steel bolts M8"), inv("i2", "Brass nuts M8"), inv("i3", "Washers 8mm")];
+    const packingLines = [pl("p1", "Washers 8mm"), pl("p2", "Steel bolts M8"), pl("p3", "Brass nuts M8")];
+    const base = pairs(matchLineItems({ invoiceLines, packingListLines: packingLines }));
+    expect(base).toEqual(["i1->p2", "i2->p3", "i3->p1"]);
+    expect(pairs(matchLineItems({ invoiceLines: [...invoiceLines].reverse(), packingListLines: packingLines }))).toEqual(base);
+    expect(pairs(matchLineItems({ invoiceLines, packingListLines: [...packingLines].reverse() }))).toEqual(base);
+  });
+
+  it("two invoice lines competing for one packing-list line stay INCOMPLETE with candidate IDs, no greedy claim", () => {
+    const result = matchLineItems({
+      invoiceLines: [inv("i1", "Steel bolts M8", "10"), inv("i2", "Steel bolts M8", "20")],
+      packingListLines: [pl("p1", "Steel bolts M8", "10")],
+    });
+    expect(result.status).toBe("INCOMPLETE");
+    expect(result.details.matchedPairsCount).toBe(0);
+    const plLine = result.details.unmatchedLines.find((l) => l.documentType === "PACKING_LIST");
+    expect(plLine?.reason).toBe("AMBIGUOUS_DUPLICATE_CANDIDATES");
+    expect(plLine?.candidateLineIds).toEqual(["i1", "i2"]);
+  });
+
+  it("an HSN code disambiguates duplicate descriptions", () => {
+    const result = matchLineItems({
+      invoiceLines: [{ ...inv("i1", "Valve"), hsnCode: "8481.80" }, { ...inv("i2", "Valve", "5"), hsnCode: "8481.90" }],
+      packingListLines: [{ ...pl("p1", "Valve", "5"), hsnCode: "848190" }, { ...pl("p2", "Valve"), hsnCode: "848180" }],
+    });
+    expect(pairs(result)).toEqual(["i1->p2", "i2->p1"]);
+    expect(result.status).toBe("PASS");
+  });
+
+  it("incompatible units are not compared (PCS vs BOX)", () => {
+    const result = matchLineItems({
+      invoiceLines: [inv("i1", "Steel bolts M8", "10", "pcs")],
+      packingListLines: [pl("p1", "Steel bolts M8", "10", "box")],
+    });
+    expect(result.status).toBe("INCOMPLETE");
+    expect(result.details.matchedPairs[0].status).toBe("INCOMPATIBLE_UNITS");
+  });
+
+  it("an unmatched packing-list line reports its quantity even without a unit", () => {
+    const result = matchLineItems({
+      invoiceLines: [inv("i1", "Steel bolts M8")],
+      packingListLines: [pl("p9", "Unrelated widget", "5", null)],
+    });
+    expect(result.details.unmatchedLines.find((l) => l.documentType === "PACKING_LIST")?.quantity).toBe("5");
+  });
+
+  it("manual mappings resolve ambiguity, record actor and timestamp, and report stale mappings", () => {
+    const result = matchLineItems({
+      invoiceLines: [inv("i1", "Steel bolts M8", "10"), inv("i2", "Steel bolts M8", "20")],
+      packingListLines: [pl("p1", "Steel bolts M8", "10"), pl("p2", "Steel bolts M8", "20")],
+      manualMappings: [
+        { mappingId: "m1", invoiceLineId: "i1", packingListLineId: "p1", mappedBy: "user-1", mappedByLabel: "Exec", reason: "Same lot", createdAt: "2026-11-07T10:00:00.000Z" },
+        { mappingId: "m2", invoiceLineId: "i2", packingListLineId: "p2", mappedBy: "user-1", reason: "Same lot", createdAt: "2026-11-07T10:01:00.000Z" },
+        { mappingId: "m3", invoiceLineId: "gone", packingListLineId: "p2", mappedBy: "user-1", reason: "old", createdAt: "2026-11-07T09:00:00.000Z" },
+      ],
+    });
+    expect(result.status).toBe("PASS");
+    expect(result.details.manualMappingsApplied).toBe(2);
+    expect(result.details.matchedPairs[0]).toMatchObject({
+      mappingMethod: "MANUAL",
+      manualEvidence: { mappingId: "m1", mappedBy: "user-1", mappedByLabel: "Exec", mappedAt: "2026-11-07T10:00:00.000Z", reason: "Same lot" },
+    });
+    expect(result.details.staleManualMappings).toEqual([
+      { mappingId: "m3", invoiceLineId: "gone", packingListLineId: "p2", reason: "LINE_NOT_IN_CURRENT_EXTRACTION" },
+    ]);
+  });
+});

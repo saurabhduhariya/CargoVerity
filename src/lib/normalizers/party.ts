@@ -13,35 +13,57 @@ export type NormalizedPartyResult =
       raw: string;
     };
 
-// Corporate designators to strip for textual comparison
-const LEGAL_DESIGNATORS = new RegExp(
-  "\\b(" +
-    [
-      "inc",
-      "incorporated",
-      "corp",
-      "corporation",
-      "llc",
-      "ltd",
-      "limited",
-      "co",
-      "company",
-      "gmbh",
-      "sa",
-      "srl",
-      "pvt ltd",
-      "pvt",
-      "private limited",
-      "ag",
-      "ab",
-      "bv",
-      "plc",
-      "sro",
-      "cie",
-    ].join("|") +
-    ")\\b",
-  "gi",
-);
+// Single-token corporate designators stripped for textual comparison (never at the first token).
+const LEGAL_DESIGNATORS = new Set([
+  "inc",
+  "incorporated",
+  "corp",
+  "corporation",
+  "llc",
+  "llp",
+  "ltd",
+  "limited",
+  "co",
+  "company",
+  "gmbh",
+  "sa",
+  "srl",
+  "spa",
+  "pvt",
+  "pte",
+  "pty",
+  "ag",
+  "ab",
+  "bv",
+  "nv",
+  "oy",
+  "sdn",
+  "bhd",
+  "plc",
+  "sro",
+  "cie",
+]);
+
+// Multi-token designators matched as phrases (also never at the first token).
+const LEGAL_DESIGNATOR_PHRASES: string[][] = [["private", "limited"]];
+
+function stripDesignators(tokens: string[]): string[] {
+  const kept: string[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (index > 0) {
+      const phrase = LEGAL_DESIGNATOR_PHRASES.find((words) =>
+        words.every((word, offset) => tokens[index + offset] === word),
+      );
+      if (phrase) {
+        index += phrase.length - 1;
+        continue;
+      }
+      if (LEGAL_DESIGNATORS.has(tokens[index])) continue;
+    }
+    kept.push(tokens[index]);
+  }
+  return kept;
+}
 
 /**
  * Normalizes a party/supplier/importer name for comparison.
@@ -61,15 +83,17 @@ export function normalizePartyName(rawInput: string | null | undefined): Normali
   // 1. Lowercase and replace ampersand with 'and'
   let text = raw.toLowerCase().replace(/&/g, " and ");
 
-  // 2. Remove punctuation except alphanumeric and space
+  // 2. Collapse dotted abbreviations (L.L.C. -> llc, S.A. -> sa, G.m.b.H. -> gmbh)
+  text = text.replace(/\b(?:[a-z]\.){2,}/g, (match) => match.replace(/\./g, ""));
+
+  // 3. Remove punctuation except alphanumeric and space
   text = text.replace(/[^a-z0-9 ]/g, " ");
 
-  // 3. Remove known legal entity suffixes
-  text = text.replace(LEGAL_DESIGNATORS, " ");
-
-  // 4. Collapse multiple spaces and trim
-  const normalized = text.replace(/\s+/g, " ").trim();
-  const tokens = normalized.length > 0 ? normalized.split(" ") : [];
+  // 4. Tokenize and remove legal-form designators that are not the leading word
+  //    ("SA Logistics" keeps "sa"; "Acme Pte Ltd" becomes "acme").
+  const rawTokens = text.split(/\s+/).filter((token) => token.length > 0);
+  const tokens = stripDesignators(rawTokens);
+  const normalized = tokens.join(" ");
 
   return {
     ok: true,

@@ -179,6 +179,16 @@ describe("Safe Numeric & Text Normalizers (Week 4 Step 1)", () => {
       }
     });
 
+    it("routes ambiguous 'ton'/'tons' to review instead of guessing metric tonnes", () => {
+      for (const unit of ["ton", "tons", "Tons"]) {
+        const res = normalizeWeight({ value: "2", unit });
+        expect(res.ok).toBe(false);
+        if (!res.ok) expect(res.error).toBe("AMBIGUOUS_WEIGHT_UNIT");
+      }
+      const tonne = normalizeWeight({ value: "2", unit: "tonnes" });
+      expect(tonne.ok && tonne.weightInKg.equals(2000)).toBe(true);
+    });
+
     it("compares weights and correctly calculates SHP-24811 45 kg discrepancy without fabricating a cause", () => {
       const invoiceWeight = normalizeWeight({ value: "3120", unit: "kg" });
       const packingListWeight = normalizeWeight({ value: "3165", unit: "kg" });
@@ -262,20 +272,20 @@ describe("Safe Numeric & Text Normalizers (Week 4 Step 1)", () => {
 
     it("compares identical currencies within monetary tolerance", () => {
       const a = normalizeMonetaryAmount({ amount: "100.00", currency: "USD" });
-      const b = normalizeMonetaryAmount({ amount: "100.04", currency: "USD" });
+      const b = normalizeMonetaryAmount({ amount: "100.01", currency: "USD" });
       const c = normalizeMonetaryAmount({ amount: "100.10", currency: "USD" });
 
       expect(a.ok && b.ok && c.ok).toBe(true);
       if (a.ok && b.ok && c.ok) {
-        // Difference 0.04 is within 0.05 default tolerance
+        // Difference 0.01 is within the 0.01 default tolerance (inclusive)
         const comp1 = compareMonetaryAmounts(a, b);
         expect(comp1.comparable).toBe(true);
         if (comp1.comparable) {
           expect(comp1.isMatch).toBe(true);
-          expect(comp1.difference.equals(new Decimal("0.04"))).toBe(true);
+          expect(comp1.difference.equals(new Decimal("0.01"))).toBe(true);
         }
 
-        // Difference 0.10 exceeds 0.05 default tolerance
+        // Difference 0.10 exceeds the 0.01 default tolerance
         const comp2 = compareMonetaryAmounts(a, c);
         expect(comp2.comparable).toBe(true);
         if (comp2.comparable) {
@@ -286,7 +296,51 @@ describe("Safe Numeric & Text Normalizers (Week 4 Step 1)", () => {
     });
   });
 
+  describe("3b. Week 4 fixes: currency, grouping, packages", () => {
+    it("rejects non-ISO 4217 currency codes", () => {
+      for (const code of ["ZZZ", "ABC", "XYZ"]) {
+        const res = normalizeMonetaryAmount({ amount: "10.00", currency: code });
+        expect(res.ok).toBe(false);
+        if (!res.ok) expect(res.error).toBe("INVALID_CURRENCY_CODE");
+      }
+      for (const code of ["USD", "EUR", "INR", "SEK", "CNY", "jpy"]) {
+        expect(normalizeMonetaryAmount({ amount: "10.00", currency: code }).ok).toBe(true);
+      }
+    });
+
+    it("accepts Indian lakh/crore grouping and rejects malformed grouping", () => {
+      const lakh = parseStrictDecimal("12,34,567.50");
+      expect(lakh.ok && lakh.value.equals("1234567.5")).toBe(true);
+      expect(lakh.ok && lakh.raw).toBe("12,34,567.50");
+      const crore = parseStrictDecimal("1,23,45,678");
+      expect(crore.ok && crore.value.equals(12345678)).toBe(true);
+      for (const bad of ["3,120.00.00", "abc", "", "1,2,3", "12,3456", ",123"]) {
+        expect(parseStrictDecimal(bad).ok, bad).toBe(false);
+      }
+    });
+
+    it("parses grouped package counts separately from the package type", () => {
+      const res = normalizePackageDetails({ combinedInput: "1,200,000 cartons" });
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        expect(res.count).toBe(1_200_000);
+        expect(res.packageType).toBe("CARTON");
+        expect(res.rawCount).toBe("1,200,000");
+      }
+      expect(normalizePackageDetails({ combinedInput: "1,2,3 cartons" }).ok).toBe(false);
+    });
+  });
+
   describe("4. Party Name Normalization (Rule 9)", () => {
+    it("keeps leading designator-like words and collapses dotted abbreviations", () => {
+      expect(comparePartyNames("SA Logistics", "AB Logistics").isMatch).toBe(false);
+      expect(comparePartyNames("Acme Trading L.L.C.", "Acme Trading LLC").isMatch).toBe(true);
+      expect(comparePartyNames("Acme Pte Ltd", "Acme").isMatch).toBe(true);
+      expect(comparePartyNames("Kuala Mills Sdn Bhd", "Kuala Mills").isMatch).toBe(true);
+      const res = normalizePartyName("Delta Exports Private Limited");
+      expect(res.ok && res.normalized).toBe("delta exports");
+    });
+
     it("normalizes party names for comparison without claiming legal-name identity", () => {
       const res1 = normalizePartyName("Acme Global Logistics, Inc.");
       expect(res1.ok).toBe(true);
@@ -406,8 +460,10 @@ describe("Safe Numeric & Text Normalizers (Week 4 Step 1)", () => {
 
   describe("7. Rule-Specific Tolerances Configuration (Rule 12)", () => {
     it("exposes configured default tolerances for monetary, weight, and similarity rules", () => {
-      expect(DEFAULT_TOLERANCES.monetary.equals(new Decimal("0.05"))).toBe(true);
-      expect(DEFAULT_TOLERANCES.weightKg.equals(new Decimal("0.00"))).toBe(true);
+      // Week 4 fix: plan tolerances are ±0.01 money and ±0.5% weight (absolute floor 0 kg).
+      expect(DEFAULT_TOLERANCES.monetary.equals(new Decimal("0.01"))).toBe(true);
+      expect(DEFAULT_TOLERANCES.weightKg.equals(new Decimal("0"))).toBe(true);
+      expect(DEFAULT_TOLERANCES.weightPercent.equals(new Decimal("0.5"))).toBe(true);
       expect(DEFAULT_TOLERANCES.quantity.equals(new Decimal("0.00"))).toBe(true);
       expect(DEFAULT_TOLERANCES.partyNameSimilarityThreshold).toBe(0.85);
       expect(DEFAULT_TOLERANCES.itemDescriptionSimilarityThreshold).toBe(0.80);

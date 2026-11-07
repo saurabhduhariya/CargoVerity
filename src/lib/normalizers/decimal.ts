@@ -17,9 +17,12 @@ export type StrictDecimalFailure = {
 
 export type StrictDecimalResult = StrictDecimalSuccess | StrictDecimalFailure;
 
-// Standard numeric regex with optional thousand grouping (comma or single space) and decimal fraction
+// Accepted integer-part grammars, each followed by at most one optional fraction:
+// - plain digits:                 3120
+// - western thousands grouping:   3,120 / 1,200,000 (or single-space grouping 1 200 000)
+// - Indian lakh/crore grouping:   12,34,567 / 1,23,45,678
 const STRICT_NUMERIC_PATTERN =
-  /^[+-]?(?:(?:\d{1,3}(?:,\d{3})+|\d{1,3}(?: \d{3})+|\d+))(?:\.\d+)?$/;
+  /^[+-]?(?:\d{1,3}(?:,\d{3})+|\d{1,2}(?:,\d{2})+,\d{3}|\d{1,3}(?: \d{3})+|\d+)(?:\.\d+)?$/;
 
 /**
  * Week 4 Step 1: Strict decimal parsing helper.

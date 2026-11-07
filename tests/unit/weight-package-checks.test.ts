@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import Decimal from "decimal.js";
 import {
   checkGrossNetSanity,
+  checkGrossNetSanityAggregate,
   checkGrossWeight,
   checkPackageCount,
 } from "@/lib/crosschecks/weight-package-checks";
@@ -290,3 +291,101 @@ describe("Package Count Cross-Check (Week 4 Step 3 - CHK_PACKAGE_COUNT)", () => 
   });
 });
 
+
+describe("Week 4 weight and package fixes", () => {
+  it("SHP-24811: 3,120 / 3,165 / 3,165 kg is an exact 45 kg MISMATCH with a dynamic 0.5% tolerance and unknown cause", () => {
+    const result = checkGrossWeight({
+      candidates: [
+        { documentType: "INVOICE", fieldId: "i", value: "3120", unit: "kg" },
+        { documentType: "PACKING_LIST", fieldId: "p", value: "3165", unit: "kg" },
+        { documentType: "BILL_OF_LADING", fieldId: "b", value: "3,165", unit: "KGS" },
+      ],
+    });
+    expect(result.status).toBe("MISMATCH");
+    expect(result.details).toMatchObject({
+      differenceKg: "45.000",
+      toleranceKg: "15.825",
+      tolerancePercent: "0.5",
+      floorKg: "0",
+      basisKg: "3165.000",
+      toleranceMode: "PERCENT_OF_LARGER",
+      cause: "unknown",
+      unit: "kg",
+    });
+    expect(result.details.note).not.toMatch(/because|due to|likely|probably/i);
+  });
+
+  it("passes within ±0.5% (inclusive) and mismatches beyond it; units are normalized exactly", () => {
+    const pair = (a: string, aUnit: string, b: string, bUnit: string) =>
+      checkGrossWeight({
+        candidates: [
+          { documentType: "PACKING_LIST", value: a, unit: aUnit },
+          { documentType: "BILL_OF_LADING", value: b, unit: bUnit },
+        ],
+      }).status;
+
+    expect(pair("1000", "kg", "1005", "kg")).toBe("PASS"); // 5 kg <= 5.025 kg
+    expect(pair("1000", "kg", "1010", "kg")).toBe("MISMATCH");
+    expect(pair("3.12", "MT", "3120", "kg")).toBe("PASS");
+    expect(pair("1000000", "g", "1000", "kg")).toBe("PASS");
+    expect(pair("2204.62", "lbs", "1000", "kg")).toBe("PASS");
+  });
+
+  it("an ambiguous 'tons' unit is INCOMPLETE, never converted", () => {
+    const result = checkGrossWeight({
+      candidates: [
+        { documentType: "PACKING_LIST", value: "3.165", unit: "tons" },
+        { documentType: "BILL_OF_LADING", value: "3165", unit: "kg" },
+      ],
+    });
+    expect(result.status).toBe("INCOMPLETE");
+    expect(result.details.invalidDocuments[0].error).toBe("AMBIGUOUS_WEIGHT_UNIT");
+  });
+
+  it("aggregated gross >= net: MISMATCH > INCOMPLETE > PASS > NOT_APPLICABLE across documents", () => {
+    const docs = (overrides: Partial<Record<"INVOICE" | "PACKING_LIST" | "BILL_OF_LADING", [string | null, string | null, string?]>>) =>
+      checkGrossNetSanityAggregate({
+        documents: (["INVOICE", "PACKING_LIST", "BILL_OF_LADING"] as const).map((documentType) => {
+          const [gross, net, unit] = overrides[documentType] ?? [null, null];
+          return {
+            documentType,
+            grossWeight: gross ? { value: gross, unit: unit ?? "kg" } : null,
+            netWeight: net ? { value: net, unit: unit ?? "kg" } : null,
+          };
+        }),
+      });
+
+    expect(docs({ PACKING_LIST: ["3165", null] }).status).toBe("NOT_APPLICABLE");
+    expect(docs({ PACKING_LIST: ["3165", "3000"] }).status).toBe("PASS");
+    expect(docs({ PACKING_LIST: ["3165", "3000"], INVOICE: ["10", "12"] }).status).toBe("MISMATCH");
+    expect(docs({ PACKING_LIST: ["3165", "3000"], BILL_OF_LADING: ["3", "2", "xyz"] }).status).toBe("INCOMPLETE");
+
+    const mixed = docs({ INVOICE: ["10", "12"], BILL_OF_LADING: ["3", "2", "xyz"] });
+    expect(mixed.status).toBe("MISMATCH");
+    expect(mixed.details.documents.map((d) => [d.documentType, d.status])).toEqual([
+      ["INVOICE", "MISMATCH"],
+      ["PACKING_LIST", "NOT_APPLICABLE"],
+      ["BILL_OF_LADING", "INCOMPLETE"],
+    ]);
+    expect(mixed.details.cause).toBe("unknown");
+  });
+
+  it("package counts with grouping parse as integers and types must be compatible first", () => {
+    const same = checkPackageCount({
+      candidates: [
+        { documentType: "PACKING_LIST", value: "1,200", packageType: "cartons" },
+        { documentType: "BILL_OF_LADING", value: "1200", packageType: "CTNS" },
+      ],
+    });
+    expect(same.status).toBe("PASS");
+
+    const incompatible = checkPackageCount({
+      candidates: [
+        { documentType: "PACKING_LIST", value: "120", packageType: "cartons" },
+        { documentType: "BILL_OF_LADING", value: "120", packageType: "pallets" },
+      ],
+    });
+    expect(incompatible.status).toBe("MISMATCH");
+    expect(incompatible.details.unreconciledReason).toBe("INCOMPATIBLE_PACKAGE_TYPES");
+  });
+});

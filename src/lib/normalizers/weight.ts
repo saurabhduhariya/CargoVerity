@@ -19,6 +19,7 @@ export type NormalizedWeightFailure = {
     | "MALFORMED_NUMERIC_STRING"
     | "MISSING_EXPLICIT_UNIT"
     | "UNKNOWN_WEIGHT_UNIT"
+    | "AMBIGUOUS_WEIGHT_UNIT"
     | "NEGATIVE_WEIGHT";
   rawValue: string;
   rawUnit?: string | null;
@@ -50,8 +51,6 @@ const KNOWN_WEIGHT_FACTORS: Record<string, Decimal> = {
   // Metric Tonnes (multiply by 1000)
   t: new Decimal(1000),
   mt: new Decimal(1000),
-  ton: new Decimal(1000),
-  tons: new Decimal(1000),
   tonne: new Decimal(1000),
   tonnes: new Decimal(1000),
   "metric ton": new Decimal(1000),
@@ -63,6 +62,12 @@ const KNOWN_WEIGHT_FACTORS: Record<string, Decimal> = {
   pound: new Decimal("0.45359237"),
   pounds: new Decimal("0.45359237"),
 };
+
+/**
+ * "ton"/"tons" may mean a metric tonne (1,000 kg), a short ton (907.18 kg) or a long ton
+ * (1,016.05 kg). The value is routed to human review instead of guessing.
+ */
+const AMBIGUOUS_WEIGHT_UNITS = new Set(["ton", "tons"]);
 
 /**
  * Normalizes an explicit weight value and unit into standard Kilograms (KG).
@@ -115,6 +120,16 @@ export function normalizeWeight(params: {
 
   // 4. Match against known unit conversions
   const normalizedKey = rawUnit.toLowerCase().replace(/[.]/g, "").trim();
+  if (AMBIGUOUS_WEIGHT_UNITS.has(normalizedKey)) {
+    return {
+      ok: false,
+      error: "AMBIGUOUS_WEIGHT_UNIT",
+      rawValue,
+      rawUnit,
+      sourceQuote,
+    };
+  }
+
   const factor = KNOWN_WEIGHT_FACTORS[normalizedKey];
 
   if (!factor) {
