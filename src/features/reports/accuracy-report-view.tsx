@@ -166,7 +166,7 @@ export function AccuracyReportView({
                   {report.summary.accuracy.denominator} evaluated
                 </p>
                 <p className="text-[11px] text-slate-400 font-mono">
-                  sample size n = {report.summary.accuracy.sampleSize}
+                  n = {report.summary.accuracy.sampleSize} shipment(s) with evaluated fields
                 </p>
               </CardContent>
             </Card>
@@ -189,7 +189,7 @@ export function AccuracyReportView({
                   {report.summary.correctionRate.denominator} corrected
                 </p>
                 <p className="text-[11px] text-slate-400 font-mono">
-                  sample size n = {report.summary.correctionRate.sampleSize}
+                  n = {report.summary.correctionRate.sampleSize} shipment(s) with evaluated fields
                 </p>
               </CardContent>
             </Card>
@@ -228,7 +228,7 @@ export function AccuracyReportView({
                   {report.summary.manualEntries}
                 </div>
                 <p className="text-xs text-slate-600">
-                  Keyed from blank model value
+                  Entered by a person (manual entry or AI returned no value)
                 </p>
                 <p className="text-[11px] text-slate-400">
                   Excluded from AI extraction
@@ -331,14 +331,16 @@ export function AccuracyReportView({
                     </p>
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 text-xs">
                       <div className="bg-white border border-slate-200 rounded-lg p-3">
-                        <span className="text-slate-500 block text-[11px]">Synthetic Smoke Test Result</span>
-                        <span className="font-bold text-emerald-700 text-sm">100.0% (32/32 fields)</span>
-                        <span className="text-slate-400 block text-[10px]">Demonstration only</span>
+                        <span className="text-slate-500 block text-[11px]">Current dataset (computed live)</span>
+                        <span className="font-bold text-slate-900 text-sm">{report.summary.accuracy.display}</span>
+                        <span className="text-slate-400 block text-[10px]">{report.dataset.label}</span>
                       </div>
                       <div className="bg-white border border-slate-200 rounded-lg p-3">
-                        <span className="text-slate-500 block text-[11px]">Evaluation Dictionary</span>
-                        <span className="font-bold text-slate-900 text-sm">28 Canonical Fields</span>
-                        <span className="text-slate-400 block text-[10px]">Invoice, PL, and BL</span>
+                        <span className="text-slate-500 block text-[11px]">Not yet in the denominator</span>
+                        <span className="font-bold text-slate-900 text-sm">
+                          {report.summary.unreviewed} unreviewed · {report.summary.manualEntries} manual
+                        </span>
+                        <span className="text-slate-400 block text-[10px]">Excluded from accuracy by definition</span>
                       </div>
                       <div className="bg-white border border-slate-200 rounded-lg p-3">
                         <span className="text-slate-500 block text-[11px]">Required Next Step</span>
@@ -357,32 +359,17 @@ export function AccuracyReportView({
                           Target 2: Bill of Entry Entry Time (&lt; 15 Minutes Target)
                         </h3>
                       </div>
-                      <Badge className="bg-emerald-100 text-emerald-900 border-emerald-300 text-xs">
-                        Target Reached: PASSED (&lt; 15m)
+                      <Badge className="bg-amber-100 text-amber-900 border-amber-300 text-xs">
+                        Status: Not Measured With Real Reviewers
                       </Badge>
                     </div>
                     <p className="text-xs text-slate-700 leading-relaxed">
                       <strong>Measurement Methodology:</strong> Task duration measured from initial shipment document upload through automated extraction, deterministic cross-checks, reviewer visual confirmation, and ready-for-approval submission.
                     </p>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 text-xs">
-                      <div className="bg-white border border-slate-200 rounded-lg p-3">
-                        <span className="text-slate-500 block text-[11px]">Manual Entry Baseline</span>
-                        <span className="font-bold text-rose-700 text-sm">~35.0 minutes</span>
-                        <span className="text-slate-400 block text-[10px]">Industry unassisted manual keying</span>
-                      </div>
-                      <div className="bg-white border border-slate-200 rounded-lg p-3">
-                        <span className="text-slate-500 block text-[11px]">CargoVerity Assisted Time</span>
-                        <span className="font-bold text-emerald-700 text-sm">~1.2 minutes</span>
-                        <span className="text-slate-400 block text-[10px]">Median: 1.14m (Sample size: 3 scenarios)</span>
-                      </div>
-                      <div className="bg-white border border-slate-200 rounded-lg p-3">
-                        <span className="text-slate-500 block text-[11px]">Measured Speedup</span>
-                        <span className="font-bold text-indigo-700 text-sm">~29x faster</span>
-                        <span className="text-slate-400 block text-[10px]">Demonstration on synthetic fixtures</span>
-                      </div>
-                    </div>
-                    <p className="text-[11px] text-slate-400 italic">
-                      Disclaimer: Production speedups depend on operator typing speed, document scan quality, and customs catalog size. Do not claim production reduction solely from developer demonstrations.
+                    <p className="text-xs text-slate-700 leading-relaxed">
+                      No timed sessions with the client&apos;s documentation executives have been recorded yet, and the
+                      manual-keying baseline has not been measured. Neither a duration nor a speed-up is reported here
+                      until both are measured on real shipments with the sample size stated.
                     </p>
                   </div>
 
@@ -407,7 +394,7 @@ export function AccuracyReportView({
                         <strong>1. Pre-Rollout Baseline:</strong> Collect 90 days of historical customs filing records to establish historical amendment rate (% of filings amended).
                       </div>
                       <div>
-                        <strong>2. Post-Rollout Window:</strong> Track post-clearance amendment notices across ~3,300 live shipments processed through CargoVerity.
+                        <strong>2. Post-Rollout Window:</strong> Track post-clearance amendment notices for every shipment processed through CargoVerity during the first 90 days (volume taken from the production record, not estimated).
                       </div>
                       <div>
                         <strong>3. Scope Boundaries:</strong> CargoVerity directly eliminates clerical, arithmetic, weight, and package mismatches. It does not file directly, classify HSN, or calculate duties.

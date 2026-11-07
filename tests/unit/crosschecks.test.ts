@@ -29,7 +29,8 @@ describe("deterministic cross-checks", () => {
   });
 
   it("blocks export until the current revision has manager approval and resolved checks", () => {
-    expect(canExport({ hasManagerApproval: false, approvedRevision: null, currentRevision: 2, unresolvedStatuses: ["MISMATCH"], profileId: "demo-v1" })).toEqual({ allowed: false, reasons: ["manager_approval_required", "approval_is_stale", "cross_checks_unresolved"] });
+    expect(canExport({ hasManagerApproval: false, approvedRevision: null, currentRevision: 2, unresolvedStatuses: ["MISMATCH"], profileId: "demo-v1" })).toEqual({ allowed: false, reasons: ["manager_approval_required", "cross_checks_unresolved"] });
+    expect(canExport({ hasManagerApproval: true, approvedRevision: 1, currentRevision: 2, unresolvedStatuses: [], profileId: "demo-v1" }).reasons).toEqual(["approval_is_stale"]);
     expect(canExport({ hasManagerApproval: true, approvedRevision: 2, currentRevision: 2, unresolvedStatuses: [], profileId: "demo-v1" })).toEqual({ allowed: true, reasons: [] });
   });
 

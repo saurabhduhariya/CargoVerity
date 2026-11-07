@@ -365,7 +365,8 @@ describe("Shipment Status List & Queue Actions (Week 5 Step 7)", () => {
       expect(where).toEqual({
         AND: [
           { createdAt: { gte: new Date("2026-11-01") } },
-          { createdAt: { lte: expect.any(Date) } },
+          // toDate is inclusive of its whole UTC day: before 2026-11-06T00:00Z
+          { createdAt: { lt: new Date("2026-11-06T00:00:00.000Z") } },
         ],
       });
     });
@@ -417,11 +418,11 @@ describe("Shipment Status List & Queue Actions (Week 5 Step 7)", () => {
           updatedAt: new Date("2026-11-06T11:00:00Z"),
           supplier: { id: "sup-1", name: "Apex Global Supplies Ltd" },
           documents: [
-            { id: "d-1", docType: "INVOICE", extractionStatus: "COMPLETED", originalFileName: "inv.pdf", documentVersion: 1, isCurrent: true, fields: [], pages: [] },
-            { id: "d-2", docType: "PACKING_LIST", extractionStatus: "COMPLETED", originalFileName: "pl.pdf", documentVersion: 1, isCurrent: true, fields: [], pages: [] },
-            { id: "d-3", docType: "BILL_OF_LADING", extractionStatus: "COMPLETED", originalFileName: "bl.pdf", documentVersion: 1, isCurrent: true, fields: [], pages: [] },
+            { id: "d-1", docType: "INVOICE", extractionStatus: "EXTRACTED", originalFileName: "inv.pdf", documentVersion: 1, isCurrent: true, extractionRuns: [{ fields: [] }], pages: [] },
+            { id: "d-2", docType: "PACKING_LIST", extractionStatus: "EXTRACTED", originalFileName: "pl.pdf", documentVersion: 1, isCurrent: true, extractionRuns: [{ fields: [] }], pages: [] },
+            { id: "d-3", docType: "BILL_OF_LADING", extractionStatus: "EXTRACTED", originalFileName: "bl.pdf", documentVersion: 1, isCurrent: true, extractionRuns: [{ fields: [] }], pages: [] },
           ],
-          crossChecks: [],
+          crossCheckRuns: [],
         },
       ];
 
@@ -466,5 +467,99 @@ describe("Shipment Status List & Queue Actions (Week 5 Step 7)", () => {
         clearedOrExported: 1,
       });
     });
+  });
+});
+
+describe("Week 5 Step 7 fixes", () => {
+  const slot = (status: string | null) => ({ present: status !== null, status, documentId: status ? "d" : null, fileName: null });
+  const slots = (a: string, b: string, c: string) => ({ invoice: slot(a), packingList: slot(b), billOfLading: slot(c), allPresent: true, presentCount: 3 });
+  const checks = (total: number, blockingUnresolved = 0) => ({
+    total,
+    passed: total,
+    mismatch: 0,
+    incomplete: 0,
+    resolved: 0,
+    blockingUnresolved,
+    hasBlockingMismatches: blockingUnresolved > 0,
+  });
+  const next = (status: string, docStatuses: [string, string, string], checkTotal = 5, reviewRequiredCount = 0, userRole = "EXECUTIVE") =>
+    deriveNextAction({ id: "s", status, slots: slots(...docStatuses), checks: checks(checkTotal), reviewRequiredCount, userRole });
+
+  it("never suggests 'Submit' for documents that were not extracted or whose extraction failed", () => {
+    expect(next("DRAFT", ["UPLOADED", "UPLOADED", "UPLOADED"], 0)).toMatchObject({ type: "extract", label: "Run Extraction" });
+    expect(next("NEEDS_REVIEW", ["EXTRACTED", "FAILED", "EXTRACTED"], 0)).toMatchObject({ type: "extract", urgency: "high" });
+    expect(next("EXTRACTING", ["EXTRACTED", "EXTRACTED", "EXTRACTED"])).toMatchObject({ type: "extract", label: "Extraction In Progress" });
+  });
+
+  it("asks to run cross-checks when none exist for the current revision", () => {
+    expect(next("NEEDS_REVIEW", ["EXTRACTED", "EXTRACTED", "EXTRACTED"], 0)).toMatchObject({ type: "review", label: "Run Cross-Checks" });
+    expect(next("NEEDS_REVIEW", ["EXTRACTED", "EXTRACTED", "EXTRACTED"], 5)).toMatchObject({ type: "submit" });
+  });
+
+  it("ranks READY_FOR_APPROVAL highest only for Managers", () => {
+    const base = { status: "READY_FOR_APPROVAL", blockingUnresolved: 0, reviewRequiredCount: 0, allDocumentsPresent: true };
+    expect(calculateShipmentRiskScore({ ...base, userRole: "MANAGER" })).toBe(100);
+    expect(calculateShipmentRiskScore({ ...base, userRole: "EXECUTIVE" })).toBe(30);
+    expect(calculateShipmentRiskScore({ ...base, status: "NEEDS_REVIEW", blockingUnresolved: 2, userRole: "EXECUTIVE" })).toBe(90);
+  });
+
+  it("the list counts only the latest check run and the latest completed extraction", async () => {
+    vi.spyOn(auth, "requireAppUser").mockResolvedValue({
+      appUser: { id: "exec-1", email: "e@example.test", role: "EXECUTIVE" } as never,
+      authUser: { id: "exec-1" } as never,
+    });
+    const doc = (docType: string) => ({
+      id: docType,
+      docType,
+      extractionStatus: "EXTRACTED",
+      originalFileName: `${docType}.pdf`,
+      documentVersion: 1,
+      isCurrent: true,
+      extractionRuns: [{ fields: [{ reviewStatus: "CONFIRMED" }, { reviewStatus: "PENDING" }] }],
+      pages: [],
+    });
+    const findMany = vi.fn().mockResolvedValue([
+      {
+        id: "shp-1",
+        reference: "SHP-1",
+        status: "NEEDS_REVIEW",
+        currentRevision: 2,
+        importerName: null,
+        exporterName: null,
+        createdAt: new Date("2026-11-06T10:00:00Z"),
+        updatedAt: new Date("2026-11-06T11:00:00Z"),
+        supplier: null,
+        documents: [doc("INVOICE"), doc("PACKING_LIST"), doc("BILL_OF_LADING")],
+        crossCheckRuns: [
+          {
+            revision: 2,
+            results: [
+              { id: "c", ruleKey: "gross_weight_comparison", status: "MISMATCH", severity: "BLOCKING", createdAt: new Date(), revision: 2, resolutions: [] },
+            ],
+          },
+        ],
+      },
+    ]);
+    vi.spyOn(db, "getPrisma").mockReturnValue({ shipment: { findMany } } as never);
+
+    const json = await (await GET(new Request("http://localhost:3000/api/shipments"))).json();
+    const query = findMany.mock.calls[0][0] as {
+      include: { crossCheckRuns: { take: number }; documents: { select: { extractionRuns: { where: unknown; take: number } } } };
+    };
+
+    expect(query.include.crossCheckRuns.take).toBe(1);
+    expect(query.include.documents.select.extractionRuns).toMatchObject({ where: { status: "COMPLETED" }, take: 1 });
+    expect(json.shipments[0].reviewRequiredCount).toBe(3); // one PENDING field per document
+    expect(json.shipments[0].checksSummary.blockingUnresolved).toBe(1);
+    expect(json.stats.highRiskReviewPending).toBe(1);
+  });
+
+  it("rejects a fromDate after toDate", async () => {
+    vi.spyOn(auth, "requireAppUser").mockResolvedValue({
+      appUser: { id: "exec-1", email: "e@example.test", role: "EXECUTIVE" } as never,
+      authUser: { id: "exec-1" } as never,
+    });
+    const response = await GET(new Request("http://localhost:3000/api/shipments?fromDate=2026-11-10&toDate=2026-11-01"));
+    expect(response.status).toBe(400);
   });
 });

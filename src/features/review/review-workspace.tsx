@@ -431,11 +431,18 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [, setRecentExportRecord] = useState<ExportRecordSummary | null>(null);
 
+  // AI-to-current differences: corrected values and values a person entered where the AI had none.
   const modifiedFields = documents.flatMap((doc) =>
     doc.fields
-      .filter((f) => f.modelValue !== null && f.modelValue !== f.currentValue)
+      .filter(
+        (f) =>
+          (f.modelValue ?? null) !== (f.currentValue ?? null) ||
+          f.reviewStatus === "CORRECTED" ||
+          f.reviewStatus === "MANUAL_ENTRY",
+      )
       .map((f) => ({ ...f, docType: doc.docType })),
   );
+  const failedOrClearedChecks = crossChecks.filter((c) => c.status === "MISMATCH" || c.status === "INCOMPLETE");
 
   const activeDoc = documents.find((d) => d.docType === activeDocType);
   const maxPages = (activeDoc ? pdfPageCounts[activeDoc.id] : undefined) ?? activeDoc?.pageCount ?? 1;
@@ -1045,7 +1052,7 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
     setStatusMessage(null);
 
     try {
-      const response = await fetch(`/api/shipments/${shipment.id}/approve`, {
+      const response = await fetch(`/api/shipments/${shipment.id}/decision`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1057,10 +1064,31 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
 
       const data = await response.json();
       if (!response.ok) {
+        if (response.status === 409) {
+          setStatusMessage(`Conflict (409): ${data.error ?? "The shipment changed. Refresh to review the latest version."}`);
+          return;
+        }
         throw new Error(data.error || `Failed to ${decision.toLowerCase()} shipment.`);
       }
 
-      setShipmentStatus(decision === "APPROVE" ? "APPROVED" : "NEEDS_REVIEW");
+      setShipmentStatus(data.shipment?.status ?? (decision === "APPROVE" ? "APPROVED" : "NEEDS_REVIEW"));
+      if (data.shipment?.currentRevision) setShipmentRevision(data.shipment.currentRevision);
+      if (decision === "APPROVE" && Array.isArray(data.signedOffExceptionIds) && data.signedOffExceptionIds.length > 0) {
+        const signedOff = new Set<string>(data.signedOffExceptionIds);
+        const now = new Date().toISOString();
+        setCrossChecks((prev) =>
+          prev.map((check) =>
+            check.activeResolution && signedOff.has(check.activeResolution.id)
+              ? {
+                  ...check,
+                  derivedStatus: "HUMAN_CLEARED",
+                  effectiveStatus: "HUMAN_CLEARED",
+                  activeResolution: { ...check.activeResolution, managerApprovedAt: now },
+                }
+              : check,
+          ),
+        );
+      }
       setStatusMessage(
         decision === "APPROVE"
           ? "Shipment successfully approved! Ready for export."
@@ -1365,17 +1393,16 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                     </Badge>
                   ) : null}
                 </div>
-                {auditHistory && auditHistory.length > 0 ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 text-xs border-indigo-200 text-indigo-900 hover:bg-indigo-100"
-                    onClick={() => setShowManagerAudit(!showManagerAudit)}
-                  >
-                    <History className="size-3 mr-1" />
-                    {showManagerAudit ? "Hide Audit History" : `View Audit History (${auditHistory.length})`}
-                  </Button>
-                ) : null}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs border-indigo-200 text-indigo-900 hover:bg-indigo-100"
+                  aria-expanded={showManagerAudit}
+                  onClick={() => setShowManagerAudit(!showManagerAudit)}
+                >
+                  <History className="size-3 mr-1" />
+                  {showManagerAudit ? "Hide Audit History" : `View Audit History (${auditHistory.length})`}
+                </Button>
               </div>
             </CardHeader>
             <CardContent className="p-4 space-y-4">
@@ -1409,7 +1436,7 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                       : `${modifiedFields.length} field(s) corrected or manually entered.`}
                   </p>
                   {modifiedFields.length > 0 ? (
-                    <div className="mt-1.5 max-h-20 overflow-y-auto space-y-1 text-[11px]">
+                    <div className="mt-1.5 max-h-40 overflow-y-auto space-y-1 text-[11px]">
                       {modifiedFields.map((f) => (
                         <div key={f.id} className="text-slate-700">
                           <span className="font-semibold">{formatFieldLabel(f.fieldKey)}:</span>{" "}
@@ -1444,31 +1471,102 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                 </div>
               </div>
 
-              {/* Rule 5: Audit History Table (Collapsible) */}
-              {showManagerAudit && auditHistory && auditHistory.length > 0 ? (
-                <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
-                  <h4 className="text-xs font-bold text-slate-800">Correction & Resolution Audit Trail</h4>
-                  <div className="max-h-48 overflow-y-auto divide-y divide-slate-100 text-[11px]">
-                    {auditHistory.map((item) => (
-                      <div key={item.id} className="py-1.5 flex items-center justify-between">
-                        <div>
-                          <Badge className="mr-2 text-[10px] bg-slate-100 text-slate-800 border-slate-200">{item.action}</Badge>
-                          <span className="text-slate-600">{item.actorEmail || "System"}</span>
-                          {item.metadata && typeof item.metadata === "object" && "comment" in item.metadata ? (
-                            <span className="ml-2 italic text-slate-500">&ldquo;{String(item.metadata.comment)}&rdquo;</span>
+              {/* Rule 4: every failed check with its state and resolution history */}
+              {failedOrClearedChecks.length > 0 ? (
+                <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2" data-testid="manager-check-list">
+                  <h4 className="text-xs font-bold text-slate-800">Failed checks and their resolutions</h4>
+                  <ul className="space-y-1.5 text-[11px]">
+                    {failedOrClearedChecks.map((check) => {
+                      const eff = deriveEffectiveCheckStatus(
+                        check.status,
+                        check.activeResolution ?? check.resolutions?.[0],
+                        check.derivedStatus ?? check.effectiveStatus,
+                      );
+                      const history = check.resolutions ?? (check.activeResolution ? [check.activeResolution] : []);
+                      return (
+                        <li key={check.id ?? check.ruleKey} className="rounded border border-slate-100 p-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-semibold text-slate-900">
+                              {check.ruleKey.replaceAll("_", " ")}
+                              {check.severity === "WARNING" ? " (warning)" : ""}
+                            </span>
+                            <Badge className={`${eff.badgeClass} text-[10px]`}>{eff.label}</Badge>
+                          </div>
+                          {check.details?.message || check.details?.note ? (
+                            <p className="mt-0.5 text-slate-600">{String(check.details.message ?? check.details.note)}</p>
                           ) : null}
-                        </div>
-                        <span className="text-slate-400 font-mono text-[10px]">
-                          {new Date(item.createdAt).toLocaleTimeString()}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
+                          {history.length === 0 ? (
+                            <p className="mt-0.5 text-rose-700">No resolution recorded.</p>
+                          ) : (
+                            <ul className="mt-1 space-y-0.5 text-slate-600">
+                              {history.map((res) => (
+                                <li key={res.id}>
+                                  <span className="font-medium">{res.type.replaceAll("_", " ")}</span> by{" "}
+                                  {res.resolvedBy?.fullName ?? res.resolvedBy?.email ?? "reviewer"}: {res.reason}
+                                  {res.evidence ? <span className="font-mono"> · evidence {res.evidence}</span> : null}
+                                  {res.type === "ACCEPTED_EXCEPTION"
+                                    ? res.managerApprovedAt
+                                      ? " · manager signed off"
+                                      : " · awaiting manager sign-off"
+                                    : ""}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
                 </div>
               ) : null}
 
-              {/* Manager Actions (Rules 6, 7, 8, 10, 11) */}
-              {isManager && shipmentStatus !== "APPROVED" && shipmentStatus !== "EXPORTED" ? (
+              {/* Rule 5: Audit History (collapsible) with the details that matter for a decision */}
+              {showManagerAudit ? (
+                <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
+                  <h4 className="text-xs font-bold text-slate-800">Correction & Resolution Audit Trail</h4>
+                  {auditHistory.length === 0 ? (
+                    <p className="text-[11px] text-slate-500">No audit events recorded yet.</p>
+                  ) : (
+                    <div className="max-h-64 overflow-y-auto divide-y divide-slate-100 text-[11px]">
+                      {auditHistory.map((item) => {
+                        const meta = (item.metadata ?? {}) as Record<string, unknown>;
+                        const detail = [
+                          typeof meta.fieldKey === "string" ? meta.fieldKey : null,
+                          "previousValue" in meta || "newValue" in meta || "value" in meta
+                            ? `${meta.previousValue ?? "empty"} → ${meta.newValue ?? meta.value ?? "empty"}`
+                            : null,
+                          typeof meta.ruleKey === "string" ? `${meta.ruleKey}${meta.type ? ` (${String(meta.type)})` : ""}` : null,
+                          typeof meta.reason === "string" && meta.reason ? `reason: ${meta.reason}` : null,
+                          typeof meta.evidence === "string" && meta.evidence ? `evidence: ${meta.evidence}` : null,
+                          typeof meta.comment === "string" && meta.comment ? `“${meta.comment}”` : null,
+                          typeof meta.revision === "number" ? `rev ${meta.revision}` : null,
+                        ].filter(Boolean);
+                        return (
+                          <div key={item.id} className="py-1.5 flex items-start justify-between gap-2">
+                            <div>
+                              <Badge className="mr-2 text-[10px] bg-slate-100 text-slate-800 border-slate-200">{item.action}</Badge>
+                              <span className="text-slate-600">{item.actorEmail || "System"}</span>
+                              {detail.length > 0 ? <div className="mt-0.5 text-slate-500">{detail.join(" · ")}</div> : null}
+                            </div>
+                            <span className="text-slate-400 font-mono text-[10px] shrink-0">
+                              {new Date(item.createdAt).toLocaleString()}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ) : null}
+
+              {isManager && shipmentStatus !== "READY_FOR_APPROVAL" && shipmentStatus !== "APPROVED" && shipmentStatus !== "EXPORTED" ? (
+                <p className="text-[11px] text-slate-600">
+                  Approve and reject become available once an Executive submits this shipment for approval.
+                </p>
+              ) : null}
+
+              {/* Manager Actions (Rules 6, 7, 8, 10, 11): only for a submitted shipment */}
+              {isManager && shipmentStatus === "READY_FOR_APPROVAL" ? (
                 <div className="rounded-lg border border-indigo-200 bg-white p-3 space-y-3">
                   <div className="space-y-1">
                     <label htmlFor="manager-decision-comment" className="text-xs font-semibold text-slate-800">

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 import { GET } from "@/app/api/shipments/[id]/export/route";
@@ -5,6 +7,7 @@ import * as auth from "@/lib/auth";
 import * as db from "@/lib/db";
 import { canExport } from "@/lib/export/guard";
 import { buildDemoV1Export, sanitizeCsvCell, escapeCsvCell } from "@/lib/export/csv";
+import { fakeExportDb } from "./helpers/fake-export-db";
 
 describe("Guarded CSV Generation (Week 5 Step 4)", () => {
   const managerUser = {
@@ -240,245 +243,122 @@ describe("Guarded CSV Generation (Week 5 Step 4)", () => {
   });
 
   describe("API Route Integration: GET /api/shipments/[id]/export", () => {
-    it("blocks export with 400 when shipment is not approved", async () => {
-      vi.spyOn(auth, "requireAppUser").mockResolvedValue({
-        appUser: executiveUser as never,
-        authUser: { id: executiveUser.id, email: executiveUser.email } as never,
-      });
+    const download = () =>
+      GET(new Request("http://localhost:3000/api/shipments/shp-1/export"), { params: Promise.resolve({ id: "shp-1" }) });
 
-      const mockPrisma = {
-        shipment: {
-          findFirst: vi.fn().mockResolvedValue({
-            id: "test-shipment",
-            reference: "SHP-001",
-            status: "NEEDS_REVIEW", // Not approved!
-            currentRevision: 1,
-            documents: [],
-          }),
-        },
-        approval: {
-          findUnique: vi.fn().mockResolvedValue(null),
-        },
-        crossCheckResult: {
-          findMany: vi.fn().mockResolvedValue([]),
-        },
-      };
-      vi.spyOn(db, "getPrisma").mockReturnValue(mockPrisma as never);
+    function actAs(user: typeof managerUser | typeof executiveUser) {
+      vi.spyOn(auth, "requireAppUser").mockResolvedValue({ appUser: user as never, authUser: { id: user.id, email: user.email } as never });
+    }
 
-      const request = new Request("http://localhost:3000/api/shipments/test-shipment/export");
-      const response = await GET(request, { params: Promise.resolve({ id: "test-shipment" }) });
+    it("blocks export with 422 when the shipment is not approved", async () => {
+      actAs(managerUser);
+      const { prisma } = fakeExportDb({ status: "NEEDS_REVIEW", approvalRevision: null });
+      vi.spyOn(db, "getPrisma").mockReturnValue(prisma as never);
 
-      expect([400, 422]).toContain(response.status);
+      const response = await download();
       const json = await response.json();
+
+      expect(response.status).toBe(422);
       expect(json.error).toMatch(/export blocked.*shipment_not_approved/i);
     });
 
-    it("successfully exports CSV, records checksum in ExportEvent and AuditEvent, and sets status to EXPORTED (Rules 16 & 17)", async () => {
-      vi.spyOn(auth, "requireAppUser").mockResolvedValue({
-        appUser: executiveUser as never,
-        authUser: { id: executiveUser.id, email: executiveUser.email } as never,
-      });
+    it("exports the CSV, records profile version + checksum + file + rows on the ExportEvent, and moves to EXPORTED atomically (Rules 16 & 17)", async () => {
+      actAs(executiveUser);
+      const { prisma, tx } = fakeExportDb();
+      vi.spyOn(db, "getPrisma").mockReturnValue(prisma as never);
 
-      const mockShipment = {
-        id: "test-shipment",
-        reference: "SHP-2026-FINAL",
-        status: "APPROVED",
-        currentRevision: 1,
-        supplier: { name: "Apex Global Supplies Ltd" },
-        importerName: "CargoVerity Imports Inc",
-        documents: [
-          {
-            docType: "INVOICE",
-            extractionRuns: [
-              {
-                fields: [
-                  { fieldKey: "exporter", currentValue: "Apex Global Supplies Ltd" },
-                  { fieldKey: "documentNumber", currentValue: "INV-9999" },
-                  { fieldKey: "issueDate", currentValue: "2026-11-01" },
-                  { fieldKey: "currency", currentValue: "USD" },
-                  { fieldKey: "grossWeight", currentValue: "3120" },
-                  { fieldKey: "packageCount", currentValue: "120" },
-                ],
-                lineItems: [
-                  {
-                    lineNumber: 1,
-                    description: "Standard Widget",
-                    hsnCode: "8471.30",
-                    quantity: "10",
-                    quantityUnit: "PCS",
-                    unitPrice: "50.00",
-                    lineTotal: "500.00",
-                  },
-                ],
-              },
-            ],
-          },
-          {
-            docType: "PACKING_LIST",
-            extractionRuns: [
-              {
-                fields: [
-                  { fieldKey: "grossWeight", currentValue: "3120" },
-                  { fieldKey: "packageCount", currentValue: "120" },
-                ],
-                lineItems: [],
-              },
-            ],
-          },
-          {
-            docType: "BILL_OF_LADING",
-            extractionRuns: [
-              {
-                fields: [
-                  { fieldKey: "documentNumber", currentValue: "BL-8888" },
-                  { fieldKey: "issueDate", currentValue: "2026-11-02" },
-                ],
-                lineItems: [],
-              },
-            ],
-          },
-        ],
-      };
-
-      const mockApproval = {
-        id: "appr-1",
-        revision: 1,
-        approvedById: managerUser.id,
-        approvedAt: new Date("2026-11-03T10:00:00Z"),
-        approvedBy: { email: managerUser.email, fullName: "Test Manager" },
-      };
-
-      const mockTx = {
-        exportEvent: {
-          create: vi.fn().mockResolvedValue({ id: "exp-1" }),
-        },
-        auditEvent: {
-          create: vi.fn().mockResolvedValue({ id: "aud-1" }),
-        },
-        shipment: {
-          update: vi.fn().mockResolvedValue({ ...mockShipment, status: "EXPORTED" }),
-        },
-      };
-
-      const mockPrisma = {
-        shipment: {
-          findFirst: vi.fn().mockResolvedValue(mockShipment),
-        },
-        approval: {
-          findUnique: vi.fn().mockResolvedValue(mockApproval),
-        },
-        crossCheckResult: {
-          findMany: vi.fn().mockResolvedValue([
-            { id: "c-1", ruleKey: "weight", status: "PASS", resolutions: [] },
-          ]),
-        },
-        $transaction: vi.fn().mockImplementation(async (cb) => cb(mockTx)),
-      };
-      vi.spyOn(db, "getPrisma").mockReturnValue(mockPrisma as never);
-
-      const request = new Request("http://localhost:3000/api/shipments/test-shipment/export");
-      const response = await GET(request, { params: Promise.resolve({ id: "test-shipment" }) });
+      const response = await download();
+      const csv = await response.text();
+      const checksum = createHash("sha256").update(csv, "utf-8").digest("hex");
 
       expect(response.status).toBe(200);
-      expect(response.headers.get("Content-Type")).toContain("text/csv");
-      expect(response.headers.get("Content-Disposition")).toContain('attachment; filename="SHP-2026-FINAL-demo-v1-rev1.csv"');
-      expect(response.headers.get("X-Checksum-Sha256")).toBeDefined();
+      expect(response.headers.get("Content-Type")).toBe("text/csv; charset=utf-8");
+      expect(response.headers.get("Content-Disposition")).toBe('attachment; filename="SHP-2026-001-demo-v1-rev1.csv"');
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(response.headers.get("X-Checksum-Sha256")).toBe(checksum);
+      expect(csv.split("\r\n")[0]).toContain('"Shipment_Ref","Supplier_Name"');
 
-      const csvBody = await response.text();
-      expect(csvBody).toContain('"SHP-2026-FINAL"');
-      expect(csvBody).toContain('"Apex Global Supplies Ltd"');
-      expect(csvBody).toContain('"Standard Widget"');
-
-      // Verify transaction recordings
-      expect(mockTx.exportEvent.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          shipmentId: "test-shipment",
+      expect(tx.shipment.updateMany).toHaveBeenCalledWith({
+        where: { id: "shp-1", currentRevision: 1, status: { in: ["APPROVED", "EXPORTED"] } },
+        data: { status: "EXPORTED" },
+      });
+      expect(tx.exportEvent.create).toHaveBeenCalledWith({
+        data: {
+          shipmentId: "shp-1",
           exportedById: executiveUser.id,
           profileId: "demo-v1",
+          profileVersion: "1.1.0",
+          checksumSha256: checksum,
+          fileName: "SHP-2026-001-demo-v1-rev1.csv",
+          rowCount: 2,
           revision: 1,
-        }),
+        },
       });
-
-      expect(mockTx.auditEvent.create).toHaveBeenCalledWith({
+      expect(tx.auditEvent.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
           action: "SHIPMENT_EXPORTED",
-          entityType: "Shipment",
-          entityId: "test-shipment",
-          metadata: expect.objectContaining({
-            profileId: "demo-v1",
-            checksumSha256: expect.any(String),
-            rowCount: 1,
-          }),
+          actorId: executiveUser.id,
+          metadata: expect.objectContaining({ checksumSha256: checksum, profileVersion: "1.1.0", revision: 1, previousStatus: "APPROVED", reExport: false }),
         }),
-      });
-
-      expect(mockTx.shipment.update).toHaveBeenCalledWith({
-        where: { id: "test-shipment" },
-        data: { status: "EXPORTED" },
       });
     });
 
-    it("returns JSON preview when preview=1 without mutating database or updating status", async () => {
-      vi.spyOn(auth, "requireAppUser").mockResolvedValue({
-        appUser: executiveUser as never,
-        authUser: { id: executiveUser.id, email: executiveUser.email } as never,
-      });
+    it("returns 409 and no file when the shipment changed between the guard and the record", async () => {
+      actAs(managerUser);
+      const { prisma } = fakeExportDb({ lockCount: 0 });
+      vi.spyOn(db, "getPrisma").mockReturnValue(prisma as never);
 
-      const mockShipment = {
-        id: "test-shipment",
-        reference: "SHP-PREVIEW-001",
-        status: "APPROVED",
-        currentRevision: 1,
-        supplier: { name: "Preview Supplier" },
-        documents: [
-          {
-            docType: "INVOICE",
-            extractionRuns: [
-              {
-                fields: [
-                  { fieldKey: "documentNumber", currentValue: "INV-PREVIEW" },
-                  { fieldKey: "issueDate", currentValue: "2026-11-01" },
-                  { fieldKey: "currency", currentValue: "USD" },
-                  { fieldKey: "grossWeight", currentValue: "1000" },
-                  { fieldKey: "packageCount", currentValue: "10" },
-                ],
-                lineItems: [],
-              },
-            ],
-          },
-          { docType: "PACKING_LIST", extractionRuns: [{ fields: [{ fieldKey: "grossWeight", currentValue: "1000" }], lineItems: [] }] },
-          { docType: "BILL_OF_LADING", extractionRuns: [{ fields: [{ fieldKey: "documentNumber", currentValue: "BL-P" }], lineItems: [] }] },
-        ],
-      };
+      const response = await download();
 
-      const mockApproval = {
-        id: "appr-1",
-        revision: 1,
-        approvedById: managerUser.id,
-        approvedAt: new Date("2026-11-03T10:00:00Z"),
-        approvedBy: { email: managerUser.email },
-      };
+      expect(response.status).toBe(409);
+      expect((await response.json()).code).toBe("STALE_REVISION");
+    });
 
-      const mockPrisma = {
-        shipment: { findFirst: vi.fn().mockResolvedValue(mockShipment) },
-        approval: { findUnique: vi.fn().mockResolvedValue(mockApproval) },
-        crossCheckResult: { findMany: vi.fn().mockResolvedValue([]) },
-        $transaction: vi.fn(),
-      };
-      vi.spyOn(db, "getPrisma").mockReturnValue(mockPrisma as never);
+    it("re-downloading an EXPORTED shipment at the same revision gives byte-identical CSV", async () => {
+      actAs(managerUser);
+      const first = fakeExportDb();
+      vi.spyOn(db, "getPrisma").mockReturnValue(first.prisma as never);
+      const csvA = await (await download()).text();
 
-      const request = new Request("http://localhost:3000/api/shipments/test-shipment/export?preview=1");
-      const response = await GET(request, { params: Promise.resolve({ id: "test-shipment" }) });
+      const second = fakeExportDb({ status: "EXPORTED" });
+      vi.spyOn(db, "getPrisma").mockReturnValue(second.prisma as never);
+      const response = await download();
+      const csvB = await response.text();
 
       expect(response.status).toBe(200);
-      const json = await response.json();
-      expect(json.headers).toHaveLength(24);
-      expect(json.profileId).toBe("demo-v1");
-      expect(json.assumptionLabel).toMatch(/\[ASSUMPTION\]/);
-      expect(json.checksumSha256).toBeDefined();
+      expect(csvB).toBe(csvA);
+      expect(second.tx.auditEvent.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ metadata: expect.objectContaining({ reExport: true, previousStatus: "EXPORTED" }) }),
+      });
+    });
 
-      // Ensure transaction is NOT called for preview
-      expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    it("ignores newer non-completed extraction runs by querying only COMPLETED runs", async () => {
+      actAs(managerUser);
+      const { prisma } = fakeExportDb();
+      vi.spyOn(db, "getPrisma").mockReturnValue(prisma as never);
+
+      await download();
+
+      const query = prisma.shipment.findFirst.mock.calls[0][0] as {
+        include: { documents: { where: unknown; include: { extractionRuns: { where: unknown } } } };
+      };
+      expect(query.include.documents.where).toEqual({ isCurrent: true });
+      expect(query.include.documents.include.extractionRuns.where).toEqual({ status: "COMPLETED" });
+    });
+
+    it("returns JSON preview when preview=1 without mutating the database", async () => {
+      actAs(managerUser);
+      const { prisma, tx } = fakeExportDb();
+      vi.spyOn(db, "getPrisma").mockReturnValue(prisma as never);
+
+      const response = await GET(new Request("http://localhost:3000/api/shipments/shp-1/export?preview=1"), {
+        params: Promise.resolve({ id: "shp-1" }),
+      });
+
+      expect(response.status).toBe(200);
+      expect((await response.json()).ready).toBe(true);
+      expect(tx.shipment.updateMany).not.toHaveBeenCalled();
+      expect(tx.exportEvent.create).not.toHaveBeenCalled();
     });
   });
 });

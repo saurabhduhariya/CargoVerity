@@ -50,6 +50,8 @@ export function buildShipmentWhere(
     });
   }
 
+  // Dates are calendar days in UTC: fromDate includes its whole day (>= 00:00Z) and toDate
+  // includes its whole day (< next day 00:00Z). A full timestamp is used as given.
   if (filters.fromDate) {
     const from = new Date(filters.fromDate);
     if (!Number.isNaN(from.getTime())) {
@@ -60,10 +62,12 @@ export function buildShipmentWhere(
   if (filters.toDate) {
     const to = new Date(filters.toDate);
     if (!Number.isNaN(to.getTime())) {
-      if (filters.toDate.length <= 10) {
-        to.setHours(23, 59, 59, 999);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(filters.toDate)) {
+        const nextDay = new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate() + 1));
+        clauses.push({ createdAt: { lt: nextDay } });
+      } else {
+        clauses.push({ createdAt: { lte: to } });
       }
-      clauses.push({ createdAt: { lte: to } });
     }
   }
 
@@ -288,19 +292,35 @@ export function deriveNextAction(params: {
     };
   }
 
-  if (
-    slots.invoice.status === "PROCESSING" ||
-    slots.packingList.status === "PROCESSING" ||
-    slots.billOfLading.status === "PROCESSING" ||
-    slots.invoice.status === "QUEUED" ||
-    slots.packingList.status === "QUEUED" ||
-    slots.billOfLading.status === "QUEUED"
-  ) {
+  const slotStatuses = [slots.invoice.status, slots.packingList.status, slots.billOfLading.status];
+
+  if (status === "EXTRACTING" || slotStatuses.includes("PROCESSING")) {
     return {
       type: "extract",
       label: "Extraction In Progress",
       href: `/shipments/${id}`,
       description: "AI extraction is currently analyzing uploaded documents.",
+      urgency: "low",
+    };
+  }
+
+  if (slotStatuses.includes("FAILED")) {
+    const failed = slotStatuses.filter((s) => s === "FAILED").length;
+    return {
+      type: "extract",
+      label: "Retry Extraction Or Enter Manually",
+      href: `/shipments/${id}`,
+      description: `Extraction failed for ${failed} document(s). Retry it or enter the values manually.`,
+      urgency: "high",
+    };
+  }
+
+  if (slotStatuses.includes("UPLOADED")) {
+    return {
+      type: "extract",
+      label: "Run Extraction",
+      href: `/shipments/${id}`,
+      description: "Uploaded documents have not been extracted yet.",
       urgency: "medium",
     };
   }
@@ -325,6 +345,16 @@ export function deriveNextAction(params: {
     };
   }
 
+  if (checks.total === 0) {
+    return {
+      type: "review",
+      label: "Run Cross-Checks",
+      href: `/review/${id}`,
+      description: "No cross-check run exists for the current revision.",
+      urgency: "medium",
+    };
+  }
+
   // All documents present, extraction complete, checks clear, fields reviewed
   return {
     type: "submit",
@@ -343,10 +373,12 @@ export function calculateShipmentRiskScore(params: {
   blockingUnresolved: number;
   reviewRequiredCount: number;
   allDocumentsPresent: boolean;
+  /** READY_FOR_APPROVAL is the Manager's work; for an Executive it is a waiting state. */
+  userRole?: string;
 }): number {
-  const { status, blockingUnresolved, reviewRequiredCount, allDocumentsPresent } = params;
+  const { status, blockingUnresolved, reviewRequiredCount, allDocumentsPresent, userRole } = params;
 
-  if (status === "READY_FOR_APPROVAL") return 100;
+  if (status === "READY_FOR_APPROVAL") return userRole && userRole !== "MANAGER" ? 30 : 100;
   if (blockingUnresolved > 0) return 90;
   if (reviewRequiredCount > 0) return 80;
   if (!allDocumentsPresent && status !== "APPROVED" && status !== "EXPORTED") return 70;

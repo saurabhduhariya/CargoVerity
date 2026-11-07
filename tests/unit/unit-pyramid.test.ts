@@ -641,7 +641,8 @@ describe("Week 6 Step 1: Pure Unit Test Pyramid (15 Required Focus Areas)", () =
       const records: RawFieldRecord[] = [
         { id: "1", fieldKey: "currency", modelValue: "usd", currentValue: "USD", reviewStatus: "CONFIRMED" },
         { id: "2", fieldKey: "currency", modelValue: "EUR", currentValue: "EUR", reviewStatus: "CONFIRMED" },
-        { id: "3", fieldKey: "currency", modelValue: "GBP", currentValue: "GBP", reviewStatus: "VERIFIED" },
+        // "VERIFIED" is not a ReviewStatus; reviewed values are CONFIRMED or CORRECTED.
+        { id: "3", fieldKey: "currency", modelValue: "GBP", currentValue: "GBP", reviewStatus: "CONFIRMED" },
         { id: "4", fieldKey: "currency", modelValue: "JPY", currentValue: "USD", reviewStatus: "CORRECTED", correctionsCount: 1 },
         { id: "5", fieldKey: "currency", modelValue: "CAD", currentValue: "CAD", reviewStatus: "PENDING" },
       ];

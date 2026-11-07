@@ -447,6 +447,8 @@ describe.skipIf(!enabled)("Week 4 cross-check and review bug exploration (Postgr
       const latest = await getLatestCrossCheckRun({ shipmentId: shipment.id, prismaClient: prisma });
       const latestResult = latest?.results[0] as unknown as { clearedForSubmission?: boolean; clearedForApproval?: boolean } | undefined;
 
+      // Week 5: a manager decides only on a submitted shipment.
+      await prisma.shipment.update({ where: { id: shipment.id }, data: { status: "READY_FOR_APPROVAL" } });
       let approvalBlocks = false;
       try {
         await processManagerDecision({
@@ -479,6 +481,8 @@ describe.skipIf(!enabled)("Week 4 cross-check and review bug exploration (Postgr
         params: Promise.resolve({ id: shipment.id }),
       });
       const exportReasons = ((await bodyOf(exportResponse)).blockers as string[] | undefined) ?? [];
+      // Week 5: a manager decides only on a submitted shipment.
+      await prisma.shipment.update({ where: { id: shipment.id }, data: { status: "READY_FOR_APPROVAL" } });
       const decision = await processManagerDecision({
         shipmentId: shipment.id,
         managerUser: manager,

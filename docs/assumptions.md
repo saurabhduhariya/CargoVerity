@@ -19,8 +19,8 @@
 |---|---|---|---|---|---|
 | Filing-software export template | `[ASSUMPTION]` `[PROPOSED]` | **Open.** No filing-software template was supplied. The guarded `demo-v1` CSV is the temporary export profile and is not an official customs or ICEGATE format. | 2026-11-04 | Product owner | Supply the target template and confirm column names, ordering and code lists before any production export. |
 | Required/optional field policy | `[DERIVED]` `[PROPOSED]` | **Implemented as a proposal** in `src/lib/ai/review-policy.service.ts` (`DOCUMENT_FIELD_POLICIES`); see the field table below. Missing required fields block submission; missing optional fields are never treated as mismatches. | 2026-11-07 | Product owner | Confirm the required/optional split against two representative supplier templates per document type. |
-| Units | `[ASSUMPTION]` `[PROPOSED]` | Money, weights and quantities are decimal strings parsed with `decimal.js` (no floats). Weights normalize g/lb/kg to kg. Package quantities keep the source unit; package-type compatibility is required before comparison. | 2026-11-04 | Product owner / customs SME | Confirm the unit list and package-type vocabulary. |
-| Tolerances | `[ASSUMPTION]` | **Placeholders, not agreed values.** Defaults in `src/lib/normalizers/tolerances.ts`: monetary 0.05 currency units (rounding only), weight 0.00 kg (exact), quantity 0 (exact), party-name similarity 0.85, item-description similarity 0.80. No percentage tolerance is applied. | 2026-11-07 | Product owner / customs SME | Supply an approved tolerance per rule. Until then, any non-zero weight difference (for example the 45 kg SHP-24811 gap) is reported as a mismatch. |
+| Units | `[ASSUMPTION]` `[PROPOSED]` | Money, weights and quantities are decimal strings parsed with `decimal.js` (no floats). Weights normalize g/kg/t/mt/tonne/lb to kg; "ton"/"tons" is ambiguous (metric, short or long) and goes to review. Package quantities keep the source unit; package-type compatibility is required before comparison. | 2026-11-07 | Product owner / customs SME | Confirm the unit list and package-type vocabulary. |
+| Tolerances | `[ASSUMPTION]` | **Placeholders, not agreed values.** Defaults in `src/lib/normalizers/tolerances.ts`, overridable with `CHECK_MONETARY_TOLERANCE` (0.01 currency units), `CHECK_WEIGHT_TOLERANCE_PERCENT` (0.5% of the larger weight) and `CHECK_WEIGHT_TOLERANCE_KG` (absolute floor, 0 kg). Quantity 0 (exact), party-name similarity 0.85, item-description similarity 0.80. Comparisons are inclusive. | 2026-11-07 | Product owner / customs SME | Supply an approved tolerance per rule. |
 | Low-confidence review threshold | `[ASSUMPTION]` | `LOW_CONFIDENCE_THRESHOLD=0.85`. Model confidence is a model estimate, not a calibrated probability; fields below the threshold require human review. | 2026-11-04 | Product owner | Revisit after the labelled benchmark is available. |
 | Accepted exceptions | `[PROPOSED]` | A failed check stays in history and needs a documented resolution. A reason alone never clears it. `ACCEPTED_EXCEPTION` needs evidence, a reason and manager approval for the exact shipment revision before export. | 2026-11-04 | Product owner | Confirm permitted resolution types and evidence requirements. |
 | Roles and account provisioning | `[DERIVED]` | **Decided.** Roles (`EXECUTIVE`, `MANAGER`) are stored in the application database and granted only through the controlled seed (`npm run db:seed`). A Supabase Auth account without an application row is rejected (`ACCOUNT_NOT_PROVISIONED`); the app no longer auto-creates Executives on first login. Roles in Supabase user metadata are ignored. | 2026-11-07 | Project owner | Keep sign-up closed for real data (see next row). |
@@ -47,6 +47,33 @@
 | Bill of Lading | exporter, importer, documentNumber, issueDate, packageCount, grossWeight, portOfLoading, portOfDischarge | vessel, containerNumber, netWeight |
 
 Line items are extracted for Invoice and Packing List and reviewed per line; they are not single required fields.
+
+## Export profile `demo-v1` `[ASSUMPTION]`
+
+`demo-v1` (version 1.1.0, `src/lib/export/profile.ts`) is a temporary mapping until the client supplies the filing-software template. A new template is added as a new registered profile; shipment data does not change. Each export record (`ExportEvent`) stores the profile id and version, the SHA-256 of the exact file, the file name, the row count, the actor and the revision.
+
+| Column | Source (first non-empty wins) | Format |
+|---|---|---|
+| Shipment_Ref | Shipment reference | text |
+| Supplier_Name | Shipment supplier, else Invoice `exporter` | text |
+| Invoice_No | Invoice `documentNumber` | text |
+| Invoice_Date | Invoice `issueDate` | YYYY-MM-DD |
+| Currency | Invoice `currency` | upper-case code |
+| Incoterm | Invoice `incoterm` | upper-case |
+| Item_Sr, HSN_Code, Item_Description, Quantity, Unit, Unit_Price, Line_Total | Invoice line item (Packing List lines when the Invoice has none) | one row per line; decimals as stated |
+| Gross_Weight_KG | `grossWeight` from Packing List, Bill of Lading, Invoice | converted to kg from its unit |
+| Net_Weight_KG | `netWeight` from Packing List, Invoice, Bill of Lading | converted to kg from its unit |
+| Package_Count | `packageCount` from Packing List, Bill of Lading, Invoice | whole number |
+| Package_Type | unit of that `packageCount` (e.g. cartons) | canonical type (CARTON, PALLET, ...) |
+| Container_No | Bill of Lading `containerNumber` | upper-case |
+| BL_No | Bill of Lading `documentNumber` | text |
+| Port_Of_Loading, Port_Of_Discharge | Bill of Lading | text |
+
+- Required before export: Shipment_Ref, Supplier_Name, Invoice_No, Invoice_Date, Currency, Gross_Weight_KG, Package_Count, BL_No, Port_Of_Loading, Port_Of_Discharge.
+- A value that cannot be exported as stated blocks the export with an exact reason: a weight with no unit or an unknown/ambiguous unit, a date that does not parse, a day/month date that is ambiguous (for example `03/04/2026`; day-first `DD/MM/YYYY` is accepted only when unambiguous), a package count that is not a whole number.
+- Null or missing values are empty cells. Every cell is quoted (RFC 4180), records end with CRLF, and text that could start a spreadsheet formula is prefixed with `'`; plain numbers such as `-12.50` are left unchanged.
+- No personal contacts are written to the file. Approval details stay on the approval and export records.
+- The same approved revision always produces byte-identical CSV, so a re-download of an `EXPORTED` shipment at that revision is allowed and recorded as another export event.
 
 ## Current synthetic fixture decision `[SYNTHETIC]`
 

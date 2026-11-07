@@ -130,16 +130,27 @@ export function ExportPreviewDialog({
       document.body.removeChild(link);
       window.URL.revokeObjectURL(downloadUrl);
 
-      // Record export record for audit presentation
-      const record: ExportRecordSummary = {
-        id: `local-${Date.now()}`,
+      // Show the export record the server stored (re-load the guarded preview to read it back).
+      const fallback: ExportRecordSummary = {
+        id: response.headers.get("X-Export-Event-Id") ?? `export-${Date.now()}`,
         profileId: previewData.profileId,
+        profileVersion: previewData.profileVersion,
         revision: shipmentRevision,
         createdAt: new Date().toISOString(),
-        exportedBy: "Current User",
+        exportedBy: null,
         checksumSha256: checksum || previewData.checksumSha256,
         fileName,
+        rowCount: previewData.rowCount ?? null,
       };
+      let record = fallback;
+      try {
+        const refreshed = await fetch(`/api/shipments/${shipmentId}/export?preview=1`, { cache: "no-store" });
+        const refreshedData = (await refreshed.json()) as ExportPreviewData;
+        if (refreshedData.recentExport) record = refreshedData.recentExport;
+        setPreviewData(refreshedData);
+      } catch {
+        // Keep the header-derived record.
+      }
 
       setRecentExportRecord(record);
       onExportSuccess?.(record);
@@ -179,7 +190,7 @@ export function ExportPreviewDialog({
     previewData?.approvedRevision !== null &&
     previewData?.approvedRevision !== undefined &&
     previewData.approvedRevision === shipmentRevision &&
-    shipmentStatus === "APPROVED";
+    (shipmentStatus === "APPROVED" || shipmentStatus === "EXPORTED");
 
   const isApprovalStale =
     previewData?.approvedRevision !== null &&
@@ -254,7 +265,7 @@ export function ExportPreviewDialog({
                 </div>
                 <p className="text-xs text-blue-800 leading-relaxed">
                   {previewData?.assumptionLabel ??
-                    "[ASSUMPTION] Demo Profile v1 (21-column customs declaration assumptions: line items from Invoice; weights/packages from Packing List; transport/BL from Bill of Lading. Assumptions are provisional for demo validation)."}
+                    "[ASSUMPTION] Temporary export profile demo-v1; filing-software customs template awaiting client specification."}
                 </p>
               </div>
             </div>
@@ -334,6 +345,7 @@ export function ExportPreviewDialog({
                   <div className="grid gap-2">
                     {previewData.blockers.map((blockerKey) => {
                       const formatted = formatExportBlocker(blockerKey);
+                      const detail = previewData.blockerDetails?.find((b) => b.code === blockerKey)?.detail;
                       return (
                         <div
                           key={blockerKey}
@@ -347,6 +359,9 @@ export function ExportPreviewDialog({
                             <span className="text-slate-600">
                               {formatted.description}
                             </span>
+                            {detail ? (
+                              <span className="block text-slate-800 font-medium mt-0.5">{detail}</span>
+                            ) : null}
                             <span className="text-[10px] text-slate-400 block font-mono mt-0.5">
                               Rule Code: {formatted.code}
                             </span>
@@ -418,7 +433,11 @@ export function ExportPreviewDialog({
                   <div>
                     <span className="text-slate-500 block">Profile & Version</span>
                     <span className="text-slate-800">
-                      {recentExportRecord.profileId} (rev {recentExportRecord.revision})
+                      {recentExportRecord.profileId}
+                      {recentExportRecord.profileVersion ? ` v${recentExportRecord.profileVersion}` : ""} (rev{" "}
+                      {recentExportRecord.revision})
+                      {typeof recentExportRecord.rowCount === "number" ? ` · ${recentExportRecord.rowCount} rows` : ""}
+                      {recentExportRecord.exportedBy ? ` · by ${recentExportRecord.exportedBy}` : ""}
                     </span>
                   </div>
                 </div>
@@ -470,6 +489,9 @@ export function ExportPreviewDialog({
                   <Badge className="text-[10px] bg-white border border-slate-300 text-slate-600">
                     {previewData.headers.length} Columns · {previewData.rowCount ?? 0}{" "}
                     Row{(previewData.rowCount ?? 0) === 1 ? "" : "s"}
+                    {previewData.rows && (previewData.rowCount ?? 0) > previewData.rows.length
+                      ? ` (showing first ${previewData.rows.length})`
+                      : ""}
                   </Badge>
                 </div>
                 {previewData.checksumSha256 && (

@@ -85,7 +85,15 @@ describe("Export Profile & CSV Generation (Week 5 Step 3)", () => {
     const result = buildDemoV1Export("SHP-2026-001", sampleDocuments, sampleMetadata);
 
     expect(result.headers).toEqual([...DEMO_V1_COLUMNS]);
-    expect(result.headers).toHaveLength(24);
+    // The plan's 21 columns, in the plan's order (literal list, not derived from the code).
+    expect(result.headers).toEqual([
+      "Shipment_Ref", "Supplier_Name", "Invoice_No", "Invoice_Date", "Currency", "Incoterm",
+      "Item_Sr", "HSN_Code", "Item_Description", "Quantity", "Unit", "Unit_Price", "Line_Total",
+      "Gross_Weight_KG", "Net_Weight_KG", "Package_Count", "Package_Type", "Container_No",
+      "BL_No", "Port_Of_Loading", "Port_Of_Discharge",
+    ]);
+    // No personal contacts (approver e-mails etc.) in the file.
+    expect(result.csv).not.toContain("manager@cargoverity.test");
   });
 
   it("multiplies rows per line item and repeats shipment-level columns (Line-Item Multiplication)", () => {
@@ -106,10 +114,15 @@ describe("Export Profile & CSV Generation (Week 5 Step 3)", () => {
     expect(row1[10]).toBe("PCS");
     expect(row1[11]).toBe("45.00");
     expect(row1[12]).toBe("2250.00");
-    expect(row1[13]).toBe("3165.000"); // Gross Weight repeated
+    expect(row1[13]).toBe("3165"); // Gross weight in kg, repeated
+    expect(row1[14]).toBe("2950"); // Net weight in kg
+    expect(row1[15]).toBe("120"); // Package count
+    expect(row1[16]).toBe("BOX"); // Package type from the package-count unit
     expect(row1[17]).toBe("MSCU9876543"); // Container
-    expect(row1[22]).toBe("manager@cargoverity.test");
-    expect(row1[23]).toBe("2026-11-05");
+    expect(row1[18]).toBe("MEDU12345678"); // BL_No before the ports
+    expect(row1[19]).toBe("INBOM");
+    expect(row1[20]).toBe("USLAX");
+    expect(row1).toHaveLength(21);
 
     // Row 2 checks
     expect(row2[0]).toBe("SHP-2026-001");
@@ -130,7 +143,7 @@ describe("Export Profile & CSV Generation (Week 5 Step 3)", () => {
     expect(row[0]).toBe("SHP-2026-EMPTY");
     expect(row[6]).toBe(""); // Item_Sr is empty
     expect(row[7]).toBe(""); // HSN_Code is empty
-    expect(row[13]).toBe("3165.000"); // Gross weight still populated
+    expect(row[13]).toBe("3165"); // Gross weight still populated
   });
 
   it("formats null and undefined values consistently as empty cells (Null Formatting)", () => {
@@ -185,12 +198,12 @@ describe("Export Profile & CSV Generation (Week 5 Step 3)", () => {
   it("includes profile versioning, ID, and assumption labels (Profile Versioning)", () => {
     const profile = getExportProfile("demo-v1");
     expect(profile.id).toBe("demo-v1");
-    expect(profile.version).toBe("1.0.0");
+    expect(profile.version).toBe("1.1.0");
     expect(profile.assumptionLabel).toMatch(/\[ASSUMPTION\]/);
 
     const exportData = buildDemoV1Export("SHP-2026-001", sampleDocuments);
     expect(exportData.profileId).toBe("demo-v1");
-    expect(exportData.profileVersion).toBe("1.0.0");
+    expect(exportData.profileVersion).toBe("1.1.0");
     expect(exportData.assumptionLabel).toContain("[ASSUMPTION]");
   });
 
@@ -205,18 +218,18 @@ describe("Export Profile & CSV Generation (Week 5 Step 3)", () => {
     });
     expect(validValidation.valid).toBe(true);
     expect(validValidation.missingFields).toHaveLength(0);
+    expect(validValidation.invalidFields).toHaveLength(0);
 
-    // Incomplete snapshot missing approval and gross weight
+    // Empty snapshot: every required column except the reference is missing
     const invalidValidation = demoV1Profile.validate({
       shipmentReference: "SHP-001",
       documents: [],
     });
     expect(invalidValidation.valid).toBe(false);
-    expect(invalidValidation.missingFields).toContain("Supplier_Name");
-    expect(invalidValidation.missingFields).toContain("Invoice_No");
-    expect(invalidValidation.missingFields).toContain("Gross_Weight_KG");
-    expect(invalidValidation.missingFields).toContain("Approved_By");
-    expect(invalidValidation.missingFields).toContain("Approved_At");
+    expect(invalidValidation.missingFields).toEqual([
+      "Supplier_Name", "Invoice_No", "Invoice_Date", "Currency", "Gross_Weight_KG",
+      "Package_Count", "BL_No", "Port_Of_Loading", "Port_Of_Discharge",
+    ]);
   });
 
   it("escapes CSV delimiters, quotes, newlines, and protects against formula injection", () => {
@@ -251,5 +264,67 @@ describe("Export Profile & CSV Generation (Week 5 Step 3)", () => {
     expect(csv).toContain('"Widget, High-Grade\nModel X"');
     expect(csv).toContain('"-5"');
     expect(csv).toContain('"-500.00"');
+  });
+
+  describe("Week 5 Step 3/4 formatting fixes", () => {
+    const withField = (docType: string, fieldKey: string, currentValue: string, unit: string | null = null) =>
+      sampleDocuments.map((doc) =>
+        doc.docType === docType
+          ? { ...doc, fields: [...doc.fields.filter((f) => f.fieldKey !== fieldKey), { fieldKey, currentValue, unit, sourceQuote: null, pageNumber: 1 }] }
+          : doc,
+      );
+
+    it("converts weights to kilograms from their stated unit", () => {
+      const tonnes = buildDemoV1Export("S", withField("PACKING_LIST", "grossWeight", "3.165", "MT"));
+      expect(tonnes.rows[0][13]).toBe("3165");
+      const pounds = buildDemoV1Export("S", withField("PACKING_LIST", "grossWeight", "1000", "lbs"));
+      expect(pounds.rows[0][13]).toBe("453.59237");
+      const grouped = buildDemoV1Export("S", withField("PACKING_LIST", "grossWeight", "3,165.000", "kg"));
+      expect(grouped.rows[0][13]).toBe("3165");
+    });
+
+    it("blocks export when a weight has no unit or an ambiguous/unknown unit", () => {
+      for (const unit of [null, "tons", "bags"]) {
+        const result = demoV1Profile.validate({ shipmentReference: "S", supplierName: "X", documents: withField("PACKING_LIST", "grossWeight", "3165", unit) });
+        expect(result.valid).toBe(false);
+        expect(result.invalidFields.map((f) => f.column)).toContain("Gross_Weight_KG");
+      }
+    });
+
+    it("parses dates strictly and rejects ambiguous day/month dates", () => {
+      expect(formatExportDate("15/10/2026")).toBe("2026-10-15");
+      expect(formatExportDate("15-Oct-2026")).toBe("2026-10-15");
+      expect(formatExportDate("Oct 15, 2026")).toBe("2026-10-15");
+      expect(formatExportDate("2026-02-30")).toBe("2026-02-30"); // not a real date: left as-is, and validation blocks it
+      const ambiguous = demoV1Profile.validate({ shipmentReference: "S", supplierName: "X", documents: withField("INVOICE", "issueDate", "03/04/2026") });
+      expect(ambiguous.invalidFields).toEqual([expect.objectContaining({ column: "Invoice_Date", problem: expect.stringMatching(/ambiguous/) })]);
+      const bad = demoV1Profile.validate({ shipmentReference: "S", supplierName: "X", documents: withField("INVOICE", "issueDate", "2026-02-30") });
+      expect(bad.invalidFields.map((f) => f.column)).toEqual(["Invoice_Date"]);
+    });
+
+    it("rejects a non-integer package count", () => {
+      const result = demoV1Profile.validate({ shipmentReference: "S", supplierName: "X", documents: withField("PACKING_LIST", "packageCount", "12.5", "cartons") });
+      expect(result.invalidFields.map((f) => f.column)).toContain("Package_Count");
+    });
+
+    it("guards formulas behind leading whitespace and keeps plain negative numbers", () => {
+      expect(sanitizeCsvCell(" =1+1")).toBe("' =1+1");
+      expect(sanitizeCsvCell("@SUM(A1)")).toBe("'@SUM(A1)");
+      expect(sanitizeCsvCell("-12.50")).toBe("-12.50");
+      expect(sanitizeCsvCell("-1,200.00")).toBe("'-1,200.00");
+      expect(sanitizeCsvCell("Normal text")).toBe("Normal text");
+    });
+
+    it("uses CRLF record separators with a terminating CRLF and keeps Unicode", () => {
+      const csv = buildDemoV1Csv("SHP-ÜNICODE", sampleDocuments, { supplierName: "München Export GmbH" });
+      expect(csv.endsWith("\r\n")).toBe(true);
+      expect(csv.split("\r\n")).toHaveLength(4); // header + 2 rows + trailing empty
+      expect(csv).toContain('"München Export GmbH"');
+      expect(csv).toContain('"SHP-ÜNICODE"');
+    });
+
+    it("is reproducible: the same snapshot gives byte-identical CSV", () => {
+      expect(buildDemoV1Csv("S", sampleDocuments, sampleMetadata)).toBe(buildDemoV1Csv("S", sampleDocuments, { ...sampleMetadata, approvedAt: "2030-01-01" }));
+    });
   });
 });

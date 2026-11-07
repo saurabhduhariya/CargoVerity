@@ -160,8 +160,8 @@ export default async function ReviewPage({
   // 5. Load audit trail for manager review and compliance (Rule 5)
   const auditEvents = await prisma.auditEvent.findMany({
     where: { shipmentId: shipment.id },
-    orderBy: { createdAt: "desc" },
-    take: 25,
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: 200,
     include: { actor: { select: { email: true, role: true } } },
   });
 

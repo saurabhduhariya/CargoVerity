@@ -1,16 +1,21 @@
+import { parseStrictDecimal } from "@/lib/normalizers/decimal";
+import { normalizePackageType } from "@/lib/normalizers/package";
+import { normalizeWeight } from "@/lib/normalizers/weight";
+
 /**
- * CargoVerity Export Profile Definitions (Week 5 Step 3)
+ * Week 5 Step 3: typed export profile `demo-v1`.
  *
- * Requirements:
- * 1. Typed ExportProfile representation.
- * 2. Profile ID and version, initially demo-v1.
- * 3. Ordered columns and source-field mappings.
- * 4. Date, number, null and unit formatting.
- * 5. Line-item row expansion (repeats shipment columns per line item).
- * 6. Labels mapping as an assumption ([ASSUMPTION] Temporary export profile).
- * 7. Excludes personal contacts (telephone, personal addresses).
- * 8. Validation list for required export fields.
- * 9. Pluggable registry so client templates can replace demo-v1 without changing domain data.
+ * [ASSUMPTION] The client's filing-software template has not been delivered. demo-v1 is a
+ * temporary, documented mapping (docs/assumptions.md, "Export profile demo-v1"). A real template replaces it
+ * by registering a new profile; shipment data does not change.
+ *
+ * - Exactly the 21 plan columns, in plan order. No personal contacts (no emails, phones, names
+ *   of people); approval details are kept on the ExportEvent, not in the file.
+ * - Dates: YYYY-MM-DD. Day-first numeric dates (DD/MM/YYYY) are accepted only when unambiguous.
+ * - Numbers: decimal strings preserved (no float rounding, no scientific notation); grouping
+ *   commas removed. Weights are converted to kilograms from their stated unit.
+ * - Null / missing values: empty cell.
+ * - One CSV row per goods line item; shipment-level columns repeated on every row.
  */
 
 export const DEMO_V1_COLUMNS = [
@@ -32,16 +37,14 @@ export const DEMO_V1_COLUMNS = [
   "Package_Count",
   "Package_Type",
   "Container_No",
+  "BL_No",
   "Port_Of_Loading",
   "Port_Of_Discharge",
-  "BL_No",
-  "BL_Date",
-  "Approved_By",
-  "Approved_At",
 ] as const;
 
 export type DemoV1Column = (typeof DEMO_V1_COLUMNS)[number];
 
+/** Columns that must be present (and valid) before the CSV can be exported. */
 export const DEMO_V1_REQUIRED_FIELDS = [
   "Shipment_Ref",
   "Supplier_Name",
@@ -50,9 +53,47 @@ export const DEMO_V1_REQUIRED_FIELDS = [
   "Currency",
   "Gross_Weight_KG",
   "Package_Count",
-  "Approved_By",
-  "Approved_At",
-] as const;
+  "BL_No",
+  "Port_Of_Loading",
+  "Port_Of_Discharge",
+] as const satisfies readonly DemoV1Column[];
+
+type DocType = "INVOICE" | "PACKING_LIST" | "BILL_OF_LADING";
+
+export type ColumnSource =
+  | { kind: "shipment"; property: "shipmentReference" | "supplierName" }
+  | { kind: "field"; fieldKey: string; documents: readonly DocType[]; format: "text" | "date" | "weightKg" | "integer" | "upper" }
+  | { kind: "fieldUnit"; fieldKey: string; documents: readonly DocType[]; format: "packageType" }
+  | { kind: "line"; property: "lineNumber" | "hsnCode" | "description" | "quantity" | "quantityUnit" | "unitPrice" | "lineTotal" };
+
+/**
+ * Declarative column -> source mapping (Rule 3). Documents are tried in the listed order; the
+ * first non-empty value wins. Supplier_Name falls back to the Invoice exporter.
+ */
+export const DEMO_V1_COLUMN_SOURCES: Record<DemoV1Column, ColumnSource> = {
+  Shipment_Ref: { kind: "shipment", property: "shipmentReference" },
+  Supplier_Name: { kind: "shipment", property: "supplierName" },
+  Invoice_No: { kind: "field", fieldKey: "documentNumber", documents: ["INVOICE"], format: "text" },
+  Invoice_Date: { kind: "field", fieldKey: "issueDate", documents: ["INVOICE"], format: "date" },
+  Currency: { kind: "field", fieldKey: "currency", documents: ["INVOICE"], format: "upper" },
+  Incoterm: { kind: "field", fieldKey: "incoterm", documents: ["INVOICE"], format: "upper" },
+  Item_Sr: { kind: "line", property: "lineNumber" },
+  HSN_Code: { kind: "line", property: "hsnCode" },
+  Item_Description: { kind: "line", property: "description" },
+  Quantity: { kind: "line", property: "quantity" },
+  Unit: { kind: "line", property: "quantityUnit" },
+  Unit_Price: { kind: "line", property: "unitPrice" },
+  Line_Total: { kind: "line", property: "lineTotal" },
+  Gross_Weight_KG: { kind: "field", fieldKey: "grossWeight", documents: ["PACKING_LIST", "BILL_OF_LADING", "INVOICE"], format: "weightKg" },
+  Net_Weight_KG: { kind: "field", fieldKey: "netWeight", documents: ["PACKING_LIST", "INVOICE", "BILL_OF_LADING"], format: "weightKg" },
+  Package_Count: { kind: "field", fieldKey: "packageCount", documents: ["PACKING_LIST", "BILL_OF_LADING", "INVOICE"], format: "integer" },
+  // Extraction stores the package type as the unit of the package count ("120" + "cartons").
+  Package_Type: { kind: "fieldUnit", fieldKey: "packageCount", documents: ["PACKING_LIST", "BILL_OF_LADING", "INVOICE"], format: "packageType" },
+  Container_No: { kind: "field", fieldKey: "containerNumber", documents: ["BILL_OF_LADING"], format: "upper" },
+  BL_No: { kind: "field", fieldKey: "documentNumber", documents: ["BILL_OF_LADING"], format: "text" },
+  Port_Of_Loading: { kind: "field", fieldKey: "portOfLoading", documents: ["BILL_OF_LADING"], format: "text" },
+  Port_Of_Discharge: { kind: "field", fieldKey: "portOfDischarge", documents: ["BILL_OF_LADING"], format: "text" },
+};
 
 export interface ExportFieldSnapshot {
   fieldKey: string;
@@ -86,6 +127,7 @@ export interface ShipmentExportSnapshot {
   supplierName?: string | null;
   importerName?: string | null;
   documents: ExportDocumentSnapshot[];
+  /** Approval details are metadata for the export record; they are not written into the CSV. */
   approvedBy?: string | null;
   approvedAt?: Date | string | null;
   approvedRevision?: number | null;
@@ -100,9 +142,17 @@ export interface ExportProfileResult {
   assumptionLabel: string;
 }
 
+export interface ExportFieldIssue {
+  column: string;
+  problem: string;
+}
+
 export interface ExportValidationResult {
   valid: boolean;
+  /** Required columns with no value. */
   missingFields: string[];
+  /** Columns whose value cannot be exported as-is (bad date, unknown weight unit, ...). */
+  invalidFields: ExportFieldIssue[];
 }
 
 export interface ExportProfile {
@@ -112,103 +162,238 @@ export interface ExportProfile {
   assumptionLabel: string;
   columns: readonly string[];
   requiredFields: readonly string[];
+  columnSources?: Record<string, ColumnSource>;
   generateRows: (snapshot: ShipmentExportSnapshot) => ExportProfileResult;
   validate: (snapshot: ShipmentExportSnapshot) => ExportValidationResult;
 }
 
+/* ----------------------------------------------------------------------------------------- */
+/* Formatting                                                                                 */
+/* ----------------------------------------------------------------------------------------- */
+
+const MONTHS: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,
+};
+
+function isoDate(year: number, month: number, day: number): string | null {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function expandYear(year: number) {
+  return year < 100 ? 2000 + year : year;
+}
+
+export type ParsedExportDate = { ok: true; value: string } | { ok: false; reason: "UNPARSEABLE_DATE" | "AMBIGUOUS_DATE" };
+
 /**
- * Formats dates into ISO standard YYYY-MM-DD.
+ * Strict date parsing to YYYY-MM-DD. Accepts ISO dates/datetimes, month-name dates
+ * ("15-Oct-2026", "15 October 2026", "Oct 15, 2026") and day-first numeric dates
+ * (DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY) only when the day is > 12. "03/04/2026" is ambiguous and
+ * is rejected so a reviewer confirms it instead of the export guessing.
  */
-export function formatExportDate(value: unknown): string {
-  if (value === null || value === undefined || value === "") return "";
+export function parseExportDate(value: unknown): ParsedExportDate | null {
+  if (value === null || value === undefined || value === "") return null;
   if (value instanceof Date) {
-    return isNaN(value.getTime()) ? "" : value.toISOString().slice(0, 10);
+    return Number.isNaN(value.getTime()) ? { ok: false, reason: "UNPARSEABLE_DATE" } : { ok: true, value: value.toISOString().slice(0, 10) };
   }
   const str = String(value).trim();
-  if (!str) return "";
+  if (!str) return null;
 
-  // If already YYYY-MM-DD
-  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
-
-  // If ISO date string
-  if (/^\d{4}-\d{2}-\d{2}T/.test(str)) {
-    return str.slice(0, 10);
+  let match = /^(\d{4})-(\d{2})-(\d{2})(?:[T ][\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)?$/.exec(str);
+  if (match) {
+    const parsed = isoDate(Number(match[1]), Number(match[2]), Number(match[3]));
+    return parsed ? { ok: true, value: parsed } : { ok: false, reason: "UNPARSEABLE_DATE" };
   }
 
-  // Attempt parse
-  const parsed = new Date(str);
-  if (!isNaN(parsed.getTime())) {
-    return parsed.toISOString().slice(0, 10);
+  match = /^(\d{1,2})[\s.\-/]+([A-Za-z]{3,9})\.?[\s.\-/,]+(\d{2,4})$/.exec(str);
+  if (match && MONTHS[match[2].slice(0, 3).toLowerCase()]) {
+    const parsed = isoDate(expandYear(Number(match[3])), MONTHS[match[2].slice(0, 3).toLowerCase()], Number(match[1]));
+    return parsed ? { ok: true, value: parsed } : { ok: false, reason: "UNPARSEABLE_DATE" };
   }
 
-  return str;
+  match = /^([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})$/.exec(str);
+  if (match && MONTHS[match[1].slice(0, 3).toLowerCase()]) {
+    const parsed = isoDate(Number(match[3]), MONTHS[match[1].slice(0, 3).toLowerCase()], Number(match[2]));
+    return parsed ? { ok: true, value: parsed } : { ok: false, reason: "UNPARSEABLE_DATE" };
+  }
+
+  match = /^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/.exec(str);
+  if (match) {
+    const first = Number(match[1]);
+    const second = Number(match[2]);
+    if (first <= 12 && second <= 12 && first !== second) return { ok: false, reason: "AMBIGUOUS_DATE" };
+    // Day-first (DD/MM/YYYY), the convention for the client's Indian customs documents.
+    const parsed = first > 12 || first === second ? isoDate(expandYear(Number(match[3])), second, first) : null;
+    if (parsed) return { ok: true, value: parsed };
+    return { ok: false, reason: second > 12 ? "AMBIGUOUS_DATE" : "UNPARSEABLE_DATE" };
+  }
+
+  return { ok: false, reason: "UNPARSEABLE_DATE" };
+}
+
+/** Formats a date to YYYY-MM-DD; returns "" when empty and the trimmed input when it cannot be parsed. */
+export function formatExportDate(value: unknown): string {
+  const parsed = parseExportDate(value);
+  if (!parsed) return "";
+  return parsed.ok ? parsed.value : String(value).trim();
 }
 
 /**
- * Formats numbers into clean decimal strings without scientific notation.
+ * Formats a number as a plain decimal string: preserves the given decimal digits, removes
+ * grouping commas, never uses scientific notation. Non-numeric input is returned trimmed.
  */
 export function formatExportNumber(value: unknown): string {
   if (value === null || value === undefined || value === "") return "";
-  const num = Number(value);
-  if (!isNaN(num) && Number.isFinite(num)) {
-    // Preserve string decimal if provided, else format number
-    const str = String(value).trim();
-    if (/^-?\d+(\.\d+)?$/.test(str)) return str;
-    return String(num);
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return "";
+    const plain = String(value);
+    // Avoid exponent notation (1e-7, 1e21) for very small or large numbers.
+    return /e/i.test(plain) ? value.toLocaleString("en-US", { useGrouping: false, maximumFractionDigits: 20 }) : plain;
   }
-  return String(value).trim();
+  const str = String(value).trim();
+  if (/^-?\d+(\.\d+)?$/.test(str)) return str;
+  const parsed = parseStrictDecimal(str);
+  if (parsed.ok) return str.replace(/,/g, "").replace(/ /g, "");
+  return str;
 }
 
+const PLAIN_NUMBER = /^-?\d+(\.\d+)?$/;
+const FORMULA_START = new Set(["=", "+", "-", "@", "\t", "\r", "|", "%"]);
+
 /**
- * Sanitizes cell values to guard against spreadsheet formula injection (RFC 4180 security).
- * Formula starters (=, +, -, @, \t, \r) are prefixed with a single quote unless it's a valid negative number.
+ * Guards against spreadsheet formula injection. Text whose first non-whitespace character could
+ * start a formula is prefixed with a single quote. Plain numbers (including negatives such as
+ * -12.50) are left untouched so typed values are not corrupted.
  */
 export function sanitizeCsvCell(value: unknown): string {
   if (value === null || value === undefined) return "";
   const str = String(value);
   if (str === "") return "";
-
-  // Preserve valid negative numbers (e.g. -12.50) without prefixing
-  if (/^-\d+(\.\d+)?$/.test(str.trim())) {
-    return str;
-  }
-
-  const firstChar = str.charAt(0);
-  if (["=", "+", "-", "@", "\t", "\r"].includes(firstChar)) {
+  if (PLAIN_NUMBER.test(str)) return str;
+  const firstVisible = str.trimStart().charAt(0);
+  if (FORMULA_START.has(str.charAt(0)) || FORMULA_START.has(firstVisible)) {
     return `'${str}`;
   }
-
   return str;
 }
 
-/**
- * Escapes cell content according to RFC 4180 rules.
- */
+/** RFC 4180: every field is quoted; embedded quotes are doubled. */
 export function escapeCsvCell(value: unknown): string {
   const sanitized = sanitizeCsvCell(value);
-  if (
-    sanitized.includes(",") ||
-    sanitized.includes('"') ||
-    sanitized.includes("\n") ||
-    sanitized.includes("\r")
-  ) {
-    return `"${sanitized.replaceAll('"', '""')}"`;
-  }
-  return `"${sanitized}"`;
+  return `"${sanitized.replaceAll('"', '""')}"`;
 }
 
-/**
- * Serializes rows into an RFC 4180 CSV string.
- */
+/** RFC 4180 CSV: CRLF record separator, header row first, terminating CRLF. */
 export function serializeCsv(headers: string[], rows: string[][]): string {
   const allRows = [headers, ...rows];
-  return allRows.map((row) => row.map(escapeCsvCell).join(",")).join("\n");
+  return `${allRows.map((row) => row.map(escapeCsvCell).join(",")).join("\r\n")}\r\n`;
 }
 
-function getFieldValue(doc: ExportDocumentSnapshot | undefined, key: string): string | null {
-  if (!doc) return null;
-  const f = doc.fields.find((field) => field.fieldKey === key);
-  return f?.currentValue ?? null;
+/* ----------------------------------------------------------------------------------------- */
+/* Value resolution                                                                           */
+/* ----------------------------------------------------------------------------------------- */
+
+function findField(snapshot: ShipmentExportSnapshot, fieldKey: string, documents: readonly DocType[]) {
+  for (const docType of documents) {
+    const doc = snapshot.documents.find((d) => d.docType === docType);
+    const field = doc?.fields.find((f) => f.fieldKey === fieldKey);
+    if (field && field.currentValue !== null && field.currentValue !== undefined && String(field.currentValue).trim() !== "") {
+      return { field, docType };
+    }
+  }
+  return null;
+}
+
+type Resolved = { value: string; issue?: string };
+
+function resolveShipmentColumn(snapshot: ShipmentExportSnapshot, column: DemoV1Column): Resolved {
+  const source = DEMO_V1_COLUMN_SOURCES[column];
+  switch (source.kind) {
+    case "shipment": {
+      if (source.property === "shipmentReference") return { value: snapshot.shipmentReference ?? "" };
+      const supplier = snapshot.supplierName?.trim() || findField(snapshot, "exporter", ["INVOICE", "PACKING_LIST", "BILL_OF_LADING"])?.field.currentValue?.trim();
+      return { value: supplier ?? "" };
+    }
+    case "fieldUnit": {
+      const found = findField(snapshot, source.fieldKey, source.documents);
+      const explicit = findField(snapshot, "packageType", source.documents)?.field.currentValue;
+      const raw = found?.field.unit ?? explicit ?? null;
+      return { value: raw ? normalizePackageType(raw) ?? "" : "" };
+    }
+    case "field": {
+      const found = findField(snapshot, source.fieldKey, source.documents);
+      if (!found) return { value: "" };
+      const raw = String(found.field.currentValue).trim();
+      switch (source.format) {
+        case "text":
+          return { value: raw };
+        case "upper":
+          return { value: raw.toUpperCase() };
+        case "date": {
+          const parsed = parseExportDate(raw);
+          if (parsed && !parsed.ok) {
+            return {
+              value: raw,
+              issue: parsed.reason === "AMBIGUOUS_DATE" ? `ambiguous date "${raw}"; confirm it as YYYY-MM-DD` : `unrecognised date "${raw}"`,
+            };
+          }
+          return { value: parsed?.ok ? parsed.value : "" };
+        }
+        case "weightKg": {
+          const weight = normalizeWeight({ value: raw, unit: found.field.unit ?? null });
+          if (!weight.ok) {
+            const why =
+              weight.error === "MISSING_EXPLICIT_UNIT"
+                ? "no unit recorded"
+                : weight.error === "AMBIGUOUS_WEIGHT_UNIT"
+                  ? `ambiguous unit "${found.field.unit}"`
+                  : weight.error === "UNKNOWN_WEIGHT_UNIT"
+                    ? `unknown unit "${found.field.unit}"`
+                    : `invalid weight "${raw}"`;
+            return { value: "", issue: `${why} on the ${found.docType.replaceAll("_", " ").toLowerCase()}` };
+          }
+          return { value: weight.weightInKg.toString() };
+        }
+        case "integer": {
+          const parsed = parseStrictDecimal(raw);
+          if (!parsed.ok || !parsed.value.isInteger() || parsed.value.isNegative()) {
+            return { value: raw, issue: `"${raw}" is not a whole number` };
+          }
+          return { value: parsed.value.toFixed(0) };
+        }
+      }
+    }
+    // Line columns are resolved per row.
+    case "line":
+      return { value: "" };
+  }
+}
+
+function lineCell(item: ExportLineItemSnapshot | null, column: DemoV1Column): string {
+  const source = DEMO_V1_COLUMN_SOURCES[column];
+  if (source.kind !== "line" || !item) return "";
+  switch (source.property) {
+    case "lineNumber":
+      return String(item.lineNumber);
+    case "hsnCode":
+      return item.hsnCode?.trim() ?? "";
+    case "description":
+      return item.description ?? "";
+    case "quantityUnit":
+      return item.quantityUnit?.trim() ?? "";
+    default:
+      return formatExportNumber(item[source.property]);
+  }
+}
+
+function goodsLines(snapshot: ShipmentExportSnapshot): ExportLineItemSnapshot[] {
+  const invoice = snapshot.documents.find((d) => d.docType === "INVOICE");
+  const packing = snapshot.documents.find((d) => d.docType === "PACKING_LIST");
+  const lines = invoice?.lineItems?.length ? invoice.lineItems : packing?.lineItems ?? [];
+  return [...lines].sort((a, b) => a.lineNumber - b.lineNumber);
 }
 
 /**
@@ -216,165 +401,49 @@ function getFieldValue(doc: ExportDocumentSnapshot | undefined, key: string): st
  */
 export const demoV1Profile: ExportProfile = {
   id: "demo-v1",
-  version: "1.0.0",
+  version: "1.1.0",
   name: "Demo V1 Customs Reconciliation Profile",
   assumptionLabel:
     "[ASSUMPTION] Temporary export profile demo-v1; filing-software customs template awaiting client specification.",
   columns: DEMO_V1_COLUMNS,
   requiredFields: DEMO_V1_REQUIRED_FIELDS,
+  columnSources: DEMO_V1_COLUMN_SOURCES,
 
   validate(snapshot: ShipmentExportSnapshot): ExportValidationResult {
     const missingFields: string[] = [];
-    const invDoc = snapshot.documents.find((d) => d.docType === "INVOICE");
-    const plDoc = snapshot.documents.find((d) => d.docType === "PACKING_LIST");
-    const blDoc = snapshot.documents.find((d) => d.docType === "BILL_OF_LADING");
+    const invalidFields: ExportFieldIssue[] = [];
 
-    if (!snapshot.shipmentReference) missingFields.push("Shipment_Ref");
-    const supplier = snapshot.supplierName || getFieldValue(invDoc, "exporter");
-    if (!supplier) missingFields.push("Supplier_Name");
+    for (const column of DEMO_V1_COLUMNS) {
+      if (DEMO_V1_COLUMN_SOURCES[column].kind === "line") continue;
+      const resolved = resolveShipmentColumn(snapshot, column);
+      if (resolved.issue) invalidFields.push({ column, problem: resolved.issue });
+      else if ((DEMO_V1_REQUIRED_FIELDS as readonly string[]).includes(column) && !resolved.value) missingFields.push(column);
+    }
 
-    if (!getFieldValue(invDoc, "documentNumber")) missingFields.push("Invoice_No");
-    if (!getFieldValue(invDoc, "issueDate")) missingFields.push("Invoice_Date");
-    if (!getFieldValue(invDoc, "currency")) missingFields.push("Currency");
-
-    const grossWeight =
-      getFieldValue(plDoc, "grossWeight") ||
-      getFieldValue(invDoc, "grossWeight") ||
-      getFieldValue(blDoc, "grossWeight");
-    if (!grossWeight) missingFields.push("Gross_Weight_KG");
-
-    const packageCount =
-      getFieldValue(plDoc, "packageCount") ||
-      getFieldValue(blDoc, "packageCount") ||
-      getFieldValue(invDoc, "packageCount");
-    if (!packageCount) missingFields.push("Package_Count");
-
-    if (!snapshot.approvedBy) missingFields.push("Approved_By");
-    if (!snapshot.approvedAt) missingFields.push("Approved_At");
-
-    return {
-      valid: missingFields.length === 0,
-      missingFields,
-    };
+    return { valid: missingFields.length === 0 && invalidFields.length === 0, missingFields, invalidFields };
   },
 
   generateRows(snapshot: ShipmentExportSnapshot): ExportProfileResult {
-    const invDoc = snapshot.documents.find((d) => d.docType === "INVOICE");
-    const plDoc = snapshot.documents.find((d) => d.docType === "PACKING_LIST");
-    const blDoc = snapshot.documents.find((d) => d.docType === "BILL_OF_LADING");
-
-    // Common shipment headers
-    const shipmentRef = snapshot.shipmentReference;
-    const supplierName = snapshot.supplierName || getFieldValue(invDoc, "exporter") || "";
-    const invoiceNo = getFieldValue(invDoc, "documentNumber") || "";
-    const invoiceDate = formatExportDate(getFieldValue(invDoc, "issueDate"));
-    const currency = getFieldValue(invDoc, "currency") || "";
-    const incoterm = getFieldValue(invDoc, "incoterm") || "";
-
-    const grossWeightKg = formatExportNumber(
-      getFieldValue(plDoc, "grossWeight") ||
-        getFieldValue(invDoc, "grossWeight") ||
-        getFieldValue(blDoc, "grossWeight"),
-    );
-    const netWeightKg = formatExportNumber(
-      getFieldValue(plDoc, "netWeight") || getFieldValue(invDoc, "netWeight"),
-    );
-    const packageCount = formatExportNumber(
-      getFieldValue(plDoc, "packageCount") ||
-        getFieldValue(blDoc, "packageCount") ||
-        getFieldValue(invDoc, "packageCount"),
-    );
-    const packageType =
-      getFieldValue(plDoc, "packageType") ||
-      getFieldValue(blDoc, "packageType") ||
-      getFieldValue(invDoc, "packageType") ||
-      "";
-
-    const containerNo = getFieldValue(blDoc, "containerNumber") || "";
-    const portOfLoading = getFieldValue(blDoc, "portOfLoading") || "";
-    const portOfDischarge = getFieldValue(blDoc, "portOfDischarge") || "";
-    const blNo = getFieldValue(blDoc, "documentNumber") || "";
-    const blDate = formatExportDate(getFieldValue(blDoc, "issueDate"));
-
-    const approvedBy = snapshot.approvedBy || "";
-    const approvedAt = formatExportDate(snapshot.approvedAt);
-
-    // Line item row expansion (Rule 5)
-    const lineItems =
-      invDoc?.lineItems && invDoc.lineItems.length > 0
-        ? invDoc.lineItems
-        : plDoc?.lineItems && plDoc.lineItems.length > 0
-          ? plDoc.lineItems
-          : [];
-
-    const rows: string[][] = [];
-
-    if (lineItems.length > 0) {
-      for (const item of lineItems) {
-        rows.push([
-          shipmentRef,
-          supplierName,
-          invoiceNo,
-          invoiceDate,
-          currency,
-          incoterm,
-          String(item.lineNumber),
-          item.hsnCode || "",
-          item.description || "",
-          formatExportNumber(item.quantity),
-          item.quantityUnit || "",
-          formatExportNumber(item.unitPrice),
-          formatExportNumber(item.lineTotal),
-          grossWeightKg,
-          netWeightKg,
-          packageCount,
-          packageType,
-          containerNo,
-          portOfLoading,
-          portOfDischarge,
-          blNo,
-          blDate,
-          approvedBy,
-          approvedAt,
-        ]);
+    const shipmentValues = new Map<DemoV1Column, string>();
+    for (const column of DEMO_V1_COLUMNS) {
+      if (DEMO_V1_COLUMN_SOURCES[column].kind !== "line") {
+        shipmentValues.set(column, resolveShipmentColumn(snapshot, column).value);
       }
-    } else {
-      // Single row if no line items exist
-      rows.push([
-        shipmentRef,
-        supplierName,
-        invoiceNo,
-        invoiceDate,
-        currency,
-        incoterm,
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        grossWeightKg,
-        netWeightKg,
-        packageCount,
-        packageType,
-        containerNo,
-        portOfLoading,
-        portOfDischarge,
-        blNo,
-        blDate,
-        approvedBy,
-        approvedAt,
-      ]);
     }
 
-    const headers = [...DEMO_V1_COLUMNS];
-    const csv = serializeCsv(headers, rows);
+    const lines = goodsLines(snapshot);
+    const rowSources: Array<ExportLineItemSnapshot | null> = lines.length > 0 ? lines : [null];
+    const rows = rowSources.map((item) =>
+      DEMO_V1_COLUMNS.map((column) =>
+        DEMO_V1_COLUMN_SOURCES[column].kind === "line" ? lineCell(item, column) : shipmentValues.get(column) ?? "",
+      ),
+    );
 
+    const headers = [...DEMO_V1_COLUMNS];
     return {
       headers,
       rows,
-      csv,
+      csv: serializeCsv(headers, rows),
       profileId: this.id,
       profileVersion: this.version,
       assumptionLabel: this.assumptionLabel,
@@ -400,4 +469,3 @@ export function getExportProfile(profileId = "demo-v1"): ExportProfile {
 export function registerExportProfile(profile: ExportProfile): void {
   exportProfiles[profile.id] = profile;
 }
-

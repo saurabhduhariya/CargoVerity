@@ -55,28 +55,31 @@ describe("Accuracy & Supplier Reports Engine (Week 5 Step 6)", () => {
         { id: "4", fieldKey: "docNo", modelValue: "INV-4", currentValue: "INV-4", reviewStatus: "REQUIRES_REVIEW" },
         // Manual entry -> NOT EVALUATED (Rule 6)
         { id: "5", fieldKey: "docNo", modelValue: null, currentValue: "INV-5", reviewStatus: "MANUAL_ENTRY" },
-        // Blank AI value -> NOT EVALUATED
+        // Blank AI value: the value came from a person -> manual, NOT EVALUATED
         { id: "6", fieldKey: "docNo", modelValue: "  ", currentValue: "INV-6", reviewStatus: "CONFIRMED" },
+        // Reviewed as not on the document -> outside every denominator
+        { id: "7", fieldKey: "docNo", modelValue: null, currentValue: null, reviewStatus: "NOT_PRESENT" },
       ];
 
       const metrics = aggregateGroupMetrics("docNo", "Document Number", records);
 
-      expect(metrics.totalFields).toBe(6);
+      expect(metrics.totalFields).toBe(7);
       expect(metrics.evaluated).toBe(2); // Only items 1 and 2
-      expect(metrics.unreviewed).toBe(3); // Items 3, 4, 6
-      expect(metrics.manualEntries).toBe(1); // Item 5
+      expect(metrics.unreviewed).toBe(2); // Items 3, 4
+      expect(metrics.manualEntries).toBe(2); // Items 5, 6
+      expect(metrics.notApplicable).toBe(1); // Item 7
     });
 
     it("satisfies Rule 2, 3, 4, 5: computes accuracy and correction rates over evaluated fields", () => {
       const records: RawFieldRecord[] = [
-        // 3 correct
-        { id: "1", fieldKey: "curr", modelValue: "usd", currentValue: "USD", reviewStatus: "CONFIRMED" },
-        { id: "2", fieldKey: "curr", modelValue: "EUR", currentValue: "EUR", reviewStatus: "CONFIRMED" },
-        { id: "3", fieldKey: "curr", modelValue: "GBP", currentValue: "GBP", reviewStatus: "VERIFIED" },
+        // 3 correct (equivalent after normalization; a CORRECTED field that ended equal is correct too)
+        { id: "1", fieldKey: "curr", modelValue: "usd", currentValue: "USD", reviewStatus: "CONFIRMED", shipmentId: "s1" },
+        { id: "2", fieldKey: "curr", modelValue: "EUR", currentValue: "EUR", reviewStatus: "CONFIRMED", shipmentId: "s1" },
+        { id: "3", fieldKey: "curr", modelValue: "GBP", currentValue: "gbp", reviewStatus: "CORRECTED", shipmentId: "s2" },
         // 1 corrected
-        { id: "4", fieldKey: "curr", modelValue: "JPY", currentValue: "USD", reviewStatus: "CORRECTED", correctionsCount: 1 },
+        { id: "4", fieldKey: "curr", modelValue: "JPY", currentValue: "USD", reviewStatus: "CORRECTED", correctionsCount: 1, shipmentId: "s2" },
         // 1 unreviewed (must not dilute or inflate denominator)
-        { id: "5", fieldKey: "curr", modelValue: "CAD", currentValue: "CAD", reviewStatus: "PENDING" },
+        { id: "5", fieldKey: "curr", modelValue: "CAD", currentValue: "CAD", reviewStatus: "PENDING", shipmentId: "s3" },
       ];
 
       const metrics = aggregateGroupMetrics("curr", "Currency", records);
@@ -99,8 +102,11 @@ describe("Accuracy & Supplier Reports Engine (Week 5 Step 6)", () => {
       expect(metrics.correctionRate.denominator).toBe(4);
 
       // Rule 10: Numerator, denominator and sample size beside percentage
-      expect(metrics.accuracy.display).toBe("75.0% (3 / 4 evaluated fields, n = 4)");
-      expect(metrics.correctionRate.display).toBe("25.0% (1 / 4 evaluated fields, n = 4)");
+      // n = distinct shipments behind the evaluated fields (s1, s2), not the field count
+      expect(metrics.shipmentsEvaluated).toBe(2);
+      expect(metrics.accuracy.sampleSize).toBe(2);
+      expect(metrics.accuracy.display).toBe("75.0% (3 / 4 evaluated fields, n = 2 shipments)");
+      expect(metrics.correctionRate.display).toBe("25.0% (1 / 4 evaluated fields, n = 2 shipments)");
     });
 
     it("satisfies Rule 6: never counts manual entries as correct AI extraction", () => {
@@ -179,11 +185,12 @@ describe("Accuracy & Supplier Reports Engine (Week 5 Step 6)", () => {
       const report = calculateAccuracyReport(testFields);
 
       // Suppliers: "Apex Supplies Ltd", "Global Logistics Co" (normalized from "  Global   Logistics  Co  "), "Unassigned Supplier"
-      expect(report.bySupplier.map((s) => s.groupKey)).toEqual(
+      expect(report.bySupplier.map((s) => s.groupLabel)).toEqual(
         expect.arrayContaining(["Apex Supplies Ltd", "Global Logistics Co", "Unassigned Supplier"]),
       );
+      expect(report.bySupplier).toHaveLength(3);
 
-      const globalSupplier = report.bySupplier.find((s) => s.groupKey === "Global Logistics Co");
+      const globalSupplier = report.bySupplier.find((s) => s.groupLabel === "Global Logistics Co");
       expect(globalSupplier).toBeDefined();
       expect(globalSupplier?.totalFields).toBe(3);
       expect(globalSupplier?.evaluated).toBe(2); // items 4 and 5
@@ -231,7 +238,7 @@ describe("Accuracy & Supplier Reports Engine (Week 5 Step 6)", () => {
         {
           id: "shp-1",
           reference: "SHP-001",
-          supplier: { name: "Apex Ltd" },
+          supplier: { id: "sup-apex", name: "Apex Ltd" },
           documents: [
             {
               docType: "INVOICE",
@@ -239,6 +246,7 @@ describe("Accuracy & Supplier Reports Engine (Week 5 Step 6)", () => {
               extractionRuns: [
                 {
                   status: "COMPLETED",
+                  provider: "groq",
                   fields: [
                     {
                       id: "f-1",
@@ -246,7 +254,7 @@ describe("Accuracy & Supplier Reports Engine (Week 5 Step 6)", () => {
                       modelValue: "INV-101",
                       currentValue: "INV-101",
                       reviewStatus: "CONFIRMED",
-                      corrections: [],
+                      _count: { corrections: 0 },
                     },
                     {
                       id: "f-2",
@@ -254,7 +262,7 @@ describe("Accuracy & Supplier Reports Engine (Week 5 Step 6)", () => {
                       modelValue: "500",
                       currentValue: "550",
                       reviewStatus: "CORRECTED",
-                      corrections: [{ id: "c-1", previousValue: "500", newValue: "550", reason: "Typo" }],
+                      _count: { corrections: 1 },
                     },
                   ],
                 },
@@ -269,8 +277,7 @@ describe("Accuracy & Supplier Reports Engine (Week 5 Step 6)", () => {
       };
       vi.spyOn(db, "getPrisma").mockReturnValue(mockPrisma as never);
 
-      const request = new Request("http://localhost:3000/api/reports/accuracy");
-      const response = await GET(request);
+      const response = await GET();
 
       expect(response.status).toBe(200);
       const json = await response.json();
@@ -280,14 +287,63 @@ describe("Accuracy & Supplier Reports Engine (Week 5 Step 6)", () => {
       expect(json.summary.correctAsExtracted).toBe(1);
       expect(json.summary.corrected).toBe(1);
       expect(json.summary.accuracy.percentage).toBe(50);
-      expect(json.summary.accuracy.display).toBe("50.0% (1 / 2 evaluated fields, n = 2)");
+      expect(json.summary.accuracy.display).toBe("50.0% (1 / 2 evaluated fields, n = 1 shipment)");
+      expect(json.summary.shipmentsEvaluated).toBe(1);
 
       expect(json.byFieldKey).toHaveLength(2);
       expect(json.bySupplier).toHaveLength(1);
-      expect(json.bySupplier[0].groupKey).toBe("Apex Ltd");
+      expect(json.bySupplier[0].groupKey).toBe("sup-apex");
+      expect(json.bySupplier[0].groupLabel).toBe("Apex Ltd");
       expect(json.dataset.type).toBe("SYNTHETIC_DEMO");
       expect(json.benchmarkTarget.targetClaimed).toBe(false);
     });
   });
-});
 
+  describe("Week 5 Step 6 fixes", () => {
+    it("a CONFIRMED value that differs from the AI value (changed earlier) counts as a correction", () => {
+      const metrics = aggregateGroupMetrics("w", "Weight", [
+        { id: "1", fieldKey: "grossWeight", modelValue: "3,165.00", currentValue: "3165", reviewStatus: "CONFIRMED", shipmentId: "s1" },
+        { id: "2", fieldKey: "grossWeight", modelValue: "3120", currentValue: "3165", reviewStatus: "CONFIRMED", shipmentId: "s1" },
+      ]);
+      expect(metrics.correctAsExtracted).toBe(1);
+      expect(metrics.corrected).toBe(1);
+    });
+
+    it("MANUAL_ENTRY never counts as correct AI extraction even when an AI value existed", () => {
+      const metrics = aggregateGroupMetrics("p", "Port", [
+        { id: "1", fieldKey: "portOfLoading", modelValue: "INBOM", currentValue: "INBOM", reviewStatus: "MANUAL_ENTRY" },
+      ]);
+      expect(metrics).toMatchObject({ evaluated: 0, correctAsExtracted: 0, manualEntries: 1 });
+    });
+
+    it("normalizes day-first and month-name dates the same way as the export", () => {
+      expect(areFieldValuesEquivalent("issueDate", "15/10/2026", "2026-10-15")).toBe(true);
+      expect(areFieldValuesEquivalent("issueDate", "15-Oct-2026", "2026-10-15")).toBe(true);
+      expect(areFieldValuesEquivalent("invoiceTotal", "16,320.00", "16320")).toBe(true);
+      expect(areFieldValuesEquivalent("freightAmount", "1,250.50", "1250.5")).toBe(true);
+    });
+
+    it("groups suppliers by supplier ID when available", () => {
+      const report = calculateAccuracyReport([
+        { id: "1", fieldKey: "x", modelValue: "a", currentValue: "a", reviewStatus: "CONFIRMED", supplierId: "sup-1", supplierName: "Apex Ltd" },
+        { id: "2", fieldKey: "x", modelValue: "a", currentValue: "a", reviewStatus: "CONFIRMED", supplierId: "sup-1", supplierName: "APEX LTD" },
+      ]);
+      expect(report.bySupplier).toHaveLength(1);
+      expect(report.bySupplier[0]).toMatchObject({ groupKey: "sup-1", totalFields: 2 });
+    });
+
+    it("the API route ignores a client ?benchmark=1 switch (dataset label is server-side)", async () => {
+      vi.spyOn(auth, "requireAppUser").mockResolvedValue({
+        appUser: { id: "u", email: "u@example.test", role: "MANAGER" } as never,
+        authUser: { id: "u" } as never,
+      });
+      vi.spyOn(db, "getPrisma").mockReturnValue({ shipment: { findMany: vi.fn().mockResolvedValue([]) } } as never);
+      const response = await (GET as unknown as (request: Request) => Promise<Response>)(
+        new Request("http://localhost:3000/api/reports/accuracy?benchmark=1"),
+      );
+      const json = await response.json();
+      expect(json.dataset.type).toBe("SYNTHETIC_DEMO");
+      expect(json.dataset.watermark).toContain("SYNTHETIC DEMO DATA");
+    });
+  });
+});

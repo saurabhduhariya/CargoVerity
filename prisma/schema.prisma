@@ -387,6 +387,12 @@ model ExportEvent {
   exportedById   String          @db.Uuid
   exportedBy     User             @relation(fields: [exportedById], references: [id])
   profileId      String
+  /// Export profile version used for this file (e.g. demo-v1 1.1.0). Null on records created before Week 5 fixes.
+  profileVersion String?
+  /// SHA-256 (hex) of the exact CSV bytes returned.
+  checksumSha256 String?
+  fileName       String?
+  rowCount       Int?
   revision       Int
   createdAt      DateTime         @default(now())
 

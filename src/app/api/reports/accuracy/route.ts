@@ -6,27 +6,21 @@ import { getPrisma } from "@/lib/db";
 import { getAccuracyReport } from "@/lib/reports/accuracy";
 
 /**
- * Week 5 Step 6: Accuracy and Supplier Reports API
- *
  * GET /api/reports/accuracy
  *
- * Gathers current extracted fields and human reviews from accessible shipments,
- * computes exact evaluated, correct, corrected, manual entry and unreviewed counts,
- * and groups metrics by field key and normalized supplier.
+ * Week 5 Step 6: accuracy and supplier report over current documents and their latest completed
+ * extraction (Executives see their own shipments, Managers all shipments). Groups by field key
+ * and supplier with numerator, denominator and sample size on every percentage.
+ *
+ * The dataset label is decided on the server. There is no client-controllable "benchmark" switch:
+ * the stored data is the synthetic demo set until the client's labelled 200-shipment benchmark is
+ * loaded and flagged server-side.
  */
-export async function GET(request: Request) {
+export async function GET() {
   try {
     const { appUser } = await requireAppUser();
-    const prisma = getPrisma();
-
-    const { searchParams } = new URL(request.url);
-    const benchmarkMode = searchParams.get("benchmark") === "1";
-
-    const report = await getAccuracyReport(prisma, appUser, {
-      isLabelledBenchmark: benchmarkMode,
-    });
-
-    return NextResponse.json(report);
+    const report = await getAccuracyReport(getPrisma(), appUser);
+    return NextResponse.json(report, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return apiError(error);
   }

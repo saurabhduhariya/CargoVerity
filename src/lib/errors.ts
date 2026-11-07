@@ -113,7 +113,13 @@ export type ReviewErrorCode =
   | "CHECK_NOT_FAILING"
   | "EVIDENCE_REQUIRED"
   | "VALUES_NOT_CONFIRMED"
-  | "RESOLUTION_LINK_INVALID";
+  | "RESOLUTION_LINK_INVALID"
+  | "NOT_SUBMITTED"
+  | "CHECKS_NOT_RUN"
+  | "STALE_CHECK_RUN"
+  | "UNRESOLVED_CROSS_CHECKS"
+  | "COMMENT_REQUIRED"
+  | "EXPORT_BLOCKED";
 
 export class ReviewError extends Error {
   constructor(

@@ -424,6 +424,8 @@ export function DashboardShell({ email, role }: { email: string; role: "EXECUTIV
                   >
                     <option value="">All Statuses</option>
                     <option value="DRAFT">Draft</option>
+                    <option value="IN_REVIEW">In Review</option>
+                    <option value="EXTRACTING">Extracting</option>
                     <option value="NEEDS_REVIEW">Needs Review</option>
                     <option value="READY_FOR_APPROVAL">Ready for Approval</option>
                     <option value="APPROVED">Approved</option>

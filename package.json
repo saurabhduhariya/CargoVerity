@@ -14,7 +14,7 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:integration": "RUN_INTEGRATION_TESTS=1 vitest run tests/integration",
+    "test:integration": "RUN_INTEGRATION_TESTS=1 vitest run tests/integration --no-file-parallelism",
     "test:e2e": "playwright test",
     "test:smoke": "node --env-file=.env scripts/run-real-ai-smoke.mjs",
     "test:benchmark": "node --env-file=.env scripts/measure-success-targets.mjs",

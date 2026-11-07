@@ -1,5 +1,9 @@
 import { normalizeSupplierName } from "@/lib/shipments";
 import type { PrismaClient } from "@/generated/prisma/client";
+import { parseExportDate } from "@/lib/export/profile";
+import { parseStrictDecimal } from "@/lib/normalizers/decimal";
+
+const NUMERIC_KEY_PATTERN = /weight|quantity|total|price|count|amount|charges|freight|insurance|tax|discount|value|volume|cbm/;
 
 /**
  * Week 5 Step 6: Accuracy and Supplier Reports Core Engine
@@ -26,7 +30,9 @@ export type RawFieldRecord = {
   currentValue: string | null;
   reviewStatus: string;
   correctionsCount?: number;
+  supplierId?: string | null;
   supplierName?: string | null;
+  shipmentId?: string;
   shipmentReference?: string;
   docType?: string;
 };
@@ -49,6 +55,10 @@ export type AccuracyGroupMetrics = {
   corrected: number;
   manualEntries: number;
   unreviewed: number;
+  /** Reviewed as not present / not applicable on the document; outside every denominator. */
+  notApplicable: number;
+  /** Distinct shipments that contributed at least one evaluated field (the sample size). */
+  shipmentsEvaluated: number;
   accuracy: MetricRatio;
   correctionRate: MetricRatio;
 };
@@ -61,6 +71,8 @@ export type AccuracyReport = {
     corrected: number;
     manualEntries: number;
     unreviewed: number;
+    notApplicable: number;
+    shipmentsEvaluated: number;
     accuracy: MetricRatio;
     correctionRate: MetricRatio;
   };
@@ -94,7 +106,7 @@ export function createMetricRatio(
     numerator,
     denominator,
     sampleSize,
-    display: `${percentage.toFixed(1)}% (${numerator} / ${denominator} ${unitLabel}, n = ${sampleSize})`,
+    display: `${percentage.toFixed(1)}% (${numerator} / ${denominator} ${unitLabel}, n = ${sampleSize} shipment${sampleSize === 1 ? "" : "s"})`,
   };
 }
 
@@ -116,29 +128,16 @@ export function normalizeFieldValue(
     return trimmed.toUpperCase();
   }
 
-  // 2. Dates: normalize ISO date prefixes (e.g., 2026-11-02T00:00:00Z -> 2026-11-02)
+  // 2. Dates: the same strict parser as the export (ISO, month names, unambiguous day-first).
   if (keyLower.includes("date")) {
-    const isoDate = trimmed.slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
-      return isoDate;
-    }
+    const parsed = parseExportDate(trimmed);
+    if (parsed?.ok) return parsed.value;
   }
 
-  // 3. Numbers / Weights / Quantities / Amounts
-  if (
-    keyLower.includes("weight") ||
-    keyLower.includes("quantity") ||
-    keyLower.includes("total") ||
-    keyLower.includes("price") ||
-    keyLower.includes("count")
-  ) {
-    const cleaned = trimmed.replace(/,/g, "");
-    if (/^-?\d+(\.\d+)?$/.test(cleaned)) {
-      const num = Number(cleaned);
-      if (!Number.isNaN(num)) {
-        return String(num);
-      }
-    }
+  // 3. Numbers / Weights / Quantities / Amounts: exact decimal comparison ("3,165.00" == "3165").
+  if (NUMERIC_KEY_PATTERN.test(keyLower)) {
+    const parsed = parseStrictDecimal(trimmed);
+    if (parsed.ok) return parsed.value.toString();
   }
 
   // 4. Default string: collapse internal whitespace
@@ -171,80 +170,57 @@ export function aggregateGroupMetrics(
   let corrected = 0;
   let manualEntries = 0;
   let unreviewed = 0;
+  let notApplicable = 0;
+  const evaluatedShipments = new Set<string>();
 
   for (const record of records) {
-    const isUnreviewed =
-      record.reviewStatus === "PENDING" ||
-      record.reviewStatus === "REQUIRES_REVIEW";
+    const status = record.reviewStatus;
 
-    // Rule 7: Exclude unreviewed fields from denominator
-    if (isUnreviewed) {
+    // Rule 7: unreviewed values never enter a denominator; they are counted and shown.
+    if (status === "PENDING" || status === "REQUIRES_REVIEW") {
       unreviewed++;
       continue;
     }
 
-    const isManualEntry =
-      record.reviewStatus === "MANUAL_ENTRY" ||
-      (record.modelValue === null && record.currentValue !== null);
+    // Reviewed as absent from the document: nothing to be right or wrong about.
+    if (status === "NOT_PRESENT" || status === "NOT_APPLICABLE") {
+      notApplicable++;
+      continue;
+    }
 
-    // Rule 6: Count manually entered values separately; do not count them as correct AI extraction
-    if (isManualEntry) {
+    const hasAiValue = record.modelValue !== null && record.modelValue.trim() !== "";
+
+    // Rule 6: manually entered values (manual entry, or a value a person supplied where the AI
+    // returned none) are counted separately and never as correct AI extraction.
+    if (status === "MANUAL_ENTRY" || !hasAiValue) {
       manualEntries++;
       continue;
     }
 
-    // Rule 1: Define evaluated = AI values present and human-reviewed
-    const hasAiValue =
-      record.modelValue !== null && record.modelValue.trim() !== "";
-    const isHumanReviewed =
-      record.reviewStatus === "CONFIRMED" ||
-      record.reviewStatus === "CORRECTED" ||
-      record.reviewStatus === "VERIFIED";
-
-    if (hasAiValue && isHumanReviewed) {
-      evaluated++;
-
-      // Rule 2: Define correctAsExtracted using normalized AI and verified values
-      const isEquivalent = areFieldValuesEquivalent(
-        record.fieldKey,
-        record.modelValue,
-        record.currentValue,
-      );
-
-      const corrections = record.correctionsCount ?? 0;
-
-      if (
-        record.reviewStatus === "CONFIRMED" ||
-        record.reviewStatus === "VERIFIED" ||
-        (isEquivalent && corrections === 0)
-      ) {
-        correctAsExtracted++;
-      } else {
-        // Rule 4: Count reviewer corrections separately
-        corrected++;
-      }
-    } else {
-      // Any other state without AI value or not human reviewed is unreviewed/uncounted in evaluated
+    // Rule 1: evaluated = AI value present AND human-reviewed (confirmed or corrected).
+    if (status !== "CONFIRMED" && status !== "CORRECTED") {
       unreviewed++;
+      continue;
+    }
+
+    evaluated++;
+    evaluatedShipments.add(record.shipmentId ?? record.shipmentReference ?? record.id);
+
+    // Rule 2: correct-as-extracted when the normalized AI value equals the verified value,
+    // whatever button was used ("3,165" confirmed as "3165" is correct; a confirmed value
+    // that a person had changed earlier is a correction).
+    if (areFieldValuesEquivalent(record.fieldKey, record.modelValue, record.currentValue)) {
+      correctAsExtracted++;
+    } else {
+      // Rule 4: reviewer corrections counted separately.
+      corrected++;
     }
   }
 
-  // Rule 3: accuracy = correctAsExtracted / evaluated
-  // Rule 10: Show numerator, denominator and sample size beside every percentage
-  const accuracy = createMetricRatio(
-    correctAsExtracted,
-    evaluated,
-    evaluated,
-    "evaluated fields",
-  );
-
-  // Rule 5: correctionRate = corrected / evaluated
-  const correctionRate = createMetricRatio(
-    corrected,
-    evaluated,
-    evaluated,
-    "evaluated fields",
-  );
+  // Rules 3, 5, 10: ratios carry numerator, denominator and sample size (distinct shipments).
+  const sampleSize = evaluatedShipments.size;
+  const accuracy = createMetricRatio(correctAsExtracted, evaluated, sampleSize, "evaluated fields");
+  const correctionRate = createMetricRatio(corrected, evaluated, sampleSize, "evaluated fields");
 
   return {
     groupKey,
@@ -255,6 +231,8 @@ export function aggregateGroupMetrics(
     corrected,
     manualEntries,
     unreviewed,
+    notApplicable,
+    shipmentsEvaluated: sampleSize,
     accuracy,
     correctionRate,
   };
@@ -295,24 +273,21 @@ export function calculateAccuracyReport(
     .sort((a, b) => b.totalFields - a.totalFields);
 
   // 3. Group by Normalized Supplier (Rule 9)
-  const fieldsBySupplier = new Map<string, RawFieldRecord[]>();
+  // Suppliers are already de-duplicated by normalized name in the Supplier table, so the
+  // supplier ID is the grouping key; name-only records fall back to a case-insensitive key.
+  const fieldsBySupplier = new Map<string, { label: string; records: RawFieldRecord[] }>();
   for (const f of fields) {
     const rawSupplier = f.supplierName?.trim();
-    const normalizedSupplier = rawSupplier
-      ? normalizeSupplierName(rawSupplier)
-      : "Unassigned Supplier";
-    const list = fieldsBySupplier.get(normalizedSupplier) ?? [];
-    list.push(f);
-    fieldsBySupplier.set(normalizedSupplier, list);
+    const label = rawSupplier ? normalizeSupplierName(rawSupplier) : "Unassigned Supplier";
+    const key = f.supplierId ?? (rawSupplier ? `name:${label.toLowerCase()}` : "unassigned");
+    const group = fieldsBySupplier.get(key) ?? { label, records: [] };
+    group.records.push(f);
+    fieldsBySupplier.set(key, group);
   }
 
-  const bySupplier: AccuracyGroupMetrics[] = Array.from(
-    fieldsBySupplier.entries(),
-  )
-    .map(([supplier, records]) =>
-      aggregateGroupMetrics(supplier, supplier, records),
-    )
-    .sort((a, b) => b.totalFields - a.totalFields);
+  const bySupplier: AccuracyGroupMetrics[] = Array.from(fieldsBySupplier.entries())
+    .map(([key, group]) => aggregateGroupMetrics(key, group.label, group.records))
+    .sort((a, b) => b.totalFields - a.totalFields || a.groupLabel.localeCompare(b.groupLabel));
 
   // Rule 11 & Rule 12: Synthetic demo vs labelled benchmark distinction & target disclaimer
   return {
@@ -323,6 +298,8 @@ export function calculateAccuracyReport(
       corrected: summaryGroup.corrected,
       manualEntries: summaryGroup.manualEntries,
       unreviewed: summaryGroup.unreviewed,
+      notApplicable: summaryGroup.notApplicable,
+      shipmentsEvaluated: summaryGroup.shipmentsEvaluated,
       accuracy: summaryGroup.accuracy,
       correctionRate: summaryGroup.correctionRate,
     },
@@ -373,13 +350,7 @@ export async function getAccuracyReport(
             orderBy: { createdAt: "desc" },
             take: 1,
             include: {
-              fields: {
-                include: {
-                  corrections: {
-                    orderBy: { createdAt: "desc" },
-                  },
-                },
-              },
+              fields: { include: { _count: { select: { corrections: true } } } },
             },
           },
         },
@@ -392,6 +363,7 @@ export async function getAccuracyReport(
 
   for (const shipment of shipments) {
     const supplierName = shipment.supplier?.name ?? null;
+    const supplierId = shipment.supplier?.id ?? null;
 
     for (const document of shipment.documents) {
       const latestRun = document.extractionRuns[0];
@@ -401,11 +373,14 @@ export async function getAccuracyReport(
         rawFields.push({
           id: field.id,
           fieldKey: field.fieldKey,
-          modelValue: field.modelValue,
           currentValue: field.currentValue,
+          // A run created by the manual fallback has no AI values at all.
+          modelValue: latestRun.provider === "manual" ? null : field.modelValue,
           reviewStatus: field.reviewStatus,
-          correctionsCount: field.corrections.length,
+          correctionsCount: field._count.corrections,
+          supplierId,
           supplierName,
+          shipmentId: shipment.id,
           shipmentReference: shipment.reference,
           docType: document.docType,
         });

@@ -1,3 +1,5 @@
+import { selectLatestByRule } from "@/lib/crosschecks/resolution-state";
+
 export type ExportGuardInput = {
   shipmentStatus?: string;
   hasManagerApproval: boolean;
@@ -5,12 +7,15 @@ export type ExportGuardInput = {
   currentRevision: number;
   hasCurrentDocuments?: boolean;
   hasMissingRequiredFields?: boolean;
+  /** False when no cross-check run exists for the current revision. */
+  hasCurrentCheckRun?: boolean;
   unresolvedStatuses: Array<"MISMATCH" | "INCOMPLETE">;
   unapprovedExceptionCount?: number;
   profileId: string;
 };
 
-import { selectLatestByRule } from "@/lib/crosschecks/resolution-state";
+/** Statuses that may produce the CSV: first export (APPROVED) or a reproducible re-download (EXPORTED). */
+export const EXPORTABLE_STATUSES = ["APPROVED", "EXPORTED"] as const;
 
 export type RevisionCrossCheck = {
   id?: string;
@@ -30,22 +35,21 @@ export function selectLatestCrossChecks<T extends RevisionCrossCheck>(checks: T[
 
 /**
  * Pure server-side export guard (Week 5 Step 4).
- * Evaluates approval status, revision match, document presence, check resolutions,
- * unapproved exceptions, and profile assignment.
+ * Evaluates approval status, revision match, document and field presence, check run currency,
+ * check resolutions, unapproved exceptions, and profile assignment.
  */
 export function canExport(input: ExportGuardInput) {
   const reasons: string[] = [];
 
-  // Rule 4: Require APPROVED status (if shipmentStatus is evaluated)
-  if (input.shipmentStatus && input.shipmentStatus !== "APPROVED") {
+  // Rule 4: Require APPROVED (EXPORTED re-downloads the same approved revision)
+  if (input.shipmentStatus && !(EXPORTABLE_STATUSES as readonly string[]).includes(input.shipmentStatus)) {
     reasons.push("shipment_not_approved");
   }
 
-  // Rule 5: Require manager approval and approvedRevision === revision
+  // Rule 5: Require manager approval for exactly the current revision
   if (!input.hasManagerApproval) {
     reasons.push("manager_approval_required");
-  }
-  if (input.approvedRevision !== input.currentRevision) {
+  } else if (input.approvedRevision !== input.currentRevision) {
     reasons.push("approval_is_stale");
   }
 
@@ -58,6 +62,9 @@ export function canExport(input: ExportGuardInput) {
   }
 
   // Rule 7: Require current checks and resolutions to be clear
+  if (input.hasCurrentCheckRun === false) {
+    reasons.push("cross_checks_not_run");
+  }
   if (input.unresolvedStatuses.length > 0) {
     reasons.push("cross_checks_unresolved");
   }

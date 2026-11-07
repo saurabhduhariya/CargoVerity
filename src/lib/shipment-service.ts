@@ -47,7 +47,14 @@ export const shipmentListQuerySchema = z.object({
   fromDate: z.string().trim().optional(),
   toDate: z.string().trim().optional(),
   sort: z.enum(["risk", "date_desc", "date_asc"]).optional(),
-});
+}).refine(
+  (value) => {
+    const from = value.fromDate ? Date.parse(value.fromDate) : Number.NaN;
+    const to = value.toDate ? Date.parse(value.toDate) : Number.NaN;
+    return Number.isNaN(from) || Number.isNaN(to) || from <= to;
+  },
+  { message: "fromDate must be on or before toDate.", path: ["toDate"] },
+);
 
 export type ShipmentListQuery = z.infer<typeof shipmentListQuerySchema>;
 
@@ -123,24 +130,36 @@ export async function listShipments(
           originalFileName: true,
           documentVersion: true,
           isCurrent: true,
-          fields: {
-            select: { reviewStatus: true },
+          // Only the reviewed snapshot: fields of the latest COMPLETED extraction.
+          extractionRuns: {
+            where: { status: "COMPLETED" },
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+            take: 1,
+            select: { fields: { select: { reviewStatus: true } } },
           },
           pages: {
             select: { isReadable: true, manualEntryRequired: true },
           },
         },
       },
-      crossChecks: {
+      // Only the latest check run; its results count when it matches the current revision.
+      crossCheckRuns: {
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: 1,
         select: {
-          id: true,
-          ruleKey: true,
-          status: true,
-          severity: true,
-          createdAt: true,
           revision: true,
-          resolutions: {
-            select: { id: true, type: true, reason: true, evidence: true, managerApprovedAt: true, createdAt: true },
+          results: {
+            select: {
+              id: true,
+              ruleKey: true,
+              status: true,
+              severity: true,
+              createdAt: true,
+              revision: true,
+              resolutions: {
+                select: { id: true, type: true, reason: true, evidence: true, managerApprovedAt: true, createdAt: true },
+              },
+            },
           },
         },
       },
@@ -153,12 +172,12 @@ export async function listShipments(
     const slots = deriveDocumentSlots(s.documents);
 
     // 2. Cross-Checks Summary for Current Revision
-    const checks = deriveCrossChecksSummary(s.crossChecks, s.currentRevision);
+    const checks = deriveCrossChecksSummary(s.crossCheckRuns[0]?.results ?? [], s.currentRevision);
 
-    // Count fields and pages requiring human review
+    // Count fields and pages requiring human review (latest completed extraction only)
     const reviewRequiredCount = s.documents.reduce((acc, doc) => {
-      const unreviewedFields = (doc.fields ?? []).filter(
-        (f) => f.reviewStatus === "REQUIRES_REVIEW",
+      const unreviewedFields = (doc.extractionRuns[0]?.fields ?? []).filter(
+        (f) => f.reviewStatus === "REQUIRES_REVIEW" || f.reviewStatus === "PENDING",
       ).length;
       const unreadablePages = (doc.pages ?? []).filter(
         (p) => !p.isReadable && !p.manualEntryRequired,
@@ -182,6 +201,7 @@ export async function listShipments(
       blockingUnresolved: checks.blockingUnresolved,
       reviewRequiredCount,
       allDocumentsPresent: slots.allPresent,
+      userRole: actor.role,
     });
 
     return {
@@ -208,7 +228,12 @@ export async function listShipments(
   // 6. Real stored operational KPIs (never fabricated)
   const stats = {
     totalShipments: sortedShipments.length,
-    highRiskReviewPending: sortedShipments.filter((s) => s.riskScore >= 80).length,
+    // Shipments with blocking discrepancies or fields still awaiting review.
+    highRiskReviewPending: sortedShipments.filter(
+      (s) =>
+        !["READY_FOR_APPROVAL", "APPROVED", "EXPORTED"].includes(s.status) &&
+        (s.checksSummary.blockingUnresolved > 0 || s.reviewRequiredCount > 0),
+    ).length,
     awaitingManagerApproval: sortedShipments.filter((s) => s.status === "READY_FOR_APPROVAL")
       .length,
     clearedOrExported: sortedShipments.filter(

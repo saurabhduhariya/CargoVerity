@@ -5,17 +5,25 @@
 export type ExportRecordSummary = {
   id: string;
   profileId: string;
+  profileVersion?: string | null;
   revision: number;
   createdAt: string;
   exportedBy: string | null;
   checksumSha256?: string;
   fileName?: string;
+  rowCount?: number | null;
 };
+
+export type ExportBlockerDetail = { code: string; detail?: string };
 
 export type ExportPreviewData = {
   ready: boolean;
   allowed: boolean;
   blockers: string[];
+  /** Same blockers with the specific checks / field problems behind them. */
+  blockerDetails?: ExportBlockerDetail[];
+  /** Number of rows included in `rows` (the full file has `rowCount`). */
+  previewRowLimit?: number;
   error?: string;
   fileName?: string;
   headers?: string[];
@@ -74,8 +82,15 @@ export function formatExportBlocker(blocker: string): FormattedBlocker {
       return {
         code: blocker,
         title: "Mandatory Customs Fields Missing",
-        description: "Key customs fields (e.g., supplier, importer, weights, currencies) could not be extracted or verified.",
+        description: "One or more required export fields are missing or cannot be exported as stated.",
         category: "fields",
+      };
+    case "cross_checks_not_run":
+      return {
+        code: blocker,
+        title: "Cross-Checks Not Run For This Revision",
+        description: "Run the deterministic cross-checks for the current revision before exporting.",
+        category: "cross_checks",
       };
     case "cross_checks_unresolved":
       return {
@@ -105,6 +120,15 @@ export function formatExportBlocker(blocker: string): FormattedBlocker {
           code: blocker,
           title: `Missing Field: ${fieldName.replaceAll("_", " ")}`,
           description: `The export profile requires '${fieldName}' to be populated from extracted documents.`,
+          category: "fields",
+        };
+      }
+      if (blocker.startsWith("invalid_field_")) {
+        const fieldName = blocker.replace("invalid_field_", "");
+        return {
+          code: blocker,
+          title: `Cannot Export Field: ${fieldName.replaceAll("_", " ")}`,
+          description: `The value for '${fieldName}' cannot be exported as stated; correct it in the review workspace.`,
           category: "fields",
         };
       }
