@@ -1,4 +1,8 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
+import { isPdfMimeType } from "@/features/review/document-viewer";
 import {
   calculateNextRotation,
   calculateNextZoom,
@@ -265,6 +269,8 @@ describe("Review Workspace Shell (Week 4 Step 6)", () => {
     expect(isAllowedPreApprovalStatus("READY_FOR_APPROVAL")).toBe(true);
     expect(isAllowedPreApprovalStatus("APPROVED")).toBe(false);
     expect(isAllowedPreApprovalStatus("EXPORTED")).toBe(false);
+    // Week 4: matches the server, which blocks edits while extraction is running.
+    expect(isAllowedPreApprovalStatus("EXTRACTING")).toBe(false);
   });
 
   it("validates field correction actions and reason requirement (Week 4 Step 7 Rules 3 & 4)", () => {
@@ -293,5 +299,55 @@ describe("Review Workspace Shell (Week 4 Step 6)", () => {
       valid: true,
       isMaterialChange: true,
     });
+  });
+});
+
+describe("Review Workspace viewer and navigation (Week 4 Step 6)", () => {
+  const root = process.cwd();
+  const read = (path: string) => readFileSync(join(root, path), "utf8");
+
+  it("renders PDFs through the PDF.js canvas viewer, not an iframe", () => {
+    const workspace = read("src/features/review/review-workspace.tsx");
+    const viewer = read("src/features/review/document-viewer.tsx");
+
+    expect(workspace).not.toMatch(/<iframe/);
+    expect(workspace).toMatch(/<DocumentViewer/);
+    expect(viewer).toMatch(/pdfjs-dist\/legacy\/build\/pdf\.mjs/);
+    expect(viewer).toMatch(/disableRange:\s*true/);
+    expect(viewer).toMatch(/disableStream:\s*true/);
+    expect(viewer).toMatch(/<canvas/);
+    expect(viewer).toMatch(/role="img"/);
+    expect(viewer).toMatch(/aria-live="polite"/);
+    expect(viewer).toMatch(/Retry/);
+  });
+
+  it("shows images in a constrained viewer", () => {
+    const viewer = read("src/features/review/document-viewer.tsx");
+    expect(viewer).toMatch(/object-contain/);
+    expect(viewer).toMatch(/maxWidth/);
+    expect(isPdfMimeType("application/pdf")).toBe(true);
+    expect(isPdfMimeType("image/png")).toBe(false);
+    expect(isPdfMimeType("image/jpeg")).toBe(false);
+  });
+
+  it("keeps grouping, the model-estimate label, source links and the Document/Fields/Checks tabs", () => {
+    const workspace = read("src/features/review/review-workspace.tsx");
+    expect(workspace).toMatch(/\(model estimate\)/);
+    expect(workspace).toMatch(/jumpToPage/);
+    expect(workspace).toMatch(/mobileTab === "document"/);
+    expect(workspace).toMatch(/mobileTab === "fields"/);
+    expect(workspace).toMatch(/mobileTab === "checks"/);
+    expect(workspace).toMatch(/"parties", "identifiers", "commercial", "logistics"/);
+  });
+
+  it("cycles the next uncertain field and always sends expectedRevision", () => {
+    const workspace = read("src/features/review/review-workspace.tsx");
+    expect(workspace).toMatch(/nextUncertainFieldId\(/);
+    expect(workspace.match(/expectedRevision: shipmentRevision/g)?.length ?? 0).toBeGreaterThanOrEqual(4);
+    expect(workspace).toMatch(/crossChecksStale/);
+  });
+
+  it("removed the unused review-panel.tsx", () => {
+    expect(existsSync(join(root, "src/features/review/review-panel.tsx"))).toBe(false);
   });
 });

@@ -8,6 +8,7 @@ import {
 } from "@/features/review/review-workspace";
 import { getAuthorizedDocumentDownloadUrl } from "@/lib/documents/storage";
 import { getLatestCrossCheckRun } from "@/lib/crosschecks/service";
+import { listActiveLineMappings } from "@/lib/crosschecks/line-mapping";
 
 export const instant = false;
 
@@ -153,6 +154,9 @@ export default async function ReviewPage({
     }),
   );
 
+  // Active Executive line mappings (Week 4 Step 4)
+  const lineMappings = await listActiveLineMappings(prisma, shipment.id);
+
   // 5. Load audit trail for manager review and compliance (Rule 5)
   const auditEvents = await prisma.auditEvent.findMany({
     where: { shipmentId: shipment.id },
@@ -173,6 +177,14 @@ export default async function ReviewPage({
     },
     currentUserRole: appUser.role,
     documents,
+    lineMappings: lineMappings.map((mapping) => ({
+      id: mapping.id,
+      invoiceLineId: mapping.invoiceLineItemId,
+      packingListLineId: mapping.packingListLineItemId,
+      reason: mapping.reason,
+      createdAt: mapping.createdAt.toISOString(),
+      createdBy: mapping.createdBy?.fullName ?? mapping.createdBy?.email ?? null,
+    })),
     crossChecks: (latestRun?.results ?? []).map((r) => ({
       id: r.id,
       ruleKey: r.ruleKey,
@@ -180,6 +192,10 @@ export default async function ReviewPage({
       status: r.status as "PASS" | "MISMATCH" | "INCOMPLETE" | "NOT_APPLICABLE",
       severity: r.severity as "BLOCKING" | "WARNING",
       effectiveStatus: r.effectiveStatus,
+      derivedStatus: r.derivedStatus,
+      runId: r.runId,
+      clearedForSubmission: r.clearedForSubmission,
+      clearedForApproval: r.clearedForApproval,
       activeResolution: r.activeResolution
         ? {
             id: r.activeResolution.id,

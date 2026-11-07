@@ -35,9 +35,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { DocumentViewer } from "@/features/review/document-viewer";
 import {
   ExportPreviewDialog,
 } from "@/features/review/export-preview-dialog";
+import { LineMappingPanel } from "@/features/review/line-mapping-panel";
+import { nextUncertainFieldId } from "@/features/review/next-uncertain";
 import type { ExportRecordSummary } from "@/lib/export/preview";
 
 export type ReviewWorkspaceField = {
@@ -113,6 +116,11 @@ export type ReviewWorkspaceCrossCheck = {
   status: "PASS" | "MISMATCH" | "INCOMPLETE" | "NOT_APPLICABLE";
   severity?: "BLOCKING" | "WARNING";
   effectiveStatus?: string;
+  /** Server-derived display status (HUMAN_CLEARED / PENDING_MANAGER_APPROVAL are never stored). */
+  derivedStatus?: string;
+  runId?: string | null;
+  clearedForSubmission?: boolean;
+  clearedForApproval?: boolean;
   activeResolution?: CrossCheckResolutionData | null;
   resolutions?: CrossCheckResolutionData[];
   details: {
@@ -149,7 +157,17 @@ export type ReviewWorkspaceInitialData = {
   currentUserRole?: "EXECUTIVE" | "MANAGER";
   documents: ReviewWorkspaceDocument[];
   crossChecks: ReviewWorkspaceCrossCheck[];
+  lineMappings?: ReviewWorkspaceLineMapping[];
   auditHistory?: ReviewWorkspaceAuditEvent[];
+};
+
+export type ReviewWorkspaceLineMapping = {
+  id: string;
+  invoiceLineId: string;
+  packingListLineId: string;
+  reason: string;
+  createdAt: string;
+  createdBy: string | null;
 };
 
 export type FieldCategory = "parties" | "identifiers" | "commercial" | "logistics" | "other";
@@ -233,8 +251,9 @@ export function calculateNextRotation(current: number): number {
   return (current + 90) % 360;
 }
 
+/** Mirrors the server's editable states (`EDITABLE_FIELD_STATUSES` in `@/lib/review/field-actions`). */
 export function isAllowedPreApprovalStatus(status: string): boolean {
-  return status !== "APPROVED" && status !== "EXPORTED";
+  return status !== "APPROVED" && status !== "EXPORTED" && status !== "EXTRACTING";
 }
 
 export function validateFieldCorrection(
@@ -256,9 +275,16 @@ export function validateFieldCorrection(
   return { valid: true, isMaterialChange };
 }
 
+/**
+ * Display chip for a check. Mirrors the server's shared clearance rules
+ * (`@/lib/crosschecks/resolution-state`): only a valid ACCEPTED_EXCEPTION clears a failure
+ * (pending until manager sign-off). SOURCE_CORRECTED / DOCUMENT_REPLACEMENT are audit links and
+ * never show a current failure as cleared. When the server supplies `derivedStatus`, it wins.
+ */
 export function deriveEffectiveCheckStatus(
   status: "PASS" | "MISMATCH" | "INCOMPLETE" | "NOT_APPLICABLE",
   activeResolution?: CrossCheckResolutionData | null,
+  derivedStatus?: string | null,
 ): { label: string; badgeClass: string; isHumanCleared: boolean; isPendingApproval: boolean } {
   if (status === "PASS") {
     return {
@@ -269,41 +295,29 @@ export function deriveEffectiveCheckStatus(
     };
   }
 
-  if (activeResolution) {
-    if (activeResolution.type === "ACCEPTED_EXCEPTION") {
-      if (activeResolution.managerApprovedAt) {
-        return {
-          label: "HUMAN CLEARED (Exception Approved)",
-          badgeClass: "bg-purple-100 text-purple-900 border-purple-300",
-          isHumanCleared: true,
-          isPendingApproval: false,
-        };
-      }
-      return {
-        label: "PENDING MANAGER APPROVAL",
-        badgeClass: "bg-amber-100 text-amber-900 border-amber-300 animate-pulse",
-        isHumanCleared: false,
-        isPendingApproval: true,
-      };
-    }
+  const exceptionIsValid =
+    activeResolution?.type === "ACCEPTED_EXCEPTION" &&
+    (activeResolution.reason ?? "").trim().length >= 5 &&
+    (activeResolution.evidence ?? "").trim().length >= 3;
+  const effective =
+    derivedStatus ??
+    (exceptionIsValid ? (activeResolution?.managerApprovedAt ? "HUMAN_CLEARED" : "PENDING_MANAGER_APPROVAL") : status);
 
-    if (activeResolution.type === "SOURCE_CORRECTED") {
-      return {
-        label: "HUMAN CLEARED (Source Corrected)",
-        badgeClass: "bg-blue-100 text-blue-900 border-blue-300",
-        isHumanCleared: true,
-        isPendingApproval: false,
-      };
-    }
-
-    if (activeResolution.type === "DOCUMENT_REPLACEMENT") {
-      return {
-        label: "HUMAN CLEARED (Doc Replaced)",
-        badgeClass: "bg-indigo-100 text-indigo-900 border-indigo-300",
-        isHumanCleared: true,
-        isPendingApproval: false,
-      };
-    }
+  if (effective === "HUMAN_CLEARED") {
+    return {
+      label: "HUMAN CLEARED (Exception Approved)",
+      badgeClass: "bg-purple-100 text-purple-900 border-purple-300",
+      isHumanCleared: true,
+      isPendingApproval: false,
+    };
+  }
+  if (effective === "PENDING_MANAGER_APPROVAL") {
+    return {
+      label: "PENDING MANAGER APPROVAL",
+      badgeClass: "bg-amber-100 text-amber-900 border-amber-300 animate-pulse",
+      isHumanCleared: false,
+      isPendingApproval: true,
+    };
   }
 
   if (status === "MISMATCH") {
@@ -355,6 +369,22 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [zoomLevel, setZoomLevel] = useState<number>(100);
   const [rotation, setRotation] = useState<number>(0);
+  const [pdfPageCounts, setPdfPageCounts] = useState<Record<string, number>>({});
+  const [focusedUncertainId, setFocusedUncertainId] = useState<string | null>(null);
+
+  const handlePdfPageCount = useCallback((documentId: string, count: number) => {
+    setPdfPageCounts((prev) => (prev[documentId] === count ? prev : { ...prev, [documentId]: count }));
+  }, []);
+
+  // Signed URLs are short-lived; fetch a fresh one before the viewer retries.
+  const requestFreshDocumentUrl = useCallback(async (documentId: string) => {
+    const response = await fetch(`/api/documents/${documentId}`, { cache: "no-store" });
+    if (!response.ok) return null;
+    const data = (await response.json()) as { signedUrl?: string };
+    if (!data.signedUrl) return null;
+    setDocuments((prev) => prev.map((doc) => (doc.id === documentId ? { ...doc, signedUrl: data.signedUrl! } : doc)));
+    return data.signedUrl;
+  }, []);
 
   // Field Edit States
   const [editedValues, setEditedValues] = useState<Record<string, string>>({});
@@ -372,11 +402,18 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
   const [resolvingCheckId, setResolvingCheckId] = useState<string | null>(null);
   const [resolutionType, setResolutionType] = useState<
     "SOURCE_CORRECTED" | "DOCUMENT_REPLACEMENT" | "ACCEPTED_EXCEPTION"
-  >("SOURCE_CORRECTED");
+  >("ACCEPTED_EXCEPTION");
   const [resolutionReason, setResolutionReason] = useState("");
   const [resolutionEvidence, setResolutionEvidence] = useState("");
   const [valuesConfirmed, setValuesConfirmed] = useState(false);
   const [showHistoryForCheckId, setShowHistoryForCheckId] = useState<string | null>(null);
+
+  const [crossChecksStale, setCrossChecksStale] = useState(false);
+
+  // Line mapping state (Week 4 Step 4)
+  const [lineMappings, setLineMappings] = useState<ReviewWorkspaceLineMapping[]>(initialData.lineMappings ?? []);
+  const [mappingSelections, setMappingSelections] = useState<Record<string, string>>({});
+  const [mappingReason, setMappingReason] = useState("");
 
   const [busy, setBusy] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -401,26 +438,26 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
   );
 
   const activeDoc = documents.find((d) => d.docType === activeDocType);
-  const maxPages = activeDoc?.pageCount ?? 1;
+  const maxPages = (activeDoc ? pdfPageCounts[activeDoc.id] : undefined) ?? activeDoc?.pageCount ?? 1;
 
   // Cross-Check Summary Counts (Rule 8 & 11)
   const passedCount = crossChecks.filter((c) => c.status === "PASS").length;
   const humanClearedCount = crossChecks.filter((c) => {
-    const eff = deriveEffectiveCheckStatus(c.status, c.activeResolution ?? c.resolutions?.[0]);
+    const eff = deriveEffectiveCheckStatus(c.status, c.activeResolution ?? c.resolutions?.[0], c.derivedStatus ?? c.effectiveStatus);
     return eff.isHumanCleared;
   }).length;
   const pendingApprovalCount = crossChecks.filter((c) => {
-    const eff = deriveEffectiveCheckStatus(c.status, c.activeResolution ?? c.resolutions?.[0]);
+    const eff = deriveEffectiveCheckStatus(c.status, c.activeResolution ?? c.resolutions?.[0], c.derivedStatus ?? c.effectiveStatus);
     return eff.isPendingApproval;
   }).length;
   const mismatchCount = crossChecks.filter((c) => {
     if (c.status !== "MISMATCH") return false;
-    const eff = deriveEffectiveCheckStatus(c.status, c.activeResolution ?? c.resolutions?.[0]);
+    const eff = deriveEffectiveCheckStatus(c.status, c.activeResolution ?? c.resolutions?.[0], c.derivedStatus ?? c.effectiveStatus);
     return !eff.isHumanCleared && !eff.isPendingApproval;
   }).length;
   const incompleteCount = crossChecks.filter((c) => {
     if (c.status !== "INCOMPLETE") return false;
-    const eff = deriveEffectiveCheckStatus(c.status, c.activeResolution ?? c.resolutions?.[0]);
+    const eff = deriveEffectiveCheckStatus(c.status, c.activeResolution ?? c.resolutions?.[0], c.derivedStatus ?? c.effectiveStatus);
     return !eff.isHumanCleared && !eff.isPendingApproval;
   }).length;
   const warningCount = crossChecks.filter((c) => c.severity === "WARNING").length;
@@ -448,37 +485,40 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
     }
   }
 
-  // Navigate to next uncertain field (Rule 12 & Step 7 readiness)
+  // Navigate to the next uncertain field, cycling and wrapping (Week 4 Step 6).
+  // Focus moves to the field card (not its input) so pressing "N" again keeps cycling.
   const goToNextUncertainField = useCallback(() => {
     const currentFields = activeDoc?.fields ?? [];
     const uncertainFields = currentFields.filter(isFieldUncertain);
-    if (uncertainFields.length === 0) {
+    const nextId = nextUncertainFieldId(
+      uncertainFields.map((field) => field.id),
+      focusedUncertainId,
+    );
+    const nextField = uncertainFields.find((field) => field.id === nextId);
+    if (!nextField) {
       setStatusMessage("No uncertain fields requiring review on this document.");
       return;
     }
-    const nextField = uncertainFields[0];
-    if (nextField) {
-      setActiveCategory(categorizeFieldKey(nextField.fieldKey));
-      if (nextField.pageNumber) {
-        setCurrentPage(nextField.pageNumber);
-      }
-      setMobileTab("fields");
-      if (typeof document !== "undefined") {
-        setTimeout(() => {
-          const el = document.getElementById(`field-card-${nextField.id}`);
-          if (el) {
-            el.scrollIntoView({ behavior: "smooth", block: "center" });
-          }
-          const inputEl = document.getElementById(`field-input-${nextField.id}`) as HTMLInputElement | null;
-          if (inputEl) {
-            inputEl.focus();
-            inputEl.select();
-          }
-        }, 80);
-      }
-      setStatusMessage(`Navigated to uncertain field: ${formatFieldLabel(nextField.fieldKey)}`);
+    setFocusedUncertainId(nextField.id);
+    setActiveCategory("all");
+    if (nextField.pageNumber) {
+      setCurrentPage(nextField.pageNumber);
     }
-  }, [activeDoc?.fields, setStatusMessage]);
+    setMobileTab("fields");
+    if (typeof document !== "undefined") {
+      setTimeout(() => {
+        const el = document.getElementById(`field-card-${nextField.id}`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          el.focus({ preventScroll: true });
+        }
+      }, 80);
+    }
+    const position = uncertainFields.indexOf(nextField) + 1;
+    setStatusMessage(
+      `Uncertain field ${position} of ${uncertainFields.length}: ${formatFieldLabel(nextField.fieldKey)}`,
+    );
+  }, [activeDoc?.fields, focusedUncertainId, setStatusMessage]);
 
   // Keyboard navigation shortcuts
   useEffect(() => {
@@ -488,12 +528,14 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
         target &&
         (target.tagName === "INPUT" ||
           target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
           target.isContentEditable)
       ) {
         return;
       }
+      if (e.ctrlKey || e.metaKey) return;
 
-      if (e.key === "n" || (e.altKey && e.key.toLowerCase() === "n")) {
+      if (e.key === "n" || e.key === "N") {
         e.preventDefault();
         goToNextUncertainField();
       } else if (e.key === "[" || e.key === "PageUp") {
@@ -576,7 +618,8 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                     f.id === field.id
                       ? {
                           ...f,
-                          currentValue: targetVal,
+                          // The server canonicalizes values (e.g. "3,165" -> "3165").
+                          currentValue: data.field?.currentValue ?? targetVal,
                           reviewStatus: action,
                           reviewReason: action === "CONFIRMED" ? null : reasonText,
                         }
@@ -595,7 +638,13 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
         if (data.crossChecks) {
           setCrossChecks(data.crossChecks);
         }
-        setStatusMessage(`Field "${formatFieldLabel(field.fieldKey)}" updated successfully (${action.toLowerCase()}).`);
+        setCrossChecksStale(Boolean(data.crossChecksStale));
+        const notes = [
+          `Field "${formatFieldLabel(field.fieldKey)}" saved (${action.toLowerCase().replace("_", " ")}).`,
+          data.approvalInvalidated ? "The submission for approval was withdrawn; resubmit after review." : null,
+          data.crossChecksStale ? "Cross-checks could not be refreshed; re-run checks." : null,
+        ].filter(Boolean);
+        setStatusMessage(notes.join(" "));
       }
     } catch {
       setStatusMessage("Network error saving field.");
@@ -762,12 +811,17 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
           reason: resolutionReason.trim(),
           evidence: resolutionEvidence.trim() || undefined,
           valuesConfirmed: true,
+          expectedRevision: shipmentRevision,
         }),
       });
 
       const data = await response.json();
       if (!response.ok) {
-        setStatusMessage(data.error ?? "Failed to record resolution.");
+        setStatusMessage(
+          response.status === 409
+            ? `Conflict (409): ${data.error ?? "The shipment or check changed. Refresh to see the latest version."}`
+            : data.error ?? "Failed to record resolution.",
+        );
       } else {
         const newResolution: CrossCheckResolutionData = {
           id: data.resolution.id,
@@ -822,10 +876,104 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
         setStatusMessage(data.error ?? "Failed to run cross-checks.");
       } else {
         setCrossChecks(data.results ?? []);
+        setCrossChecksStale(false);
         setStatusMessage(`Cross-checks evaluated for revision ${data.revision}.`);
       }
     } catch {
       setStatusMessage("Error executing cross-checks.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Executive line mapping (Week 4 Step 4): map an unmatched invoice line to a packing-list line.
+  async function createLineMapping(invoiceLineId: string) {
+    const packingListLineId = mappingSelections[invoiceLineId];
+    if (!packingListLineId) {
+      setStatusMessage("Choose the packing list line to map to.");
+      return;
+    }
+    if (mappingReason.trim().length < 5) {
+      setStatusMessage("Give a reason for the mapping (at least 5 characters).");
+      return;
+    }
+    setBusy(true);
+    setStatusMessage(null);
+    try {
+      const response = await fetch(`/api/shipments/${shipment.id}/line-mappings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          invoiceLineId,
+          packingListLineId,
+          reason: mappingReason.trim(),
+          expectedRevision: shipmentRevision,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setStatusMessage(
+          response.status === 409
+            ? `Conflict (409): ${data.error ?? "The shipment changed. Refresh to see the latest version."}`
+            : data.error ?? "Failed to map lines.",
+        );
+        return;
+      }
+      setLineMappings((prev) => [
+        ...prev.filter((m) => !(data.supersededMappingIds ?? []).includes(m.id)),
+        {
+          id: data.mapping.id,
+          invoiceLineId: data.mapping.invoiceLineItemId,
+          packingListLineId: data.mapping.packingListLineItemId,
+          reason: data.mapping.reason,
+          createdAt: data.mapping.createdAt,
+          createdBy: null,
+        },
+      ]);
+      if (data.revision) setShipmentRevision(data.revision);
+      if (data.shipmentStatus) setShipmentStatus(data.shipmentStatus);
+      if (data.crossChecks) setCrossChecks(data.crossChecks);
+      setCrossChecksStale(false);
+      setMappingSelections((prev) => {
+        const next = { ...prev };
+        delete next[invoiceLineId];
+        return next;
+      });
+      setMappingReason("");
+      setStatusMessage("Lines mapped. Cross-checks were re-run.");
+    } catch {
+      setStatusMessage("Network error mapping lines.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeLineMapping(mappingId: string) {
+    setBusy(true);
+    setStatusMessage(null);
+    try {
+      const response = await fetch(`/api/shipments/${shipment.id}/line-mappings/${mappingId}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expectedRevision: shipmentRevision }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setStatusMessage(
+          response.status === 409
+            ? `Conflict (409): ${data.error ?? "The shipment changed. Refresh to see the latest version."}`
+            : data.error ?? "Failed to remove the mapping.",
+        );
+        return;
+      }
+      setLineMappings((prev) => prev.filter((m) => m.id !== mappingId));
+      if (data.revision) setShipmentRevision(data.revision);
+      if (data.shipmentStatus) setShipmentStatus(data.shipmentStatus);
+      if (data.crossChecks) setCrossChecks(data.crossChecks);
+      setCrossChecksStale(false);
+      setStatusMessage("Mapping removed. Cross-checks were re-run.");
+    } catch {
+      setStatusMessage("Network error removing the mapping.");
     } finally {
       setBusy(false);
     }
@@ -1509,33 +1657,18 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                     <p className="font-medium text-slate-600">Document not supplied for {activeDocType}.</p>
                     <p className="mt-1">Upload the document on the shipment page to inspect evidence.</p>
                   </div>
-                ) : activeDoc.mimeType.includes("pdf") ? (
-                  <div
-                    className="w-full h-[640px] transition-transform duration-200 ease-out origin-top"
-                    style={{
-                      transform: `scale(${zoomLevel / 100}) rotate(${rotation}deg)`,
-                    }}
-                  >
-                    <iframe
-                      src={`${activeDoc.signedUrl}#page=${currentPage}&toolbar=0&navpanes=0`}
-                      className="w-full h-full border-0"
-                      title={activeDoc.originalFileName}
-                    />
-                  </div>
                 ) : (
-                  <div
-                    className="p-4 transition-transform duration-200 ease-out"
-                    style={{
-                      transform: `scale(${zoomLevel / 100}) rotate(${rotation}deg)`,
-                    }}
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={activeDoc.signedUrl}
-                      alt={activeDoc.originalFileName}
-                      className="max-w-full rounded shadow border border-slate-200"
-                    />
-                  </div>
+                  <DocumentViewer
+                    key={activeDoc.id}
+                    url={activeDoc.signedUrl}
+                    mimeType={activeDoc.mimeType}
+                    fileName={activeDoc.originalFileName}
+                    page={currentPage}
+                    zoom={zoomLevel}
+                    rotation={rotation}
+                    onPageCount={(count) => handlePdfPageCount(activeDoc.id, count)}
+                    onRequestFreshUrl={() => requestFreshDocumentUrl(activeDoc.id)}
+                  />
                 )}
               </CardContent>
             </Card>
@@ -1667,7 +1800,13 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                       <div
                         key={field.id}
                         id={`field-card-${field.id}`}
-                        className={`rounded-xl border p-3.5 transition ${
+                        tabIndex={-1}
+                        data-uncertain={isLowConfidence ? "true" : "false"}
+                        data-focused-uncertain={focusedUncertainId === field.id ? "true" : undefined}
+                        aria-label={`${formatFieldLabel(field.fieldKey)}${isLowConfidence ? " (needs review)" : ""}`}
+                        className={`rounded-xl border p-3.5 transition outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${
+                          focusedUncertainId === field.id ? "ring-2 ring-sky-500 " : ""
+                        }${
                           isLowConfidence
                             ? "border-amber-300 bg-amber-50/30"
                             : "border-slate-200 bg-white"
@@ -1918,6 +2057,25 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                   </div>
                 </CardHeader>
                 <CardContent className="p-3 space-y-2.5">
+                  {crossChecksStale ? (
+                    <div
+                      role="alert"
+                      className="flex items-center justify-between gap-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-900"
+                    >
+                      <span>
+                        Your change was saved, but cross-checks could not be refreshed. Results below may be out of date.
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-6 text-[11px] border-amber-400"
+                        disabled={busy}
+                        onClick={() => void triggerCrossChecks()}
+                      >
+                        <RefreshCw className="size-3 mr-1" aria-hidden="true" /> Re-run checks
+                      </Button>
+                    </div>
+                  ) : null}
                   {crossChecks.length === 0 ? (
                     <p className="text-xs text-slate-500 py-2 text-center">
                       No cross-check results recorded for revision {shipmentRevision}.
@@ -1925,7 +2083,7 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                   ) : (
                     crossChecks.map((check) => {
                       const activeRes = check.activeResolution ?? check.resolutions?.[0];
-                      const eff = deriveEffectiveCheckStatus(check.status, activeRes);
+                      const eff = deriveEffectiveCheckStatus(check.status, activeRes, check.derivedStatus ?? check.effectiveStatus);
 
                       return (
                         <div
@@ -1992,7 +2150,21 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                               {check.details?.differenceKg ? (
                                 <div className="mt-1.5 text-right font-mono font-bold text-rose-700 text-[11px]">
                                   Difference: {check.details.differenceKg} kg
+                                  {typeof check.details.toleranceKg === "string" ? (
+                                    <span className="ml-1 font-normal text-slate-600">
+                                      (tolerance ±{check.details.toleranceKg} kg
+                                      {typeof check.details.tolerancePercent === "string"
+                                        ? `, ${check.details.tolerancePercent}% of larger value`
+                                        : ""}
+                                      )
+                                    </span>
+                                  ) : null}
                                 </div>
+                              ) : null}
+                              {check.details?.cause === "unknown" && check.status === "MISMATCH" ? (
+                                <p className="mt-1 text-[10px] text-slate-500">
+                                  Cause: not stated in the source documents.
+                                </p>
                               ) : null}
                             </div>
                           ) : check.details?.difference ? (
@@ -2060,8 +2232,28 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                             </div>
                           ) : null}
 
+                          {/* Executive line mapping for unresolved line matches (Week 4 Step 4) */}
+                          {check.ruleKey === "invoice_quantity_vs_packing_list" ? (
+                            <LineMappingPanel
+                              check={check}
+                              documents={documents}
+                              mappings={lineMappings}
+                              selections={mappingSelections}
+                              reason={mappingReason}
+                              disabled={busy || isReadOnly}
+                              onSelect={(invoiceLineId, packingListLineId) =>
+                                setMappingSelections((prev) => ({ ...prev, [invoiceLineId]: packingListLineId }))
+                              }
+                              onReasonChange={setMappingReason}
+                              onMap={(invoiceLineId) => void createLineMapping(invoiceLineId)}
+                              onRemove={(mappingId) => void removeLineMapping(mappingId)}
+                            />
+                          ) : null}
+
                           {/* Resolution Form or Trigger Button (Rules 3, 4, 5) */}
-                          {check.status !== "PASS" && !isReadOnly ? (
+                          {(check.status === "MISMATCH" || check.status === "INCOMPLETE") &&
+                          check.severity !== "WARNING" &&
+                          !isReadOnly ? (
                             resolvingCheckId === (check.id ?? check.ruleKey) ? (
                               <div className="mt-2.5 rounded-lg border border-blue-200 bg-blue-50/70 p-3 space-y-2.5">
                                 <div className="font-semibold text-xs text-blue-950 flex items-center justify-between">
@@ -2096,31 +2288,51 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                                         "DOCUMENT_REPLACEMENT",
                                         "ACCEPTED_EXCEPTION",
                                       ] as const
-                                    ).map((t) => (
-                                      <label
-                                        key={t}
-                                        className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer ${
-                                          resolutionType === t
-                                            ? "border-blue-500 bg-blue-100/40"
-                                            : "border-slate-200 bg-white"
-                                        }`}
-                                      >
-                                        <input
-                                          type="radio"
-                                          name={`resolution-type-${check.id ?? check.ruleKey}`}
-                                          checked={resolutionType === t}
-                                          onChange={() => setResolutionType(t)}
-                                        />
-                                        <span className="text-[10px] font-medium text-slate-800">
-                                          {t === "SOURCE_CORRECTED"
-                                            ? "Source Corrected"
-                                            : t === "DOCUMENT_REPLACEMENT"
-                                              ? "Doc Replacement"
-                                              : "Accepted Exception"}
-                                        </span>
-                                      </label>
-                                    ))}
+                                    ).map((t) => {
+                                      // Checks shown here belong to the latest run, so audit links
+                                      // (which only document an already-fixed older failure) are disabled.
+                                      const isAuditLink = t !== "ACCEPTED_EXCEPTION";
+                                      return (
+                                        <label
+                                          key={t}
+                                          className={`flex items-start gap-1.5 p-1.5 rounded border ${
+                                            isAuditLink ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+                                          } ${
+                                            resolutionType === t
+                                              ? "border-blue-500 bg-blue-100/40"
+                                              : "border-slate-200 bg-white"
+                                          }`}
+                                        >
+                                          <input
+                                            type="radio"
+                                            name={`resolution-type-${check.id ?? check.ruleKey}`}
+                                            checked={resolutionType === t}
+                                            disabled={isAuditLink}
+                                            onChange={() => setResolutionType(t)}
+                                          />
+                                          <span className="text-[10px] font-medium text-slate-800">
+                                            {t === "SOURCE_CORRECTED"
+                                              ? "Source Corrected"
+                                              : t === "DOCUMENT_REPLACEMENT"
+                                                ? "Doc Replacement"
+                                                : "Accepted Exception"}
+                                            {isAuditLink ? (
+                                              <span className="block font-normal text-slate-500">
+                                                Audit link only; does not clear a current failure
+                                              </span>
+                                            ) : (
+                                              <span className="block font-normal text-slate-500">
+                                                Needs evidence; manager sign-off
+                                              </span>
+                                            )}
+                                          </span>
+                                        </label>
+                                      );
+                                    })}
                                   </div>
+                                  <p className="text-[10px] text-slate-600">
+                                    To fix a wrong value, correct the field instead; checks re-run automatically.
+                                  </p>
                                 </div>
 
                                 {/* Step 3: Reason (Rule 5) */}
@@ -2189,7 +2401,7 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
                                     setValuesConfirmed(false);
                                     setResolutionReason("");
                                     setResolutionEvidence("");
-                                    setResolutionType("SOURCE_CORRECTED");
+                                    setResolutionType("ACCEPTED_EXCEPTION");
                                   }}
                                 >
                                   {activeRes ? "Update Resolution" : "Resolve Discrepancy"}
