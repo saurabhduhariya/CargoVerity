@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { login } from "./helpers";
+
 /**
  * Week 1 Step 6.7: login -> create shipment -> see it in the database-backed queue.
  * Runs as the Executive when PLAYWRIGHT_E2E_* is set, otherwise as the Manager account.
@@ -17,11 +19,7 @@ test.skip(!account, "Set PLAYWRIGHT_E2E_* or PLAYWRIGHT_MANAGER_* credentials fo
 test(`login, create shipment, open its detail page and see it in the queue (${account?.label ?? "none"})`, async ({ page }) => {
   const reference = `E2E-${Date.now()}`;
 
-  await page.goto("/login");
-  await page.getByLabel("Email").fill(account!.email!);
-  await page.getByLabel("Password").fill(account!.password!);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await login(page, account!.email!, account!.password!);
   await expect(page.getByTestId("current-role")).toHaveText(account!.label);
 
   await page.locator("input#reference").fill(reference);

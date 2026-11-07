@@ -24,7 +24,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatBytes } from "@/lib/utils";
-import { runDocumentExtraction } from "@/lib/extraction/client-runner";
+import { ExtractionRequestError, runDocumentExtraction } from "@/lib/extraction/client-runner";
 import type { DocumentType } from "@/lib/ai/types";
 
 export type DocumentSlotItem = {
@@ -51,9 +51,40 @@ export type DocumentSlotItem = {
   } | null;
   extractedFieldCount?: number;
   reviewRequiredCount?: number;
+  lowConfidenceCount?: number;
   unreadablePageCount?: number;
   manualPagesCount?: number;
 };
+
+/** Per-document extraction state shown on the slot, derived from persisted server state. */
+export type SlotExtractionState = "NOT_EXTRACTED" | "EXTRACTING" | "EXTRACTED" | "NEEDS_REVIEW" | "MANUAL_ENTRY" | "FAILED";
+
+export function deriveSlotExtractionState(doc: Pick<DocumentSlotItem, "extractionStatus" | "latestRun">): SlotExtractionState {
+  if (doc.latestRun?.status === "PROCESSING" || doc.extractionStatus === "PROCESSING") return "EXTRACTING";
+  if (doc.latestRun?.provider === "manual") return "MANUAL_ENTRY";
+  if (doc.extractionStatus === "FAILED" || doc.latestRun?.status === "FAILED") return "FAILED";
+  if (doc.extractionStatus === "EXTRACTED") return "EXTRACTED";
+  if (doc.extractionStatus === "REVIEW_REQUIRED") return "NEEDS_REVIEW";
+  return "NOT_EXTRACTED";
+}
+
+const STATE_BADGES: Record<SlotExtractionState, { label: string; className: string }> = {
+  NOT_EXTRACTED: { label: "Not extracted", className: "bg-slate-100 text-slate-600 border border-slate-200" },
+  EXTRACTING: { label: "Extracting…", className: "bg-blue-50 text-blue-700 border border-blue-200 animate-pulse" },
+  EXTRACTED: { label: "Extracted", className: "bg-blue-100 text-blue-800 border border-blue-200" },
+  NEEDS_REVIEW: { label: "Extracted · review needed", className: "bg-amber-100 text-amber-800 border border-amber-300" },
+  MANUAL_ENTRY: { label: "Manual entry", className: "bg-violet-100 text-violet-800 border border-violet-200" },
+  FAILED: { label: "Extraction failed", className: "bg-red-100 text-red-800 border border-red-200" },
+};
+
+function ExtractionStateBadge({ state, testId }: { state: SlotExtractionState; testId?: string }) {
+  const badge = STATE_BADGES[state];
+  return (
+    <Badge data-testid={testId} className={`${badge.className} text-[10px]`}>
+      {badge.label}
+    </Badge>
+  );
+}
 
 export type UploadLimits = {
   maxPdfBytes: number;
@@ -197,11 +228,27 @@ export function formatPlainLanguageError(code?: string, rawMessage?: string): st
     case "UNAUTHORIZED":
       return "You do not have permission to modify this shipment.";
     case "PROVIDER_UNAVAILABLE":
-      return "The AI extraction provider is temporarily unavailable. Please retry shortly or use manual entry.";
+    case "UNAVAILABLE":
+      return "The AI extraction provider is temporarily unavailable. Retry shortly or enter the values manually.";
     case "RATE_LIMITED":
-      return "Provider rate limit reached. Please wait a moment before retrying.";
+    case "RATE_LIMIT":
+      return "Provider rate limit reached. Wait a moment before retrying, or enter the values manually.";
+    case "QUOTA_EXCEEDED":
+      return "The AI provider's quota or credit is used up. Enter the values manually, or retry after the quota resets.";
     case "TIMEOUT":
       return "Extraction request timed out before the model could finish. Please retry.";
+    case "INVALID_RESPONSE":
+      return "The AI returned output that failed validation, so nothing was saved from it. Retry, or enter the values manually.";
+    case "AUTHENTICATION":
+      return "The AI provider rejected the server's credentials. Ask an administrator to check the configuration.";
+    case "ABANDONED":
+      return "The previous extraction did not finish (the page may have been closed). Retry the extraction.";
+    case "EXTRACTION_LOCKED":
+      return "This shipment is submitted, approved or exported, so extraction cannot be re-run.";
+    case "EXTRACTION_IN_PROGRESS":
+      return "An extraction for this document is already running.";
+    case "RUN_CLOSED":
+      return "The last extraction run has ended. Use Retry extraction to start a new run.";
     default:
       // Never show machine output (for example a JSON validation dump) as the user-facing message.
       if (rawMessage && !/^\s*[[{]/.test(rawMessage)) return rawMessage;
@@ -280,10 +327,13 @@ export function ShipmentDocumentSlots({
   const allThreeUploaded = Boolean(ciDoc && plDoc && blDoc);
 
   // Extraction status aggregations
-  const completedCount = documents.filter((d) => d.isCurrent && d.extractionStatus === "COMPLETED").length;
-  const failedCount = documents.filter((d) => d.isCurrent && d.extractionStatus === "FAILED").length;
-  const processingCount = documents.filter(
-    (d) => d.isCurrent && (d.extractionStatus === "PROCESSING" || slotExtracting[d.docType] !== null),
+  const currentDocs = documents.filter((d) => d.isCurrent);
+  const completedCount = currentDocs.filter((d) =>
+    ["EXTRACTED", "NEEDS_REVIEW", "MANUAL_ENTRY"].includes(deriveSlotExtractionState(d)),
+  ).length;
+  const failedCount = currentDocs.filter((d) => deriveSlotExtractionState(d) === "FAILED").length;
+  const processingCount = currentDocs.filter(
+    (d) => deriveSlotExtractionState(d) === "EXTRACTING" || slotExtracting[d.docType] !== null,
   ).length;
   const totalUploaded = [ciDoc, plDoc, blDoc].filter(Boolean).length;
   const hasTypeMismatch = documents.some((d) => d.isCurrent && d.typeMismatch);
@@ -312,6 +362,7 @@ export function ShipmentDocumentSlots({
               latestRun: found.latestRun,
               extractedFieldCount: found.extractedFieldCount,
               reviewRequiredCount: found.reviewRequiredCount,
+              lowConfidenceCount: found.lowConfidenceCount,
               unreadablePageCount: found.unreadablePageCount,
               manualPagesCount: found.manualPagesCount,
             };
@@ -328,9 +379,7 @@ export function ShipmentDocumentSlots({
   // Active polling while any document extraction is running
   useEffect(() => {
     const isAnyExtracting =
-      documents.some(
-        (d) => d.isCurrent && (d.extractionStatus === "PROCESSING" || d.extractionStatus === "QUEUED"),
-      ) ||
+      documents.some((d) => d.isCurrent && deriveSlotExtractionState(d) === "EXTRACTING") ||
       extractingAll ||
       Object.values(slotExtracting).some(Boolean);
 
@@ -344,87 +393,57 @@ export function ShipmentDocumentSlots({
   }, [documents, extractingAll, slotExtracting, pollStatus]);
 
   // Execute extraction across all uploaded documents
-  async function handleRunAllExtraction() {
-    if (!allThreeUploaded || extractingAll) return;
+  function extractionErrorMessage(err: unknown) {
+    if (err instanceof ExtractionRequestError) return formatPlainLanguageError(err.code, err.message);
+    return err instanceof Error ? err.message : "Extraction failed.";
+  }
 
-    setExtractingAll(true);
-    setShipmentStatus("EXTRACTING");
-
+  // Runs one slot; failures stay on that slot so the other documents still extract (partial completion).
+  async function extractSlot(type: DocumentType, retry: boolean) {
+    const doc = getActiveDoc(type);
+    if (!doc) return;
+    setSlotErrors((prev) => ({ ...prev, [type]: null }));
+    setSlotExtracting((prev) => ({ ...prev, [type]: "Starting extraction…" }));
     try {
-      // 1. Initialize shipment extraction runs on server
-      await fetch(`/api/shipments/${shipmentId}/extract`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+      await runDocumentExtraction({
+        documentId: doc.id,
+        documentType: type,
+        mimeType: doc.mimeType,
+        retry,
+        onProgress: (step) => setSlotExtracting((prev) => ({ ...prev, [type]: step })),
       });
+    } catch (err) {
+      setSlotErrors((prev) => ({ ...prev, [type]: extractionErrorMessage(err) }));
+    } finally {
+      setSlotExtracting((prev) => ({ ...prev, [type]: null }));
+    }
+  }
 
-      // 2. Extract each slot in bounded batches
-      const slotsToExtract: DocumentType[] = ["INVOICE", "PACKING_LIST", "BILL_OF_LADING"];
-      for (const slotType of slotsToExtract) {
+  // Extract every current document. `retry` re-runs completed or failed documents as new runs.
+  async function handleRunAllExtraction(retry = false) {
+    if (!allThreeUploaded || extractingAll) return;
+    setExtractingAll(true);
+    try {
+      for (const slotType of ["INVOICE", "PACKING_LIST", "BILL_OF_LADING"] as DocumentType[]) {
         const doc = getActiveDoc(slotType);
         if (!doc) continue;
-
-        setSlotExtracting((prev) => ({ ...prev, [slotType]: "Starting extraction…" }));
-        try {
-          await runDocumentExtraction({
-            documentId: doc.id,
-            documentType: slotType,
-            mimeType: doc.mimeType,
-            onProgress: (step) => {
-              setSlotExtracting((prev) => ({ ...prev, [slotType]: step }));
-            },
-          });
-        } catch (err) {
-          console.error(`Extraction failed for ${slotType}:`, err);
-        } finally {
-          setSlotExtracting((prev) => ({ ...prev, [slotType]: null }));
-        }
+        const state = deriveSlotExtractionState(doc);
+        // Without retry, documents that already have a finished run are left as they are.
+        if (!retry && state !== "NOT_EXTRACTED" && state !== "EXTRACTING") continue;
+        await extractSlot(slotType, retry);
       }
-
+    } finally {
       await pollStatus();
       router.refresh();
-    } catch (err) {
-      console.error("Batch extraction failed:", err);
-    } finally {
       setExtractingAll(false);
     }
   }
 
   // Execute extraction for a single slot (with retry support)
   async function handleSingleSlotExtraction(type: DocumentType, isRetry = false) {
-    const doc = getActiveDoc(type);
-    if (!doc) return;
-
-    setShipmentStatus("EXTRACTING");
-    setSlotExtracting((prev) => ({ ...prev, [type]: "Initiating extraction run…" }));
-
-    try {
-      // Call document extract endpoint to register run/retry
-      await fetch(`/api/documents/${doc.id}/extract`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ retry: isRetry, retryOfRunId: doc.latestRun?.id }),
-      });
-
-      await runDocumentExtraction({
-        documentId: doc.id,
-        documentType: type,
-        mimeType: doc.mimeType,
-        onProgress: (step) => {
-          setSlotExtracting((prev) => ({ ...prev, [type]: step }));
-        },
-      });
-
-      await pollStatus();
-      router.refresh();
-    } catch (err) {
-      setSlotErrors((prev) => ({
-        ...prev,
-        [type]: err instanceof Error ? err.message : "Extraction failed.",
-      }));
-    } finally {
-      setSlotExtracting((prev) => ({ ...prev, [type]: null }));
-    }
+    await extractSlot(type, isRetry);
+    await pollStatus();
+    router.refresh();
   }
 
   // Handle preview generation using authorized signed URL (TTL 300s)
@@ -677,7 +696,7 @@ export function ShipmentDocumentSlots({
                   const target = retryModalTarget;
                   setRetryModalTarget(null);
                   if (target === "ALL") {
-                    handleRunAllExtraction();
+                    handleRunAllExtraction(true);
                   } else {
                     handleSingleSlotExtraction(target, true);
                   }
@@ -770,7 +789,7 @@ export function ShipmentDocumentSlots({
                 onClick={
                   completedCount === 3
                     ? () => setRetryModalTarget("ALL")
-                    : handleRunAllExtraction
+                    : () => handleRunAllExtraction(false)
                 }
                 disabled={!allThreeUploaded || extractingAll || processingCount > 0}
                 className="h-9 bg-blue-700 text-xs text-white hover:bg-blue-800 disabled:opacity-50"
@@ -945,23 +964,10 @@ export function ShipmentDocumentSlots({
                           <Badge className="bg-emerald-100 text-emerald-800 border border-emerald-300">
                             v{activeDoc.documentVersion} Active
                           </Badge>
-                          {activeDoc.extractionStatus === "COMPLETED" ? (
-                            <Badge className="bg-blue-100 text-blue-800 border border-blue-200 text-[10px]">
-                              Extracted
-                            </Badge>
-                          ) : activeDoc.extractionStatus === "FAILED" ? (
-                            <Badge className="bg-red-100 text-red-800 border border-red-200 text-[10px]">
-                              Extraction Failed
-                            </Badge>
-                          ) : activeDoc.extractionStatus === "PROCESSING" || extractingStep ? (
-                            <Badge className="bg-blue-50 text-blue-700 border border-blue-200 text-[10px] animate-pulse">
-                              Extracting…
-                            </Badge>
-                          ) : (
-                            <Badge className="bg-slate-100 text-slate-600 border border-slate-200 text-[10px]">
-                              Not extracted
-                            </Badge>
-                          )}
+                          <ExtractionStateBadge
+                            state={extractingStep ? "EXTRACTING" : deriveSlotExtractionState(activeDoc)}
+                            testId={`extraction-state-${slot.type}`}
+                          />
                         </div>
                       ) : (
                         <Badge className="bg-slate-100 text-slate-500 border border-slate-200">
@@ -1062,10 +1068,11 @@ export function ShipmentDocumentSlots({
                         ) : null}
 
                         {/* Extracted Fields Count & Review Required Count (Week 3 Step 6) */}
-                        {activeDoc.extractionStatus === "COMPLETED" || (activeDoc.extractedFieldCount ?? 0) > 0 ? (
+                        {["EXTRACTED", "NEEDS_REVIEW", "MANUAL_ENTRY"].includes(deriveSlotExtractionState(activeDoc)) ||
+                        (activeDoc.extractedFieldCount ?? 0) > 0 ? (
                           <div className="space-y-1.5 rounded-md border border-slate-200 bg-white p-2.5 text-xs">
                             <div className="flex items-center justify-between">
-                              <span className="font-semibold text-slate-800">
+                              <span className="font-semibold text-slate-800" data-testid={`field-count-${slot.type}`}>
                                 {activeDoc.extractedFieldCount ?? 0} fields extracted
                               </span>
                               {(activeDoc.reviewRequiredCount ?? 0) > 0 ? (
@@ -1074,10 +1081,15 @@ export function ShipmentDocumentSlots({
                                 </Badge>
                               ) : (
                                 <Badge className="bg-emerald-100 text-emerald-800 border border-emerald-300 text-[10px]">
-                                  All verified
+                                  No review flags
                                 </Badge>
                               )}
                             </div>
+                            {(activeDoc.lowConfidenceCount ?? 0) > 0 ? (
+                              <p className="text-[11px] text-amber-800" data-testid={`low-confidence-${slot.type}`}>
+                                {activeDoc.lowConfidenceCount} low-confidence value(s) — confidence is a model estimate.
+                              </p>
+                            ) : null}
                             <Link
                               href={`/review/${activeDoc.id}`}
                               className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700 hover:text-blue-800 pt-1"
@@ -1088,19 +1100,31 @@ export function ShipmentDocumentSlots({
                         ) : null}
 
                         {/* Extraction Failure Notice */}
-                        {activeDoc.extractionStatus === "FAILED" && !extractingStep ? (
+                        {deriveSlotExtractionState(activeDoc) === "FAILED" && !extractingStep ? (
                           <div className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800 space-y-1">
-                            <p className="font-semibold">Extraction Failed: {activeDoc.latestRun?.errorCode ?? "PROVIDER_ERROR"}</p>
+                            <p className="font-semibold">Extraction failed ({activeDoc.latestRun?.errorCode ?? "ERROR"})</p>
                             <p className="text-[11px] text-red-700">
                               {formatPlainLanguageError(activeDoc.latestRun?.errorCode ?? undefined, activeDoc.latestRun?.errorMessage ?? undefined)}
                             </p>
+                            <Link
+                              href={`/review/${activeDoc.id}`}
+                              className="inline-flex text-[11px] font-semibold text-red-900 underline underline-offset-2"
+                            >
+                              Enter values manually →
+                            </Link>
                           </div>
+                        ) : null}
+
+                        {slotError && !extractingStep ? (
+                          <p role="alert" data-testid={`slot-error-${slot.type}`} className="rounded-md border border-red-200 bg-red-50 p-2 text-[11px] text-red-800">
+                            {slotError}
+                          </p>
                         ) : null}
 
                         {/* Action Buttons for Active Document */}
                         <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-200">
                           {/* Run/Retry extraction action with cost warning */}
-                          {activeDoc.extractionStatus === "COMPLETED" || activeDoc.extractionStatus === "FAILED" ? (
+                          {deriveSlotExtractionState(activeDoc) !== "NOT_EXTRACTED" && deriveSlotExtractionState(activeDoc) !== "EXTRACTING" ? (
                             <Button
                               type="button"
                               variant="outline"

@@ -473,7 +473,8 @@ describe("Submission Gates & Validation (Week 5 Step 1)", () => {
                 extractionStatus: "EXTRACTED",
                 typeMismatch: false,
                 pages: [],
-                fields: [],
+                // The guard reads fields from the latest COMPLETED extraction run.
+                extractionRuns: [{ fields: [] }],
               },
             ],
             crossCheckRuns: [
@@ -528,28 +529,19 @@ describe("Submission Gates & Validation (Week 5 Step 1)", () => {
             ...validDocInv,
             selectedDocType: "INVOICE",
             pages: validDocInv.pages,
-            fields: validDocInv.fields.map((f) => ({
-              ...f,
-              modelConfidence: f.modelConfidence,
-            })),
+            extractionRuns: [{ fields: validDocInv.fields.map((f) => ({ ...f, modelConfidence: f.modelConfidence })) }],
           },
           {
             ...validDocPL,
             selectedDocType: "PACKING_LIST",
             pages: validDocPL.pages,
-            fields: validDocPL.fields.map((f) => ({
-              ...f,
-              modelConfidence: f.modelConfidence,
-            })),
+            extractionRuns: [{ fields: validDocPL.fields.map((f) => ({ ...f, modelConfidence: f.modelConfidence })) }],
           },
           {
             ...validDocBL,
             selectedDocType: "BILL_OF_LADING",
             pages: validDocBL.pages,
-            fields: validDocBL.fields.map((f) => ({
-              ...f,
-              modelConfidence: f.modelConfidence,
-            })),
+            extractionRuns: [{ fields: validDocBL.fields.map((f) => ({ ...f, modelConfidence: f.modelConfidence })) }],
           },
         ],
         crossCheckRuns: [

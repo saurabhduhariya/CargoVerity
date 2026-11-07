@@ -55,6 +55,8 @@ const envSchema = z.object({
   MAX_AI_IMAGES_PER_REQUEST: z.coerce.number().int().positive().max(3).default(3),
   LOW_CONFIDENCE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.85),
   MAX_AI_RETRIES: z.coerce.number().int().min(0).max(1).default(1),
+  AI_MAX_COMPLETION_TOKENS: z.coerce.number().int().min(256).max(8000).default(1000),
+  AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(5000).max(120000).default(60000),
   EXPORT_PROFILE_ID: defaultedString("demo-v1"),
   DOCUMENT_RETENTION_DAYS: optionalString,
 });

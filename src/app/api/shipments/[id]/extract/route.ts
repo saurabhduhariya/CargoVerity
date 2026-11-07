@@ -5,16 +5,23 @@ import { apiError } from "@/lib/api-response";
 import { requireAppUser } from "@/lib/auth";
 import { getPrisma } from "@/lib/db";
 import { createAIProvider } from "@/lib/ai/provider-factory";
+import { startDocumentExtraction } from "@/lib/ai/extraction-workflow";
 import { ExtractionPersistenceService } from "@/lib/ai/persistence.service";
 import { documentTypes, type DocumentType } from "@/lib/ai/types";
 
 const extractRequestSchema = z
   .object({
     documentTypes: z.array(z.enum(documentTypes)).optional(),
+    /** Retry documents whose latest run FAILED (creates new linked runs). */
     forceRetry: z.boolean().default(false),
   })
   .default({ forceRetry: false });
 
+/**
+ * Week 3 Step 2/6: start one run per current document (idempotent per document version, model
+ * and prompt). Partial completion is allowed; the shipment stays EXTRACTING until every started
+ * run has finished, which the persistence layer decides server-side.
+ */
 export async function POST(
   request: Request,
   context: { params: Promise<{ id: string }> },
@@ -23,111 +30,74 @@ export async function POST(
     const { appUser } = await requireAppUser();
     const { id: shipmentId } = await context.params;
 
+    const text = await request.text();
     let bodyData: unknown = {};
-    try {
-      const text = await request.text();
-      if (text.trim().length > 0) {
+    if (text.trim().length > 0) {
+      try {
         bodyData = JSON.parse(text);
+      } catch {
+        return NextResponse.json({ error: "Invalid JSON request body.", code: "INVALID_JSON" }, { status: 400 });
       }
-    } catch {
-      return NextResponse.json(
-        { error: "Invalid JSON request body.", code: "INVALID_JSON" },
-        { status: 400 },
-      );
     }
 
     const input = extractRequestSchema.parse(bodyData);
     const prisma = getPrisma();
 
-    // 1. Authorize shipment access
     const shipment = await prisma.shipment.findFirst({
-      where: {
-        id: shipmentId,
-        ...(appUser.role === "MANAGER" ? {} : { createdById: appUser.id }),
-      },
+      where: { id: shipmentId, ...(appUser.role === "MANAGER" ? {} : { createdById: appUser.id }) },
       include: {
         documents: {
           where: { isCurrent: true },
-          include: {
-            extractionRuns: { orderBy: { createdAt: "desc" }, take: 1 },
-          },
+          include: { extractionRuns: { orderBy: { createdAt: "desc" }, take: 1 } },
         },
       },
     });
 
     if (!shipment) {
-      return NextResponse.json(
-        { error: "Shipment not found or unauthorized.", code: "NOT_FOUND" },
-        { status: 404 },
-      );
+      return NextResponse.json({ error: "Shipment not found or unauthorized.", code: "NOT_FOUND" }, { status: 404 });
     }
-
     if (shipment.documents.length === 0) {
       return NextResponse.json(
-        {
-          error: "No active documents found to extract. Upload documents first.",
-          code: "NO_DOCUMENTS",
-        },
+        { error: "No active documents found to extract. Upload documents first.", code: "NO_DOCUMENTS" },
         { status: 400 },
       );
     }
 
-    // Filter target documents if specific types requested
-    const targetDocs = input.documentTypes && input.documentTypes.length > 0
-      ? shipment.documents.filter((d) =>
-          input.documentTypes!.includes(d.docType as DocumentType),
-        )
-      : shipment.documents;
+    const targetDocs =
+      input.documentTypes && input.documentTypes.length > 0
+        ? shipment.documents.filter((d) => input.documentTypes!.includes(d.selectedDocType as DocumentType))
+        : shipment.documents;
 
     if (targetDocs.length === 0) {
       return NextResponse.json(
-        {
-          error: "None of the requested document types are currently uploaded.",
-          code: "DOCUMENTS_NOT_FOUND",
-        },
+        { error: "None of the requested document types are currently uploaded.", code: "DOCUMENTS_NOT_FOUND" },
         { status: 400 },
       );
     }
 
     const provider = createAIProvider();
-    const persistenceService = new ExtractionPersistenceService(prisma);
-
-    // 2. Set shipment status to EXTRACTING atomically
-    await prisma.shipment.update({
-      where: { id: shipment.id },
-      data: { status: "EXTRACTING" },
-    });
-
-    // 3. Create or retrieve extraction runs for each target document
     const runs = [];
     for (const doc of targetDocs) {
-      const latestRun = doc.extractionRuns[0];
-      const isRetry = input.forceRetry && latestRun?.status === "FAILED";
-
-      const { run } = await persistenceService.createOrGetExtractionRun({
+      const retry = input.forceRetry && doc.extractionRuns[0]?.status === "FAILED";
+      const { run, isExisting } = await startDocumentExtraction(prisma, {
         documentId: doc.id,
-        requestedById: appUser.id,
-        provider: provider.name,
-        model: provider.model,
-        pageCount: doc.pageCount || 1,
-        idempotencyKey: isRetry
-          ? `retry-${doc.id}-${doc.documentVersion}-${Date.now()}`
-          : undefined,
-        retryOfRunId: isRetry ? latestRun?.id : undefined,
+        actor: appUser,
+        provider,
+        retry,
       });
-
       runs.push({
         id: run.id,
         documentId: doc.id,
-        documentType: doc.docType,
+        documentType: doc.selectedDocType,
         documentVersion: doc.documentVersion,
         status: run.status,
         provider: run.provider,
         model: run.model,
+        retryOfRunId: run.retryOfRunId,
+        existing: isExisting,
       });
     }
 
-    // 4. Audit event
     await prisma.auditEvent.create({
       data: {
         shipmentId: shipment.id,
@@ -135,24 +105,21 @@ export async function POST(
         action: input.forceRetry ? "EXTRACTION_RETRY_STARTED" : "SHIPMENT_EXTRACTION_INITIATED",
         entityType: "Shipment",
         entityId: shipment.id,
-        metadata: {
-          documentCount: targetDocs.length,
-          runIds: runs.map((r) => r.id),
-          model: provider.model,
-        },
+        metadata: { documentCount: targetDocs.length, runIds: runs.map((r) => r.id), model: provider.model },
       },
     });
 
-    return NextResponse.json({
-      shipmentId: shipment.id,
-      status: "EXTRACTING",
-      runs,
-    });
+    const refreshed = await prisma.shipment.findUniqueOrThrow({ where: { id: shipment.id } });
+    return NextResponse.json({ shipmentId: shipment.id, status: refreshed.status, runs });
   } catch (error) {
     return apiError(error);
   }
 }
 
+/**
+ * Persisted per-document extraction state for polling. Counts come from the latest COMPLETED
+ * run (the one reviewers and cross-checks use); status comes from the latest run of any state.
+ */
 export async function GET(
   _request: Request,
   context: { params: Promise<{ id: string }> },
@@ -162,11 +129,19 @@ export async function GET(
     const { id: shipmentId } = await context.params;
     const prisma = getPrisma();
 
-    const shipment = await prisma.shipment.findFirst({
-      where: {
-        id: shipmentId,
-        ...(appUser.role === "MANAGER" ? {} : { createdById: appUser.id }),
-      },
+    const scoped = await prisma.shipment.findFirst({
+      where: { id: shipmentId, ...(appUser.role === "MANAGER" ? {} : { createdById: appUser.id }) },
+      select: { id: true },
+    });
+    if (!scoped) {
+      return NextResponse.json({ error: "Shipment not found or unauthorized.", code: "NOT_FOUND" }, { status: 404 });
+    }
+
+    const persistenceService = new ExtractionPersistenceService(prisma);
+    await persistenceService.expireStaleRuns(shipmentId);
+
+    const shipment = await prisma.shipment.findUniqueOrThrow({
+      where: { id: shipmentId },
       include: {
         documents: {
           where: { isCurrent: true },
@@ -185,97 +160,53 @@ export async function GET(
                 latencyMs: true,
               },
             },
-            fields: {
-              select: {
-                id: true,
-                fieldKey: true,
-                reviewStatus: true,
-                modelConfidence: true,
-              },
-            },
-            pages: {
-              select: {
-                id: true,
-                pageNumber: true,
-                isReadable: true,
-                manualEntryRequired: true,
-              },
-            },
+            pages: { select: { id: true, pageNumber: true, isReadable: true, manualEntryRequired: true } },
           },
         },
       },
     });
 
-    if (!shipment) {
-      return NextResponse.json(
-        { error: "Shipment not found or unauthorized.", code: "NOT_FOUND" },
-        { status: 404 },
-      );
-    }
-
-    const persistenceService = new ExtractionPersistenceService(prisma);
-    const readiness = await persistenceService.checkShipmentExtractionReadiness(shipment.id);
-
-    // Check if any document is currently actively processing/queued
-    const activeRuns = shipment.documents.filter((d) => {
-      const latestRun = d.extractionRuns[0];
-      return latestRun && (latestRun.status === "PROCESSING" || latestRun.status === "QUEUED");
+    const completedRuns = await prisma.extractionRun.findMany({
+      where: { documentId: { in: shipment.documents.map((d) => d.id) }, status: "COMPLETED" },
+      orderBy: { createdAt: "desc" },
+      select: {
+        documentId: true,
+        fields: { select: { reviewStatus: true, reviewReason: true } },
+      },
     });
-    const isExtracting = activeRuns.length > 0;
+    const latestCompleted = new Map<string, (typeof completedRuns)[number]>();
+    for (const run of completedRuns) if (!latestCompleted.has(run.documentId)) latestCompleted.set(run.documentId, run);
 
-    // If shipment was in EXTRACTING state and all runs have finished, determine state
-    let effectiveStatus = shipment.status;
-    if (shipment.status === "EXTRACTING" && !isExtracting) {
-      // Transition from EXTRACTING to NEEDS_REVIEW
-      effectiveStatus = "NEEDS_REVIEW";
-      await prisma.shipment.update({
-        where: { id: shipment.id },
-        data: { status: "NEEDS_REVIEW" },
-      });
-    }
+    const readiness = await persistenceService.checkShipmentExtractionReadiness(shipment.id);
+    const isExtracting = shipment.documents.some((d) => d.extractionRuns[0]?.status === "PROCESSING");
 
     const documents = shipment.documents.map((doc) => {
-      const latestRun = doc.extractionRuns[0] ?? null;
-      const totalFields = doc.fields.length;
-      const reviewRequiredCount = doc.fields.filter(
-        (f) => f.reviewStatus === "REQUIRES_REVIEW",
-      ).length;
-      const confirmedCount = doc.fields.filter(
-        (f) => f.reviewStatus === "CONFIRMED",
-      ).length;
-      const correctedCount = doc.fields.filter(
-        (f) => f.reviewStatus === "CORRECTED",
-      ).length;
-      const manualEntryCount = doc.fields.filter(
-        (f) => f.reviewStatus === "MANUAL_ENTRY",
-      ).length;
-      const unreadablePageCount = doc.pages.filter(
-        (p) => !p.isReadable && !p.manualEntryRequired,
-      ).length;
-      const manualPagesCount = doc.pages.filter((p) => p.manualEntryRequired).length;
-
+      const fields = latestCompleted.get(doc.id)?.fields ?? [];
+      const count = (status: string) => fields.filter((f) => f.reviewStatus === status).length;
       return {
         documentId: doc.id,
-        docType: doc.docType as DocumentType,
+        docType: doc.selectedDocType as DocumentType,
         documentVersion: doc.documentVersion,
         originalFileName: doc.originalFileName,
         extractionStatus: doc.extractionStatus,
         typeMismatch: doc.typeMismatch,
         detectedDocType: doc.detectedDocType,
-        latestRun,
-        extractedFieldCount: totalFields,
-        reviewRequiredCount,
-        confirmedCount,
-        correctedCount,
-        manualEntryCount,
-        unreadablePageCount,
-        manualPagesCount,
+        latestRun: doc.extractionRuns[0] ?? null,
+        extractedFieldCount: fields.filter((f) => f.reviewStatus !== "NOT_PRESENT").length,
+        reviewRequiredCount: count("REQUIRES_REVIEW"),
+        lowConfidenceCount: fields.filter((f) => f.reviewReason === "LOW_MODEL_CONFIDENCE").length,
+        confirmedCount: count("CONFIRMED"),
+        correctedCount: count("CORRECTED"),
+        manualEntryCount: count("MANUAL_ENTRY"),
+        unreadablePageCount: doc.pages.filter((p) => !p.isReadable && !p.manualEntryRequired).length,
+        unreadablePages: doc.pages.filter((p) => !p.isReadable && !p.manualEntryRequired).map((p) => p.pageNumber),
+        manualPagesCount: doc.pages.filter((p) => p.manualEntryRequired).length,
       };
     });
 
     return NextResponse.json({
       shipmentId: shipment.id,
-      shipmentStatus: effectiveStatus,
+      shipmentStatus: shipment.status,
       shipmentRevision: shipment.currentRevision,
       isExtracting,
       readiness,

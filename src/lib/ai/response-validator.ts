@@ -108,13 +108,60 @@ function normalizeLineItem(item: unknown) {
   };
 }
 
-function normalizeResponsePayload(payload: unknown) {
-  if (!isJsonRecord(payload) || !Array.isArray(payload.lineItems)) return payload;
+/**
+ * Maps common key aliases vision models emit on field objects onto the canonical keys before
+ * strict schema validation (snake_case evidence keys, and a field-level "currency" that belongs
+ * in "unit"). Unknown keys are left in place so the strict schema still rejects them.
+ */
+function normalizeFieldObject(value: unknown) {
+  if (!isJsonRecord(value)) return value;
+  const {
+    currency: currencyAlias,
+    source_quote: sourceQuoteAlias,
+    page_number: pageNumberAlias,
+    review_reason: reviewReasonAlias,
+    ...canonical
+  } = value;
 
+  const normalized: JsonRecord = { ...canonical };
+  if (normalized.unit === undefined || normalized.unit === null) {
+    if (typeof currencyAlias === "string") normalized.unit = currencyAlias;
+  }
+  if (normalized.sourceQuote === undefined && sourceQuoteAlias !== undefined) normalized.sourceQuote = sourceQuoteAlias;
+  if (normalized.pageNumber === undefined && pageNumberAlias !== undefined) normalized.pageNumber = pageNumberAlias;
+  if (normalized.reviewReason === undefined && reviewReasonAlias !== undefined) normalized.reviewReason = reviewReasonAlias;
+  if (normalized.pageNumber !== undefined) normalized.pageNumber = numericValue(normalized.pageNumber);
+  if (normalized.confidence !== undefined) normalized.confidence = numericValue(normalized.confidence);
+  return normalized;
+}
+
+function normalizePageReadability(page: unknown) {
+  if (!isJsonRecord(page)) return page;
+  const { page_number: pageNumberAlias, review_note: reviewNoteAlias, ...canonical } = page;
   return {
-    ...payload,
-    lineItems: payload.lineItems.map(normalizeLineItem),
+    ...canonical,
+    pageNumber: numericValue(canonical.pageNumber ?? pageNumberAlias),
+    ...(canonical.reviewNote !== undefined || reviewNoteAlias !== undefined
+      ? { reviewNote: canonical.reviewNote ?? reviewNoteAlias }
+      : {}),
   };
+}
+
+function normalizeResponsePayload(payload: unknown) {
+  if (!isJsonRecord(payload)) return payload;
+
+  const normalized: JsonRecord = { ...payload };
+  for (const key of Object.keys(normalized)) {
+    if (key === "lineItems" || key === "pageReadability") continue;
+    if (isJsonRecord(normalized[key])) normalized[key] = normalizeFieldObject(normalized[key]);
+  }
+  if (Array.isArray(normalized.lineItems)) {
+    normalized.lineItems = normalized.lineItems.map(normalizeLineItem);
+  }
+  if (Array.isArray(normalized.pageReadability)) {
+    normalized.pageReadability = normalized.pageReadability.map(normalizePageReadability);
+  }
+  return normalized;
 }
 
 export function parseJsonContent(content: string): unknown {
@@ -170,7 +217,10 @@ function normalizeField(
  * Validates canonical decimal representations, confidence bounds,
  * evidence completeness, and document type consistency.
  */
-export function validateBusinessRules(output: ExtractionAdapterOutput): {
+export function validateBusinessRules(
+  output: ExtractionAdapterOutput,
+  lowConfidenceThreshold = 0.85,
+): {
   valid: boolean;
   warnings: string[];
 } {
@@ -194,8 +244,8 @@ export function validateBusinessRules(output: ExtractionAdapterOutput): {
 
   // 3. Field business validations
   for (const field of output.fields) {
-    // Model confidence estimate threshold (0.85)
-    if (field.modelConfidence !== null && field.modelConfidence < 0.85) {
+    // Model confidence estimate threshold (LOW_CONFIDENCE_THRESHOLD)
+    if (field.modelConfidence !== null && field.modelConfidence < lowConfidenceThreshold) {
       warnings.push(`Low model confidence for ${field.fieldKey}.`);
     }
 
@@ -222,7 +272,7 @@ export function validateBusinessRules(output: ExtractionAdapterOutput): {
 
   // 4. Line item business validations
   for (const item of output.lineItems) {
-    if (item.modelConfidence !== null && item.modelConfidence < 0.85) {
+    if (item.modelConfidence !== null && item.modelConfidence < lowConfidenceThreshold) {
       warnings.push(`Low model confidence on line item ${item.lineNumber}.`);
     }
     if (item.quantity && !CANONICAL_DECIMAL_REGEX.test(item.quantity)) {
@@ -258,6 +308,9 @@ export function validateAndNormalizeResponse(input: {
   rawRequestId?: string;
   promptVersion?: string;
   schemaVersion?: string;
+  /** Page numbers actually sent in this request; evidence citing other pages is discarded. */
+  pageNumbers?: number[];
+  lowConfidenceThreshold?: number;
 }): ExtractionAdapterOutput {
   const parsed = normalizeResponsePayload(parseJsonContent(input.content));
   const schema = schemas[input.documentType];
@@ -343,12 +396,52 @@ export function validateAndNormalizeResponse(input: {
     warnings: [],
   };
 
-  const businessValidation = validateBusinessRules(rawOutput);
-  rawOutput.warnings = businessValidation.warnings;
+  const evidenceWarnings = input.pageNumbers ? boundEvidenceToPages(rawOutput, input.pageNumbers) : [];
+
+  const businessValidation = validateBusinessRules(rawOutput, input.lowConfidenceThreshold);
+  rawOutput.warnings = [...evidenceWarnings, ...businessValidation.warnings];
 
   return rawOutput;
 }
 
+/**
+ * A model can only cite pages it was shown. Page references outside the batch are removed (so
+ * the review policy flags the value for evidence review), and readability reports for pages that
+ * were not sent are dropped instead of being written onto the wrong page.
+ */
+function boundEvidenceToPages(output: ExtractionAdapterOutput, pageNumbers: number[]) {
+  const allowed = new Set(pageNumbers);
+  const warnings: string[] = [];
+
+  for (const field of output.fields) {
+    if (field.pageNumber !== null && !allowed.has(field.pageNumber)) {
+      warnings.push(`Field ${field.fieldKey} cited page ${field.pageNumber}, which was not provided.`);
+      field.pageNumber = null;
+      field.reviewReason = field.reviewReason ?? "OUTSIDE_PROVIDED_PAGES";
+    }
+  }
+  for (const item of output.lineItems) {
+    if (item.pageNumber !== null && !allowed.has(item.pageNumber)) {
+      warnings.push(`Line item ${item.lineNumber} cited page ${item.pageNumber}, which was not provided.`);
+      item.pageNumber = null;
+      item.reviewReason = item.reviewReason ?? "OUTSIDE_PROVIDED_PAGES";
+    }
+  }
+
+  const seen = new Set<number>();
+  output.pageReadability = (output.pageReadability ?? []).filter((page) => {
+    if (!allowed.has(page.pageNumber) || seen.has(page.pageNumber)) return false;
+    seen.add(page.pageNumber);
+    return true;
+  });
+
+  return warnings;
+}
+
+/** Safe message for an extraction failure: only our own fixed provider messages pass through. */
 export function normalizeProviderError(error: unknown) {
-  return error instanceof Error ? error.message : "Unknown provider error.";
+  if (error && typeof error === "object" && "name" in error && error.name === "ProviderError" && error instanceof Error) {
+    return error.message;
+  }
+  return "Extraction failed.";
 }

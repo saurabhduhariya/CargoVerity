@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { waitForLoginForm } from "./helpers";
+
 const supabaseConfigured = Boolean(
   process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
 );
@@ -64,7 +66,7 @@ test("unauthenticated protected pages redirect to login with a return path", asy
 test("invalid credentials show a fixed error message", async ({ page }) => {
   test.skip(!supabaseConfigured, "Requires Supabase configuration.");
 
-  await page.goto("/login");
+  await waitForLoginForm(page);
   await page.getByLabel("Email").fill("no-such-user@example.test");
   await page.getByLabel("Password").fill("definitely-wrong-password");
   await page.getByRole("button", { name: "Sign in" }).click();

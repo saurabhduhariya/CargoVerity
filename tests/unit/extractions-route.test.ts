@@ -1,265 +1,108 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { POST } from "@/app/api/extractions/route";
-import * as authModule from "@/lib/auth";
-import * as dbModule from "@/lib/db";
-import * as factoryModule from "@/lib/ai/provider-factory";
-import * as loggerModule from "@/lib/ai/logger";
-import { ProviderError } from "@/lib/errors";
+/**
+ * Week 3 Step 3: route-level behaviour of POST /api/extractions and POST /api/documents/:id/extract
+ * plus the pure batch/image guards. Workflow logic against PostgreSQL is covered by
+ * tests/integration/extraction-workflow.test.ts.
+ */
 
-const shipmentId = "11111111-1111-4111-8111-111111111111";
-const documentId = "22222222-2222-4222-8222-222222222222";
-const userId = "33333333-3333-4333-8333-333333333333";
-const runId = "44444444-4444-4444-8444-444444444444";
+const runExtractionBatch = vi.fn();
+const startDocumentExtraction = vi.fn();
+vi.mock("@/lib/ai/extraction-workflow", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/ai/extraction-workflow")>()),
+  runExtractionBatch: (...args: unknown[]) => runExtractionBatch(...args),
+  startDocumentExtraction: (...args: unknown[]) => startDocumentExtraction(...args),
+}));
+vi.mock("@/lib/ai/provider-factory", () => ({ createAIProvider: () => ({ name: "groq", model: "m", extractDocument: vi.fn() }) }));
+vi.mock("@/lib/db", () => ({ getPrisma: () => ({}) }));
+const requireAppUser = vi.fn();
+vi.mock("@/lib/auth", () => ({ requireAppUser: () => requireAppUser() }));
 
-const validBase64 = "a".repeat(120);
+const { POST: postExtraction } = await import("@/app/api/extractions/route");
+const { POST: postDocumentExtract } = await import("@/app/api/documents/[id]/extract/route");
+const { assertValidBatchPages, assertValidPageImages } = await import("@/lib/ai/extraction-workflow");
+const { ExtractionError, ProviderError } = await import("@/lib/errors");
+
+const user = { id: "u1", role: "EXECUTIVE" };
+const request = (body: unknown) =>
+  new Request("http://localhost/api/extractions", { method: "POST", body: JSON.stringify(body) });
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  requireAppUser.mockResolvedValue({ appUser: user });
+});
 
 describe("POST /api/extractions (Week 3 Step 3)", () => {
-  const originalEnv = { ...process.env };
-
-  beforeEach(() => {
-    vi.restoreAllMocks();
-    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/cargoverity";
-    process.env.AI_PROVIDER = "groq";
-    process.env.GROQ_API_KEY = "gsk_test_groq_key";
-    process.env.GROQ_MODEL = "qwen/qwen3.8-27b";
+  it("returns 401 when unauthenticated and never runs extraction", async () => {
+    requireAppUser.mockRejectedValue(new Error("AUTHENTICATION_REQUIRED"));
+    const response = await postExtraction(request({}));
+    expect(response.status).toBe(401);
+    expect(runExtractionBatch).not.toHaveBeenCalled();
   });
 
-  afterEach(() => {
-    process.env = { ...originalEnv };
+  it("passes the authenticated actor (not a client-supplied one) to the workflow", async () => {
+    runExtractionBatch.mockResolvedValue({ runId: "r1", result: null, isFinal: true, cached: true });
+    const response = await postExtraction(request({ documentId: "d", actor: { id: "attacker", role: "MANAGER" } }));
+    expect(response.status).toBe(200);
+    expect(runExtractionBatch.mock.calls[0][1].actor).toEqual(user);
+    await expect(response.json()).resolves.toMatchObject({ runId: "r1", cached: true });
   });
 
-  it("returns 401 when unauthenticated", async () => {
-    vi.spyOn(authModule, "requireAppUser").mockRejectedValue(
-      new Error("AUTHENTICATION_REQUIRED"),
+  it.each([
+    [new ExtractionError("Extraction run not found for this document.", "RUN_NOT_FOUND", 404), 404, "RUN_NOT_FOUND"],
+    [new ExtractionError("This extraction run has ended.", "RUN_CLOSED", 409), 409, "RUN_CLOSED"],
+    [new ProviderError("Groq rate limit reached.", "RATE_LIMIT", 429), 429, "RATE_LIMIT"],
+    [new ProviderError("Groq returned a response that does not match the extraction schema.", "INVALID_RESPONSE"), 502, "INVALID_RESPONSE"],
+    [new ProviderError("Groq rejected the request because the account quota is exhausted.", "QUOTA_EXCEEDED", 402), 503, "QUOTA_EXCEEDED"],
+    [new ProviderError("Groq extraction request timed out.", "TIMEOUT", 504), 504, "TIMEOUT"],
+  ])("maps %s to a safe status and code", async (error, status, code) => {
+    runExtractionBatch.mockRejectedValue(error);
+    const response = await postExtraction(request({}));
+    expect(response.status).toBe(status);
+    const body = await response.json();
+    expect(body).toEqual({ error: error.message, code });
+  });
+});
+
+describe("POST /api/documents/[id]/extract", () => {
+  it("starts or resumes a run and reports whether it already existed", async () => {
+    startDocumentExtraction.mockResolvedValue({ run: { id: "r1", status: "PROCESSING", retryOfRunId: null, provider: "groq", model: "m" }, isExisting: false });
+    const response = await postDocumentExtract(
+      new Request("http://localhost/x", { method: "POST", body: JSON.stringify({ retry: true }) }),
+      { params: Promise.resolve({ id: "doc-1" }) },
     );
-
-    const mockPrisma = {};
-    vi.spyOn(dbModule, "getPrisma").mockReturnValue(mockPrisma as never);
-
-    const req = new Request("http://localhost/api/extractions", {
-      method: "POST",
-      body: JSON.stringify({
-        documentId,
-        documentType: "INVOICE",
-        pages: [{ pageNumber: 1, imageBase64: validBase64, mimeType: "image/jpeg" }],
-      }),
-    });
-
-    const res = await POST(req);
-    expect(res.status).toBe(401);
+    expect(response.status).toBe(200);
+    expect(startDocumentExtraction.mock.calls[0][1]).toMatchObject({ documentId: "doc-1", actor: user, retry: true });
+    await expect(response.json()).resolves.toMatchObject({ runId: "r1", status: "PROCESSING", existing: false });
   });
 
-  it("returns 400 when document does not exist or user lacks access", async () => {
-    vi.spyOn(authModule, "requireAppUser").mockResolvedValue({
-      appUser: { id: userId, email: "user@test.com", role: "EXECUTIVE" } as never,
-      authUser: { id: userId } as never,
+  it("returns 409 EXTRACTION_LOCKED for submitted/approved/exported shipments", async () => {
+    startDocumentExtraction.mockRejectedValue(new ExtractionError("locked", "EXTRACTION_LOCKED", 409));
+    const response = await postDocumentExtract(new Request("http://localhost/x", { method: "POST" }), {
+      params: Promise.resolve({ id: "doc-1" }),
     });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ code: "EXTRACTION_LOCKED" });
+  });
+});
 
-    const mockPrisma = {
-      document: { findFirst: vi.fn().mockResolvedValue(null) },
-    };
-    vi.spyOn(dbModule, "getPrisma").mockReturnValue(mockPrisma as never);
-
-    const req = new Request("http://localhost/api/extractions", {
-      method: "POST",
-      body: JSON.stringify({
-        documentId,
-        documentType: "INVOICE",
-        pages: [{ pageNumber: 1, imageBase64: validBase64, mimeType: "image/jpeg" }],
-      }),
-    });
-
-    const res = await POST(req);
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.error).toContain("Document not found or inaccessible.");
+describe("batch and image guards", () => {
+  it("accepts only the exact pages of the batch slot and reports finality from the stored page count", () => {
+    expect(assertValidBatchPages([1, 2, 3], 0, 7, 3)).toBe(false);
+    expect(assertValidBatchPages([7], 2, 7, 3)).toBe(true);
+    expect(assertValidBatchPages([1], 0, 1, 3)).toBe(true);
+    for (const [pages, batch] of [[[1, 2], 0], [[2, 3, 4], 0], [[8], 2], [[1, 1, 2], 0], [[3, 2, 1], 0], [[4], 3]] as const) {
+      expect(() => assertValidBatchPages([...pages], batch, 7, 3)).toThrow(expect.objectContaining({ code: "INVALID_PAGES" }));
+    }
   });
 
-  it("serves cached result and skips AI provider when completed run exists for idempotency key", async () => {
-    vi.spyOn(authModule, "requireAppUser").mockResolvedValue({
-      appUser: { id: userId, email: "user@test.com", role: "EXECUTIVE" } as never,
-      authUser: { id: userId } as never,
-    });
-
-    const mockDocument = {
-      id: documentId,
-      shipmentId,
-      selectedDocType: "INVOICE",
-      isCurrent: true,
-      pages: [{ pageNumber: 1, isReadable: true, reviewNote: null }],
-    };
-
-    const mockCompletedRun = {
-      id: runId,
-      documentId,
-      status: "COMPLETED",
-      model: "qwen/qwen3.8-27b",
-      promptVersion: "2026.11-v1",
-      latencyMs: 750,
-      document: mockDocument,
-      fields: [
-        {
-          fieldKey: "invoiceTotal",
-          modelValue: "1000.00",
-          currentValue: "1000.00",
-          unit: "USD",
-          modelConfidence: 0.99,
-          sourceQuote: "1000.00",
-          pageNumber: 1,
-          reviewStatus: "PENDING",
-          reviewReason: null,
-        },
-      ],
-      lineItems: [],
-      rawResponse: { usage: { totalTokens: 500 } },
-    };
-
-    const mockPrisma = {
-      document: { findFirst: vi.fn().mockResolvedValue(mockDocument) },
-      extractionRun: {
-        findUnique: vi.fn().mockImplementation(({ where }) => {
-          if (where.idempotencyKey) return Promise.resolve(mockCompletedRun);
-          if (where.id) return Promise.resolve(mockCompletedRun);
-          return Promise.resolve(null);
-        }),
-      },
-    };
-    vi.spyOn(dbModule, "getPrisma").mockReturnValue(mockPrisma as never);
-
-    const mockExtract = vi.fn();
-    vi.spyOn(factoryModule, "createAIProvider").mockReturnValue({
-      name: "groq",
-      model: "qwen/qwen3.8-27b",
-      extractDocument: mockExtract,
-    } as never);
-
-    const logSpy = vi.spyOn(loggerModule, "logExtractionAttempt");
-
-    const req = new Request("http://localhost/api/extractions", {
-      method: "POST",
-      body: JSON.stringify({
-        documentId,
-        documentType: "INVOICE",
-        idempotencyKey: "idemp-cache-hit",
-        pages: [{ pageNumber: 1, imageBase64: validBase64, mimeType: "image/jpeg" }],
-      }),
-    });
-
-    const res = await POST(req);
-    expect(res.status).toBe(200);
-    const body = await res.json();
-
-    expect(body.cached).toBe(true);
-    expect(body.runId).toBe(runId);
-    expect(body.result.fields[0].fieldKey).toBe("invoiceTotal");
-
-    // CRITICAL IDEMPOTENCY CHECK: AI provider was NOT invoked!
-    expect(mockExtract).not.toHaveBeenCalled();
-
-    // Verify safe structured log occurred
-    expect(logSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        runId,
-        shipmentId,
-        modelId: "qwen/qwen3.8-27b",
-        promptVersion: "2026.11-v1",
-      }),
-    );
-  });
-
-  it("records safe failure and maps status when provider throws RATE_LIMIT", async () => {
-    vi.spyOn(authModule, "requireAppUser").mockResolvedValue({
-      appUser: { id: userId, email: "user@test.com", role: "EXECUTIVE" } as never,
-      authUser: { id: userId } as never,
-    });
-
-    const mockDocument = {
-      id: documentId,
-      shipmentId,
-      selectedDocType: "INVOICE",
-      isCurrent: true,
-      documentVersion: 1,
-    };
-
-    const mockCreatedRun = {
-      id: runId,
-      documentId,
-      documentVersion: 1,
-      status: "PROCESSING",
-      model: "qwen/qwen3.8-27b",
-      promptVersion: "2026.11-v1",
-      pageCount: 1,
-    };
-
-    const mockTx = {
-      extractionRun: {
-        create: vi.fn().mockResolvedValue(mockCreatedRun),
-        findUnique: vi.fn().mockResolvedValue({ ...mockCreatedRun, document: mockDocument }),
-        update: vi.fn().mockResolvedValue({ id: runId, status: "FAILED" }),
-      },
-      document: {
-        update: vi.fn().mockResolvedValue(mockDocument),
-      },
-      auditEvent: {
-        create: vi.fn().mockResolvedValue({ id: "audit-1" }),
-      },
-    };
-
-    const mockPrisma = {
-      document: {
-        findFirst: vi.fn().mockResolvedValue(mockDocument),
-        findUnique: vi.fn().mockResolvedValue(mockDocument),
-      },
-      extractionRun: {
-        findUnique: vi.fn().mockResolvedValue(null),
-      },
-      $transaction: vi.fn().mockImplementation(async (cb) => cb(mockTx)),
-    };
-    vi.spyOn(dbModule, "getPrisma").mockReturnValue(mockPrisma as never);
-
-    vi.spyOn(factoryModule, "createAIProvider").mockReturnValue({
-      name: "groq",
-      model: "qwen/qwen3.8-27b",
-      extractDocument: vi.fn().mockRejectedValue(
-        new ProviderError("Groq rate limit reached.", "RATE_LIMIT", 429),
-      ),
-    } as never);
-
-    const logSpy = vi.spyOn(loggerModule, "logExtractionAttempt");
-
-    const req = new Request("http://localhost/api/extractions", {
-      method: "POST",
-      body: JSON.stringify({
-        documentId,
-        documentType: "INVOICE",
-        pages: [{ pageNumber: 1, imageBase64: validBase64, mimeType: "image/jpeg" }],
-      }),
-    });
-
-    const res = await POST(req);
-    expect(res.status).toBe(429);
-    const body = await res.json();
-    expect(body.code).toBe("RATE_LIMIT");
-
-    // Failure was recorded in the database
-    expect(mockTx.extractionRun.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: runId },
-        data: expect.objectContaining({
-          status: "FAILED",
-          errorCode: "RATE_LIMIT",
-        }),
-      }),
-    );
-
-    // Safe error log was emitted
-    expect(logSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        runId,
-        shipmentId,
-        errorCode: "RATE_LIMIT",
-      }),
-    );
+  it("requires decodable base64 whose bytes match the declared image type and size", () => {
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(100)]).toString("base64");
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(100)]).toString("base64");
+    expect(() => assertValidPageImages([{ pageNumber: 1, mimeType: "image/jpeg", imageBase64: jpeg }], 10_000)).not.toThrow();
+    expect(() => assertValidPageImages([{ pageNumber: 1, mimeType: "image/png", imageBase64: png }], 10_000)).not.toThrow();
+    expect(() => assertValidPageImages([{ pageNumber: 1, mimeType: "image/png", imageBase64: jpeg }], 10_000)).toThrow(/not a image\/png/);
+    expect(() => assertValidPageImages([{ pageNumber: 1, mimeType: "image/jpeg", imageBase64: "%%%notbase64" }], 10_000)).toThrow(/base64/);
+    expect(() => assertValidPageImages([{ pageNumber: 1, mimeType: "image/jpeg", imageBase64: jpeg }], 50)).toThrow(/larger/);
   });
 });

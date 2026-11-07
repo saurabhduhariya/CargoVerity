@@ -1,633 +1,260 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { ExtractionPersistenceService } from "@/lib/ai/persistence.service";
+import {
+  ExtractionPersistenceService,
+  initialExtractionKey,
+  retryExtractionKey,
+} from "@/lib/ai/persistence.service";
 import type { ExtractionAdapterOutput } from "@/lib/ai/types";
 
-const shipmentId = "11111111-1111-4111-8111-111111111111";
+/**
+ * Week 3 Step 2 unit tests for the persistence rules. The same rules are exercised end to end
+ * against PostgreSQL in tests/integration/extraction-workflow.test.ts.
+ */
+
+const runId = "11111111-1111-4111-8111-111111111111";
 const documentId = "22222222-2222-4222-8222-222222222222";
-const requestedById = "33333333-3333-4333-8333-333333333333";
-const runId = "44444444-4444-4444-8444-444444444444";
+const shipmentId = "33333333-3333-4333-8333-333333333333";
 
-describe("Extraction Persistence Service (Week 3 Step 2)", () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-  });
+function output(overrides: Partial<ExtractionAdapterOutput> = {}): ExtractionAdapterOutput {
+  return {
+    documentType: "INVOICE",
+    detectedType: "INVOICE",
+    typeMismatch: false,
+    provider: "groq",
+    model: "qwen/qwen3.8-27b",
+    pageReadability: [{ pageNumber: 1, isReadable: true }],
+    fields: [
+      { fieldKey: "invoiceTotal", value: "16320.00", unit: "USD", modelConfidence: 0.97, sourceQuote: "TOTAL 16,320.00", pageNumber: 1, reviewStatus: "PENDING" },
+    ],
+    lineItems: [
+      { lineNumber: 1, description: "LED", hsnCode: null, quantity: "2400", quantityUnit: "pcs", unitPrice: "6.80", currency: "USD", lineTotal: "16320.00", modelConfidence: 0.96, sourceQuote: "LED", pageNumber: 1 },
+    ],
+    usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150, imageCount: 1, requestCount: 1 },
+    warnings: [],
+    ...overrides,
+  };
+}
 
-  describe("createOrGetExtractionRun", () => {
-    it("creates a new run with documentVersion, requestedBy, timestamps, and audit event", async () => {
-      const mockDocument = {
-        id: documentId,
-        shipmentId,
-        docType: "INVOICE",
-        documentVersion: 2,
-      };
+function fakeTx(run: Record<string, unknown>, existingField: Record<string, unknown> | null = null) {
+  const tx = {
+    extractionRun: {
+      findUnique: vi.fn().mockResolvedValue(run),
+      update: vi.fn().mockImplementation(async ({ data }) => ({ ...run, ...data })),
+      count: vi.fn().mockResolvedValue(0),
+    },
+    extractedField: {
+      findUnique: vi.fn().mockResolvedValue(existingField),
+      create: vi.fn(),
+      update: vi.fn(),
+      count: vi.fn().mockResolvedValue(0),
+    },
+    lineItem: { createMany: vi.fn() },
+    documentPage: { upsert: vi.fn(), count: vi.fn().mockResolvedValue(0) },
+    document: { update: vi.fn() },
+    shipment: {
+      findUniqueOrThrow: vi.fn().mockResolvedValue({ id: shipmentId, status: "EXTRACTING", currentRevision: 4 }),
+      update: vi.fn().mockImplementation(async ({ data }) => ({ id: shipmentId, status: data.status, currentRevision: 5 })),
+    },
+    auditEvent: { create: vi.fn() },
+  };
+  const prisma = { $transaction: vi.fn(async (fn: (t: typeof tx) => unknown) => fn(tx)) };
+  return { tx, prisma };
+}
 
-      const mockCreatedRun = {
-        id: runId,
-        documentId,
-        documentVersion: 2,
-        requestedById,
-        provider: "groq",
-        model: "qwen/qwen3.8-27b",
-        status: "PROCESSING",
-        pageCount: 3,
-        startedAt: new Date(),
-      };
-
-      const mockTx = {
-        extractionRun: {
-          create: vi.fn().mockResolvedValue(mockCreatedRun),
-        },
-        document: {
-          update: vi.fn().mockResolvedValue({ id: documentId }),
-        },
-        auditEvent: {
-          create: vi.fn().mockResolvedValue({ id: "audit-1" }),
-        },
-      };
-
-      const mockPrisma = {
-        extractionRun: {
-          findUnique: vi.fn().mockResolvedValue(null),
-        },
-        document: {
-          findUnique: vi.fn().mockResolvedValue(mockDocument),
-        },
-        $transaction: vi.fn().mockImplementation(async (cb) => cb(mockTx)),
-      };
-
-      const service = new ExtractionPersistenceService(mockPrisma as never);
-      const { run, isExisting } = await service.createOrGetExtractionRun({
-        documentId,
-        requestedById,
-        provider: "groq",
-        model: "qwen/qwen3.8-27b",
-        pageCount: 3,
-        idempotencyKey: "unique-key-123",
-      });
-
-      expect(isExisting).toBe(false);
-      expect(run.id).toBe(runId);
-      expect(mockTx.extractionRun.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          documentId,
-          documentVersion: 2,
-          requestedById,
-          idempotencyKey: "unique-key-123",
-          status: "PROCESSING",
-        }),
-      });
-      expect(mockTx.document.update).toHaveBeenCalledWith({
-        where: { id: documentId },
-        data: { extractionStatus: "PROCESSING", pageCount: 3 },
-      });
-      expect(mockTx.auditEvent.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          shipmentId,
-          action: "EXTRACTION_RUN_STARTED",
-          entityType: "ExtractionRun",
-          entityId: runId,
-        }),
-      });
-    });
-
-    it("returns existing run when identical idempotencyKey is supplied", async () => {
-      const mockExistingRun = {
-        id: runId,
-        documentId,
-        idempotencyKey: "idemp-existing-key",
-        status: "COMPLETED",
-      };
-
-      const mockPrisma = {
-        extractionRun: {
-          findUnique: vi.fn().mockResolvedValue(mockExistingRun),
-        },
-      };
-
-      const service = new ExtractionPersistenceService(mockPrisma as never);
-      const { run, isExisting } = await service.createOrGetExtractionRun({
-        documentId,
-        requestedById,
-        provider: "groq",
-        model: "qwen",
-        pageCount: 1,
-        idempotencyKey: "idemp-existing-key",
-      });
-
-      expect(isExisting).toBe(true);
-      expect(run.id).toBe(runId);
-      expect(mockPrisma.extractionRun.findUnique).toHaveBeenCalledWith({
-        where: { idempotencyKey: "idemp-existing-key" },
-        include: { document: true },
-      });
-    });
-
-    it("records retry linkage to parent run when retryOfRunId is provided", async () => {
-      const parentRunId = "55555555-5555-5555-8555-555555555555";
-      const mockDocument = { id: documentId, shipmentId, docType: "INVOICE", documentVersion: 1 };
-      const mockParentRun = { id: parentRunId };
-
-      const mockTx = {
-        extractionRun: {
-          create: vi.fn().mockResolvedValue({ id: runId, retryOfRunId: parentRunId }),
-        },
-        document: { update: vi.fn().mockResolvedValue({ id: documentId }) },
-        auditEvent: { create: vi.fn().mockResolvedValue({ id: "audit-2" }) },
-      };
-
-      const mockPrisma = {
-        extractionRun: {
-          findUnique: vi.fn().mockImplementation(({ where }) => {
-            if (where.id === parentRunId) return Promise.resolve(mockParentRun);
-            return Promise.resolve(null);
-          }),
-        },
-        document: { findUnique: vi.fn().mockResolvedValue(mockDocument) },
-        $transaction: vi.fn().mockImplementation(async (cb) => cb(mockTx)),
-      };
-
-      const service = new ExtractionPersistenceService(mockPrisma as never);
-      const { run } = await service.createOrGetExtractionRun({
-        documentId,
-        requestedById,
-        provider: "groq",
-        model: "qwen",
-        pageCount: 1,
-        retryOfRunId: parentRunId,
-      });
-
-      expect(run.retryOfRunId).toBe(parentRunId);
-      expect(mockTx.extractionRun.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          retryOfRunId: parentRunId,
-        }),
-      });
-      expect(mockTx.auditEvent.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          action: "EXTRACTION_RETRY_STARTED",
-        }),
-      });
-    });
-  });
-
-  describe("saveExtractionResult", () => {
-    it("preserves modelValue as immutable and sets currentValue initially", async () => {
-      const mockRun = {
-        id: runId,
-        documentId,
-        requestedById,
-        document: { id: documentId, shipmentId, docType: "INVOICE" },
-      };
-
-      const mockTx = {
-        extractionRun: {
-          findUnique: vi.fn().mockResolvedValue(mockRun),
-          update: vi.fn().mockResolvedValue({ id: runId, status: "COMPLETED" }),
-        },
-        extractedField: {
-          findUnique: vi.fn().mockResolvedValue(null), // no existing field
-          create: vi.fn().mockResolvedValue({ id: "field-1" }),
-        },
-        lineItem: {
-          createMany: vi.fn().mockResolvedValue({ count: 1 }),
-        },
-        documentPage: {
-          upsert: vi.fn().mockResolvedValue({ id: "page-1" }),
-        },
-        document: {
-          update: vi.fn().mockResolvedValue({ id: documentId }),
-        },
-        auditEvent: {
-          create: vi.fn().mockResolvedValue({ id: "audit-3" }),
-        },
-      };
-
-      const mockPrisma = {
-        $transaction: vi.fn().mockImplementation(async (cb) => cb(mockTx)),
-      };
-
-      const result: ExtractionAdapterOutput = {
-        documentType: "INVOICE",
-        detectedType: "INVOICE",
-        typeMismatch: false,
-        pageReadability: [{ pageNumber: 1, isReadable: true }],
-        provider: "groq",
-        model: "qwen",
-        fields: [
-          {
-            fieldKey: "invoiceTotal",
-            value: "3120.00",
-            unit: "USD",
-            modelConfidence: 0.95,
-            sourceQuote: "3,120.00",
-            pageNumber: 1,
-            reviewStatus: "PENDING",
-            reviewReason: null,
-          },
-        ],
-        lineItems: [
-          {
-            lineNumber: 1,
-            description: "LED Panel",
-            hsnCode: "9405",
-            quantity: "2400",
-            quantityUnit: "pcs",
-            unitPrice: "15.00",
-            currency: "USD",
-            lineTotal: "36000.00",
-            modelConfidence: 0.95,
-            sourceQuote: "LED Panel 2400 pcs",
-            pageNumber: 1,
-          },
-        ],
-        warnings: [],
-      };
-
-      const service = new ExtractionPersistenceService(mockPrisma as never);
-      await service.saveExtractionResult({
-        runId,
-        result,
-        isFinal: true,
-        latencyMs: 420,
-      });
-
-      // 1. ExtractedField created with modelValue = "3120.00" and currentValue = "3120.00"
-      expect(mockTx.extractedField.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          documentId,
-          extractionRunId: runId,
-          fieldKey: "invoiceTotal",
-          modelValue: "3120.00",
-          currentValue: "3120.00",
-          unit: "USD",
-          modelConfidence: 0.95,
-        }),
-      });
-
-      // 2. Line items created
-      expect(mockTx.lineItem.createMany).toHaveBeenCalledWith({
-        data: [
-          expect.objectContaining({
-            documentId,
-            extractionRunId: runId,
-            lineNumber: 1,
-            description: "LED Panel",
-            quantity: 2400,
-            lineTotal: 36000,
-          }),
-        ],
-      });
-
-      // 3. DocumentPage upserted
-      expect(mockTx.documentPage.upsert).toHaveBeenCalledWith({
-        where: {
-          documentId_pageNumber: { documentId, pageNumber: 1 },
-        },
-        update: expect.objectContaining({ isReadable: true }),
-        create: expect.objectContaining({ isReadable: true }),
-      });
-
-      // 4. ExtractionRun completed and document status set to REVIEW_REQUIRED
-      expect(mockTx.extractionRun.update).toHaveBeenCalledWith({
-        where: { id: runId },
-        data: expect.objectContaining({
-          status: "COMPLETED",
-          latencyMs: 420,
-        }),
-      });
-      expect(mockTx.document.update).toHaveBeenCalledWith({
-        where: { id: documentId },
-        data: expect.objectContaining({
-          extractionStatus: "REVIEW_REQUIRED",
-        }),
-      });
-    });
-
-    it("does not overwrite immutable modelValue when updating an existing field with higher confidence", async () => {
-      const mockRun = {
-        id: runId,
-        documentId,
-        requestedById,
-        document: { id: documentId, shipmentId, docType: "INVOICE" },
-      };
-
-      const mockExistingField = {
-        id: "field-1",
-        fieldKey: "invoiceTotal",
-        modelValue: "3120.00", // original immutable
-        currentValue: "3120.00",
-        modelConfidence: 0.7,
-      };
-
-      const mockTx = {
-        extractionRun: {
-          findUnique: vi.fn().mockResolvedValue(mockRun),
-          update: vi.fn().mockResolvedValue({ id: runId }),
-        },
-        extractedField: {
-          findUnique: vi.fn().mockResolvedValue(mockExistingField),
-          update: vi.fn().mockResolvedValue({ id: "field-1" }),
-        },
-        lineItem: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        documentPage: { upsert: vi.fn().mockResolvedValue({}) },
-        document: { update: vi.fn().mockResolvedValue({}) },
-        auditEvent: { create: vi.fn().mockResolvedValue({}) },
-      };
-
-      const mockPrisma = {
-        $transaction: vi.fn().mockImplementation(async (cb) => cb(mockTx)),
-      };
-
-      const result: ExtractionAdapterOutput = {
-        documentType: "INVOICE",
-        detectedType: "INVOICE",
-        typeMismatch: false,
-        pageReadability: [],
-        provider: "groq",
-        model: "qwen",
-        fields: [
-          {
-            fieldKey: "invoiceTotal",
-            value: "3120.00",
-            unit: "USD",
-            modelConfidence: 0.98, // Higher confidence
-            sourceQuote: "3,120.00",
-            pageNumber: 1,
-            reviewStatus: "PENDING",
-          },
-        ],
-        lineItems: [],
-        warnings: [],
-      };
-
-      const service = new ExtractionPersistenceService(mockPrisma as never);
-      await service.saveExtractionResult({ runId, result, isFinal: true });
-
-      // Verifies modelValue is preserved from existing row ("3120.00")
-      expect(mockTx.extractedField.update).toHaveBeenCalledWith({
-        where: { id: "field-1" },
-        data: expect.objectContaining({
-          modelValue: "3120.00",
-          currentValue: "3120.00",
-          modelConfidence: 0.98,
-        }),
-      });
-    });
-  });
-
-  describe("recordExtractionFailure", () => {
-    it("marks run and document as FAILED and logs audit event", async () => {
-      const mockRun = {
-        id: runId,
-        documentId,
-        requestedById,
-        document: { id: documentId, shipmentId, docType: "INVOICE" },
-      };
-
-      const mockTx = {
-        extractionRun: {
-          findUnique: vi.fn().mockResolvedValue(mockRun),
-          update: vi.fn().mockResolvedValue({ id: runId, status: "FAILED" }),
-        },
-        document: { update: vi.fn().mockResolvedValue({ id: documentId }) },
-        auditEvent: { create: vi.fn().mockResolvedValue({ id: "audit-fail" }) },
-      };
-
-      const mockPrisma = {
-        $transaction: vi.fn().mockImplementation(async (cb) => cb(mockTx)),
-      };
-
-      const service = new ExtractionPersistenceService(mockPrisma as never);
-      await service.recordExtractionFailure({
-        runId,
-        errorCode: "RATE_LIMIT",
-        errorMessage: "Groq rate limit exceeded.",
-        latencyMs: 150,
-      });
-
-      expect(mockTx.extractionRun.update).toHaveBeenCalledWith({
-        where: { id: runId },
-        data: expect.objectContaining({
-          status: "FAILED",
-          errorCode: "RATE_LIMIT",
-          errorMessage: "Groq rate limit exceeded.",
-          latencyMs: 150,
-        }),
-      });
-      expect(mockTx.document.update).toHaveBeenCalledWith({
-        where: { id: documentId },
-        data: { extractionStatus: "FAILED" },
-      });
-      expect(mockTx.auditEvent.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          action: "EXTRACTION_FAILED",
-          entityType: "ExtractionRun",
-          entityId: runId,
-        }),
-      });
-    });
-  });
-
-  describe("Shipment-level Operations", () => {
-    it("creates one run per current document for a shipment extraction request", async () => {
-      const mockDocs = [
-        { id: "doc-ci", docType: "INVOICE", documentVersion: 1, pageCount: 2, isCurrent: true },
-        { id: "doc-pl", docType: "PACKING_LIST", documentVersion: 1, pageCount: 2, isCurrent: true },
-        { id: "doc-bl", docType: "BILL_OF_LADING", documentVersion: 1, pageCount: 1, isCurrent: true },
-      ];
-
-      const mockPrisma = {
-        document: {
-          findMany: vi.fn().mockResolvedValue(mockDocs),
-          findUnique: vi.fn().mockImplementation(({ where }) => {
-            const found = mockDocs.find((d) => d.id === where.id);
-            return Promise.resolve(found);
-          }),
-        },
-        extractionRun: {
-          findUnique: vi.fn().mockResolvedValue(null),
-        },
-        $transaction: vi.fn().mockImplementation(async (cb) =>
-          cb({
-            extractionRun: {
-              create: vi.fn().mockImplementation(({ data }) => Promise.resolve({ id: `run-${data.documentId}`, ...data })),
-            },
-            document: { update: vi.fn().mockResolvedValue({}) },
-            auditEvent: { create: vi.fn().mockResolvedValue({}) },
-          }),
-        ),
-      };
-
-      const service = new ExtractionPersistenceService(mockPrisma as never);
-      const runs = await service.createShipmentExtractionRuns({
-        shipmentId,
-        requestedById,
-        provider: "groq",
-        model: "qwen",
-      });
-
-      expect(runs).toHaveLength(3);
-      expect(mockPrisma.document.findMany).toHaveBeenCalledWith({
-        where: { shipmentId, isCurrent: true },
-      });
-    });
-
-    it("correctly identifies shipment readiness and blocks if any slot is missing or pending", async () => {
-      // Scenario A: Only Invoice is completed, Packing List and BL missing
-      const partialDocs = [
-        {
-          id: "doc-ci",
-          docType: "INVOICE" as const,
-          extractionRuns: [{ status: "COMPLETED" }],
-          pages: [],
-        },
-      ];
-
-      const mockPrisma = {
-        document: {
-          findMany: vi.fn().mockResolvedValue(partialDocs),
-        },
-      };
-
-      const service = new ExtractionPersistenceService(mockPrisma as never);
-      const readiness = await service.checkShipmentExtractionReadiness(shipmentId);
-
-      expect(readiness.isReadyForReview).toBe(false);
-      expect(readiness.completedSlots).toContain("INVOICE");
-      expect(readiness.missingSlots).toContain("PACKING_LIST");
-      expect(readiness.missingSlots).toContain("BILL_OF_LADING");
-      expect(readiness.blockingReasons.length).toBeGreaterThan(0);
-    });
-
-    it("approves shipment readiness when all 3 required documents are completed", async () => {
-      const completeDocs = [
-        { id: "doc-ci", docType: "INVOICE" as const, extractionRuns: [{ status: "COMPLETED" }], pages: [] },
-        { id: "doc-pl", docType: "PACKING_LIST" as const, extractionRuns: [{ status: "COMPLETED" }], pages: [] },
-        { id: "doc-bl", docType: "BILL_OF_LADING" as const, extractionRuns: [{ status: "COMPLETED" }], pages: [] },
-      ];
-
-      const mockPrisma = {
-        document: {
-          findMany: vi.fn().mockResolvedValue(completeDocs),
-        },
-      };
-
-      const service = new ExtractionPersistenceService(mockPrisma as never);
-      const readiness = await service.checkShipmentExtractionReadiness(shipmentId);
-
-      expect(readiness.isReadyForReview).toBe(true);
-      expect(readiness.completedSlots).toEqual(["INVOICE", "PACKING_LIST", "BILL_OF_LADING"]);
-      expect(readiness.blockingReasons).toHaveLength(0);
-    });
-  });
-
-  describe("getExtractionRunResult (Idempotency cache retrieval)", () => {
-    it("returns fully structured ExtractionAdapterOutput with usage, fields, and line items", async () => {
-      const mockRun = {
-        id: runId,
-        provider: "groq",
-        model: "qwen/qwen3.8-27b",
-        promptVersion: "2026.11-v1",
-        latencyMs: 850,
-        rawResponse: {
-          usage: {
-            promptTokens: 1200,
-            completionTokens: 250,
-            totalTokens: 1450,
-            imageCount: 1,
-            requestCount: 1,
-          },
-          warnings: ["Low model confidence on packageCount."],
-        },
-        document: {
-          id: documentId,
-          selectedDocType: "INVOICE",
-          detectedDocType: "INVOICE",
-          typeMismatch: false,
-          pages: [
-            { pageNumber: 1, isReadable: true, reviewNote: null },
-          ],
-        },
-        fields: [
-          {
-            fieldKey: "invoiceTotal",
-            modelValue: "5000.00",
-            currentValue: "5000.00",
-            unit: "USD",
-            modelConfidence: 0.98,
-            sourceQuote: "Total: 5000.00",
-            pageNumber: 1,
-            reviewStatus: "PENDING",
-            reviewReason: null,
-          },
-        ],
-        lineItems: [
-          {
-            lineNumber: 1,
-            description: "Industrial Motor",
-            hsnCode: "8501.10",
-            quantity: 5,
-            quantityUnit: "pcs",
-            unitPrice: 1000,
-            currency: "USD",
-            lineTotal: 5000,
-            modelConfidence: 0.95,
-            sourceQuote: "Motor 5 1000 5000",
-            pageNumber: 1,
-            reviewReason: null,
-          },
-        ],
-      };
-
-      const mockPrisma = {
-        extractionRun: {
-          findUnique: vi.fn().mockResolvedValue(mockRun),
-        },
-      };
-
-      const service = new ExtractionPersistenceService(mockPrisma as never);
-      const result = await service.getExtractionRunResult(runId);
-
-      expect(result).not.toBeNull();
-      expect(result?.documentType).toBe("INVOICE");
-      expect(result?.detectedType).toBe("INVOICE");
-      expect(result?.typeMismatch).toBe(false);
-      expect(result?.provider).toBe("groq");
-      expect(result?.fields).toHaveLength(1);
-      expect(result?.fields[0]).toEqual({
-        fieldKey: "invoiceTotal",
-        value: "5000.00",
-        unit: "USD",
-        modelConfidence: 0.98,
-        sourceQuote: "Total: 5000.00",
-        pageNumber: 1,
-        reviewStatus: "PENDING",
-        reviewReason: null,
-      });
-      expect(result?.lineItems).toHaveLength(1);
-      expect(result?.lineItems[0].lineTotal).toBe("5000");
-      expect(result?.usage).toEqual({
-        promptTokens: 1200,
-        completionTokens: 250,
-        totalTokens: 1450,
-        imageCount: 1,
-        requestCount: 1,
-      });
-      expect(result?.warnings).toEqual(["Low model confidence on packageCount."]);
-    });
-
-    it("returns null when run is not found", async () => {
-      const mockPrisma = {
-        extractionRun: {
-          findUnique: vi.fn().mockResolvedValue(null),
-        },
-      };
-
-      const service = new ExtractionPersistenceService(mockPrisma as never);
-      const result = await service.getExtractionRunResult("non-existent-id");
-      expect(result).toBeNull();
-    });
-  });
+const processingRun = (extra: Record<string, unknown> = {}) => ({
+  id: runId,
+  documentId,
+  documentVersion: 1,
+  status: "PROCESSING",
+  requestedById: "u1",
+  latencyMs: null,
+  rawResponse: null,
+  document: { id: documentId, shipmentId, selectedDocType: "INVOICE", docType: "INVOICE", detectedDocType: null, typeMismatch: false },
+  ...extra,
 });
 
+describe("Extraction Persistence Service (Week 3 Step 2)", () => {
+  it("builds deterministic idempotency keys per document version, model and prompt", () => {
+    expect(initialExtractionKey({ documentId, documentVersion: 2, provider: "groq", model: "m" })).toBe(
+      `extract:${documentId}:v2:groq:m:2026.11-v2`,
+    );
+    expect(retryExtractionKey(runId)).toBe(`retry:${runId}`);
+    expect(initialExtractionKey({ documentId, documentVersion: 2, provider: "groq", model: "m" })).not.toBe(
+      initialExtractionKey({ documentId, documentVersion: 3, provider: "groq", model: "m" }),
+    );
+  });
+
+  it("returns the existing run for a known idempotency key without creating anything", async () => {
+    const existing = { id: runId, documentId, status: "COMPLETED" };
+    const prisma = {
+      extractionRun: { findUnique: vi.fn().mockResolvedValue(existing) },
+      $transaction: vi.fn(),
+    };
+    const result = await new ExtractionPersistenceService(prisma as never).createOrGetExtractionRun({
+      documentId,
+      requestedById: "u1",
+      provider: "groq",
+      model: "m",
+      pageCount: 1,
+      idempotencyKey: "k",
+    });
+    expect(result).toEqual({ run: existing, isExisting: true });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses to reuse a key that belongs to another document", async () => {
+    const prisma = { extractionRun: { findUnique: vi.fn().mockResolvedValue({ id: runId, documentId: "other" }) } };
+    await expect(
+      new ExtractionPersistenceService(prisma as never).createOrGetExtractionRun({
+        documentId, requestedById: "u1", provider: "groq", model: "m", pageCount: 1, idempotencyKey: "k",
+      }),
+    ).rejects.toMatchObject({ code: "RUN_NOT_FOUND" });
+  });
+
+  it("rejects a retry whose parent run belongs to a different document", async () => {
+    const prisma = {
+      extractionRun: { findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({ id: "parent", documentId: "other" }) },
+      document: { findUnique: vi.fn().mockResolvedValue({ id: documentId, documentVersion: 1, shipmentId }) },
+      $transaction: vi.fn(),
+    };
+    await expect(
+      new ExtractionPersistenceService(prisma as never).createOrGetExtractionRun({
+        documentId, requestedById: "u1", provider: "groq", model: "m", pageCount: 1, idempotencyKey: "k", retryOfRunId: "parent",
+      }),
+    ).rejects.toMatchObject({ code: "RUN_NOT_FOUND" });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("returns the winner's run when a concurrent create hits the unique idempotency key", async () => {
+    const winner = { id: "winner", documentId };
+    const prisma = {
+      extractionRun: { findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(winner) },
+      document: { findUnique: vi.fn().mockResolvedValue({ id: documentId, documentVersion: 1, shipmentId, pageCount: 1 }) },
+      $transaction: vi.fn().mockRejectedValue(Object.assign(new Error("unique"), { code: "P2002" })),
+    };
+    const result = await new ExtractionPersistenceService(prisma as never).createOrGetExtractionRun({
+      documentId, requestedById: "u1", provider: "groq", model: "m", pageCount: 1, idempotencyKey: "k",
+    });
+    expect(result).toEqual({ run: winner, isExisting: true });
+  });
+
+  it("saves modelValue = currentValue, decimals as strings, readability without auto manual entry", async () => {
+    const { tx, prisma } = fakeTx(processingRun());
+    await new ExtractionPersistenceService(prisma as never).saveExtractionResult({
+      runId,
+      result: output({ pageReadability: [{ pageNumber: 1, isReadable: false, reviewNote: "blurred" }] }),
+      pageNumbers: [1],
+      isFinal: false,
+    });
+
+    const created = tx.extractedField.create.mock.calls.map((c) => c[0].data);
+    expect(created.find((d) => d.fieldKey === "invoiceTotal")).toMatchObject({
+      modelValue: "16320.00",
+      currentValue: "16320.00",
+      reviewStatus: "PENDING",
+    });
+    // Required fields the AI did not return are recorded for review, never inferred.
+    expect(created.find((d) => d.fieldKey === "exporter")).toMatchObject({ modelValue: null, reviewStatus: "REQUIRES_REVIEW", reviewReason: "REQUIRED_FIELD_MISSING" });
+    expect(tx.lineItem.createMany.mock.calls[0][0].data[0]).toMatchObject({ quantity: "2400", unitPrice: "6.80", lineTotal: "16320.00" });
+    expect(tx.documentPage.upsert.mock.calls[0][0]).toMatchObject({
+      update: { isReadable: false, reviewNote: "blurred" },
+      create: { pageNumber: 1, isReadable: false },
+    });
+    expect(JSON.stringify(tx.documentPage.upsert.mock.calls)).not.toContain("manualEntryRequired");
+    expect(tx.shipment.update).not.toHaveBeenCalled(); // not final yet
+  });
+
+  it("stores the model's evidence note next to the policy code", async () => {
+    const { tx, prisma } = fakeTx(processingRun());
+    await new ExtractionPersistenceService(prisma as never).saveExtractionResult({
+      runId,
+      result: output({
+        fields: [{ fieldKey: "invoiceTotal", value: "16320.00", unit: "USD", modelConfidence: 0.9, sourceQuote: null, pageNumber: null, reviewStatus: "PENDING", reviewReason: "CALCULATED" }],
+      }),
+      isFinal: false,
+    });
+    const total = tx.extractedField.create.mock.calls.map((c) => c[0].data).find((d) => d.fieldKey === "invoiceTotal");
+    expect(total).toMatchObject({ reviewStatus: "REQUIRES_REVIEW", reviewReason: "MISSING_SOURCE_EVIDENCE: CALCULATED" });
+  });
+
+  it("never changes a field a human has touched", async () => {
+    const { tx, prisma } = fakeTx(processingRun(), {
+      id: "f1", modelValue: "100", currentValue: "120", modelConfidence: 0.5, reviewStatus: "CORRECTED",
+    });
+    await new ExtractionPersistenceService(prisma as never).saveExtractionResult({ runId, result: output(), isFinal: false });
+    expect(tx.extractedField.update).not.toHaveBeenCalled();
+  });
+
+  it("refuses results for a run that is no longer PROCESSING", async () => {
+    const { prisma } = fakeTx(processingRun({ status: "FAILED" }));
+    await expect(
+      new ExtractionPersistenceService(prisma as never).saveExtractionResult({ runId, result: output() }),
+    ).rejects.toMatchObject({ code: "RUN_CLOSED", status: 409 });
+  });
+
+  it("treats a batch number that is already stored as a replay", async () => {
+    const { tx, prisma } = fakeTx(processingRun({ rawResponse: { batches: { "0": { pageNumbers: [1], warnings: [] } } } }));
+    const result = await new ExtractionPersistenceService(prisma as never).saveExtractionResult({ runId, result: output(), batchNumber: 0 });
+    expect(result.replayed).toBe(true);
+    expect(tx.extractedField.create).not.toHaveBeenCalled();
+    expect(tx.lineItem.createMany).not.toHaveBeenCalled();
+  });
+
+  it("on the final batch completes the run, bumps the revision and settles the shipment", async () => {
+    const { tx, prisma } = fakeTx(processingRun());
+    await new ExtractionPersistenceService(prisma as never).saveExtractionResult({ runId, result: output(), pageNumbers: [1], isFinal: true, latencyMs: 1200 });
+
+    expect(tx.extractionRun.update.mock.calls[0][0].data).toMatchObject({ status: "COMPLETED", latencyMs: 1200 });
+    expect(tx.extractionRun.update.mock.calls[0][0].data.rawResponse).toMatchObject({
+      usage: { totalTokens: 150 },
+      batches: { "0": { pageNumbers: [1] } },
+    });
+    expect(tx.document.update).toHaveBeenLastCalledWith({ where: { id: documentId }, data: { extractionStatus: "EXTRACTED" } });
+    expect(tx.shipment.update).toHaveBeenCalledWith({
+      where: { id: shipmentId },
+      data: { status: "NEEDS_REVIEW", currentRevision: { increment: 1 } },
+    });
+    expect(tx.auditEvent.create.mock.calls[0][0].data).toMatchObject({ action: "EXTRACTION_COMPLETED", metadata: expect.objectContaining({ revision: 5 }) });
+  });
+
+  it("keeps the shipment EXTRACTING while another current document is still processing", async () => {
+    const { tx, prisma } = fakeTx(processingRun());
+    tx.extractionRun.count.mockResolvedValue(1);
+    await new ExtractionPersistenceService(prisma as never).saveExtractionResult({ runId, result: output(), isFinal: true });
+    expect(tx.shipment.update.mock.calls[0][0].data.status).toBe("EXTRACTING");
+  });
+
+  it("records a failure with a safe code, keeps the run and audits without the message body", async () => {
+    const { tx, prisma } = fakeTx(processingRun());
+    await new ExtractionPersistenceService(prisma as never).recordExtractionFailure({
+      runId,
+      errorCode: "RATE_LIMIT",
+      errorMessage: "Groq rate limit reached. Please retry in a few moments.",
+      latencyMs: 300,
+    });
+    expect(tx.extractionRun.update.mock.calls[0][0].data).toMatchObject({ status: "FAILED", errorCode: "RATE_LIMIT" });
+    expect(tx.document.update).toHaveBeenCalledWith({ where: { id: documentId }, data: { extractionStatus: "FAILED" } });
+    expect(tx.auditEvent.create.mock.calls[0][0].data.metadata).toEqual({ documentId, errorCode: "RATE_LIMIT" });
+  });
+
+  it("reports partial completion and blockers per required slot", async () => {
+    const prisma = {
+      document: {
+        findMany: vi.fn().mockResolvedValue([
+          { selectedDocType: "INVOICE", typeMismatch: false, pages: [], extractionRuns: [{ status: "COMPLETED" }] },
+          { selectedDocType: "PACKING_LIST", typeMismatch: false, pages: [{ pageNumber: 2, isReadable: false, manualEntryRequired: false }], extractionRuns: [{ status: "COMPLETED" }] },
+          { selectedDocType: "BILL_OF_LADING", typeMismatch: false, pages: [], extractionRuns: [{ status: "FAILED", errorCode: "QUOTA_EXCEEDED" }] },
+        ]),
+      },
+    };
+    const readiness = await new ExtractionPersistenceService(prisma as never).checkShipmentExtractionReadiness(shipmentId);
+    expect(readiness).toMatchObject({
+      isReadyForReview: false,
+      completedSlots: ["INVOICE", "PACKING_LIST"],
+      failedSlots: ["BILL_OF_LADING"],
+    });
+    expect(readiness.blockingReasons.join(" ")).toMatch(/page\(s\) 2 on PACKING LIST/);
+    expect(readiness.blockingReasons.join(" ")).toMatch(/QUOTA_EXCEEDED/);
+  });
+});

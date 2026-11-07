@@ -1,13 +1,15 @@
-import type { PrismaClient } from "@/generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { PROMPT_VERSION, SCHEMA_VERSION } from "@/lib/ai/extraction-prompts";
 import { ExtractionReviewPolicyService } from "@/lib/ai/review-policy.service";
 import type {
   DocumentType,
   ExtractionAdapterOutput,
+  ExtractionUsage,
   NormalizedField,
   NormalizedLineItem,
   PageReadability,
 } from "@/lib/ai/types";
+import { ExtractionError } from "@/lib/errors";
 
 export type CreateExtractionRunParams = {
   documentId: string;
@@ -15,6 +17,7 @@ export type CreateExtractionRunParams = {
   provider: string;
   model: string;
   promptVersion?: string;
+  /** Ignored for the Document row: the page count is measured server-side at upload. */
   pageCount: number;
   inputSizeBytes?: number;
   idempotencyKey?: string;
@@ -25,6 +28,8 @@ export type SaveExtractionResultParams = {
   runId: string;
   result: ExtractionAdapterOutput;
   batchNumber?: number;
+  /** Page numbers sent in this batch; readability rows are written for exactly these pages. */
+  pageNumbers?: number[];
   isFinal?: boolean;
   latencyMs?: number;
   storeRawResponse?: boolean;
@@ -47,19 +52,86 @@ export type ShipmentExtractionReadiness = {
   blockingReasons: string[];
 };
 
+/** Per-batch bookkeeping stored in ExtractionRun.rawResponse (no document content). */
+type BatchRecord = {
+  pageNumbers: number[];
+  usage?: ExtractionUsage;
+  latencyMs?: number;
+  warnings: string[];
+};
+
+type RunMetadata = {
+  usage?: ExtractionUsage;
+  providerMetadata?: ExtractionAdapterOutput["providerMetadata"];
+  warnings?: string[];
+  batches?: Record<string, BatchRecord>;
+  rawContent?: unknown;
+};
+
+type Tx = Prisma.TransactionClient;
+
 const REQUIRED_SLOTS: DocumentType[] = ["INVOICE", "PACKING_LIST", "BILL_OF_LADING"];
+const HUMAN_REVIEW_STATUSES = new Set(["CONFIRMED", "CORRECTED", "MANUAL_ENTRY"]);
+
+/** A PROCESSING run older than this is treated as abandoned (browser closed mid-extraction). */
+export const STALE_RUN_AFTER_MS = 30 * 60 * 1000;
+
+const TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 30_000 } as const;
+
+/** Idempotency key for the first extraction of an exact document version, model and prompt. */
+export function initialExtractionKey(params: {
+  documentId: string;
+  documentVersion: number;
+  provider: string;
+  model: string;
+  promptVersion?: string;
+}) {
+  return `extract:${params.documentId}:v${params.documentVersion}:${params.provider}:${params.model}:${params.promptVersion ?? PROMPT_VERSION}`;
+}
+
+/** Idempotency key for the (single) retry of a given run; retrying the retry chains from it. */
+export function retryExtractionKey(parentRunId: string) {
+  return `retry:${parentRunId}`;
+}
+
+function isUniqueViolation(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
+}
+
+function readMetadata(raw: unknown): RunMetadata {
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as RunMetadata) : {};
+}
+
+function addUsage(a: ExtractionUsage | undefined, b: ExtractionUsage | undefined): ExtractionUsage | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  const sum = (x?: number, y?: number) => (x === undefined && y === undefined ? undefined : (x ?? 0) + (y ?? 0));
+  return {
+    promptTokens: sum(a.promptTokens, b.promptTokens),
+    completionTokens: sum(a.completionTokens, b.completionTokens),
+    totalTokens: sum(a.totalTokens, b.totalTokens),
+    imageCount: a.imageCount + b.imageCount,
+    requestCount: a.requestCount + b.requestCount,
+  };
+}
+
+/** Policy code plus the model's own evidence note, e.g. "MISSING_SOURCE_EVIDENCE: CALCULATED". */
+function persistedReviewReason(code: string | null, modelReason: string | null) {
+  if (!code) return null;
+  return modelReason && code === "MISSING_SOURCE_EVIDENCE" ? `${code}: ${modelReason.slice(0, 120)}` : code;
+}
 
 /**
- * Week 3 Step 2: Extraction Persistence Service
- * Manages atomic lifecycle of ExtractionRun, ExtractedField, LineItem,
- * and DocumentPage records with revision and idempotency guarantees.
+ * Week 3 Step 2: Extraction Persistence Service.
+ * Run lifecycle: PROCESSING → COMPLETED | FAILED (the schema's QUEUED is unused; a run is
+ * created when work starts). Runs are never deleted or overwritten: retries are new runs.
  */
 export class ExtractionPersistenceService {
   constructor(private readonly prisma: PrismaClient) {}
 
   /**
-   * 1. Create or retrieve an existing run via idempotency token.
-   * Tracks documentVersion, requestedBy, retry linkage, and timestamps.
+   * 1. Create, or return the existing run for, an idempotency key. Race-safe: the unique index on
+   * ExtractionRun.idempotencyKey decides the winner and the loser returns the winner's run.
    */
   async createOrGetExtractionRun(params: CreateExtractionRunParams) {
     const {
@@ -68,93 +140,112 @@ export class ExtractionPersistenceService {
       provider,
       model,
       promptVersion = PROMPT_VERSION,
-      pageCount,
       inputSizeBytes,
       idempotencyKey,
       retryOfRunId,
     } = params;
 
-    // Idempotency check: if run with idempotencyKey already exists, return it
     if (idempotencyKey) {
       const existingRun = await this.prisma.extractionRun.findUnique({
         where: { idempotencyKey },
         include: { document: true },
       });
       if (existingRun) {
+        if (existingRun.documentId !== documentId) {
+          throw new ExtractionError("Extraction run not found for this document.", "RUN_NOT_FOUND", 404);
+        }
         return { run: existingRun, isExisting: true };
       }
     }
 
-    const document = await this.prisma.document.findUnique({
-      where: { id: documentId },
-    });
+    const document = await this.prisma.document.findUnique({ where: { id: documentId } });
     if (!document) {
-      throw new Error(`Target document ${documentId} not found.`);
+      throw new ExtractionError("Document not found or inaccessible.", "DOCUMENT_NOT_FOUND", 404);
     }
 
-    // Verify retry linkage if supplied
     if (retryOfRunId) {
-      const parentRun = await this.prisma.extractionRun.findUnique({
-        where: { id: retryOfRunId },
-      });
-      if (!parentRun) {
-        throw new Error(`Parent extraction run ${retryOfRunId} not found.`);
+      const parentRun = await this.prisma.extractionRun.findUnique({ where: { id: retryOfRunId } });
+      if (!parentRun || parentRun.documentId !== document.id) {
+        throw new ExtractionError("The run being retried does not belong to this document.", "RUN_NOT_FOUND", 404);
       }
     }
 
-    const run = await this.prisma.$transaction(async (tx) => {
-      const createdRun = await tx.extractionRun.create({
-        data: {
-          documentId: document.id,
-          documentVersion: document.documentVersion,
-          requestedById,
-          idempotencyKey: idempotencyKey || null,
-          retryOfRunId: retryOfRunId || null,
-          provider,
-          model,
-          promptVersion,
-          status: "PROCESSING",
-          pageCount,
-          inputSizeBytes: inputSizeBytes || null,
-          startedAt: new Date(),
-        },
-      });
-
-      await tx.document.update({
-        where: { id: document.id },
-        data: { extractionStatus: "PROCESSING", pageCount },
-      });
-
-      await tx.auditEvent.create({
-        data: {
-          shipmentId: document.shipmentId,
-          actorId: requestedById,
-          action: retryOfRunId ? "EXTRACTION_RETRY_STARTED" : "EXTRACTION_RUN_STARTED",
-          entityType: "ExtractionRun",
-          entityId: createdRun.id,
-          metadata: {
+    try {
+      const run = await this.prisma.$transaction(async (tx) => {
+        const createdRun = await tx.extractionRun.create({
+          data: {
             documentId: document.id,
-            documentType: document.docType,
             documentVersion: document.documentVersion,
+            requestedById,
+            idempotencyKey: idempotencyKey || null,
+            retryOfRunId: retryOfRunId || null,
             provider,
             model,
             promptVersion,
-            retryOfRunId: retryOfRunId || null,
+            status: "PROCESSING",
+            pageCount: document.pageCount ?? params.pageCount,
+            inputSizeBytes: inputSizeBytes || null,
+            startedAt: new Date(),
           },
-        },
-      });
+          include: { document: true },
+        });
 
-      return createdRun;
-    });
+        await tx.document.update({
+          where: { id: document.id },
+          data: { extractionStatus: "PROCESSING" },
+        });
 
-    return { run, isExisting: false };
+        await tx.auditEvent.create({
+          data: {
+            shipmentId: document.shipmentId,
+            actorId: requestedById,
+            action: retryOfRunId ? "EXTRACTION_RETRY_STARTED" : "EXTRACTION_RUN_STARTED",
+            entityType: "ExtractionRun",
+            entityId: createdRun.id,
+            metadata: {
+              documentId: document.id,
+              documentType: document.selectedDocType,
+              documentVersion: document.documentVersion,
+              provider,
+              model,
+              promptVersion,
+              retryOfRunId: retryOfRunId || null,
+            },
+          },
+        });
+
+        return createdRun;
+      }, TRANSACTION_OPTIONS);
+
+      return { run, isExisting: false };
+    } catch (error) {
+      if (idempotencyKey && isUniqueViolation(error)) {
+        const winner = await this.prisma.extractionRun.findUnique({
+          where: { idempotencyKey },
+          include: { document: true },
+        });
+        if (winner && winner.documentId === documentId) return { run: winner, isExisting: true };
+      }
+      throw error;
+    }
+  }
+
+  /** Returns the stored record of a batch already persisted on this run, or null. */
+  async getCompletedBatch(runId: string, batchNumber: number): Promise<BatchRecord | null> {
+    const run = await this.prisma.extractionRun.findUnique({ where: { id: runId }, select: { rawResponse: true } });
+    return readMetadata(run?.rawResponse).batches?.[String(batchNumber)] ?? null;
   }
 
   /**
-   * 2. Atomically save extraction output into ExtractedField, LineItem, and DocumentPage.
-   * - Preserves modelValue as immutable original AI output.
-   * - Sets currentValue initially to modelValue without overwriting original.
-   * - Applies confidential-data retention controls for rawResponse.
+   * 2. Atomically save one batch of extraction output.
+   * - Only a PROCESSING run accepts results; a replayed batch number is a no-op.
+   * - modelValue is the AI output for this run. It is written once per field; a later batch may
+   *   supply a missing or higher-confidence value only while no human has touched the field,
+   *   in which case modelValue and currentValue move together. After any human action the
+   *   field is never changed by extraction again.
+   * - Decimals are stored from canonical strings (no float conversion).
+   * - On the final batch the run completes, the shipment revision is bumped (new values
+   *   invalidate prior cross-checks and approvals) and the shipment status is settled.
    */
   async saveExtractionResult(params: SaveExtractionResultParams) {
     const {
@@ -173,227 +264,207 @@ export class ExtractionPersistenceService {
         include: { document: true },
       });
       if (!run) {
-        throw new Error(`Extraction run ${runId} not found.`);
+        throw new ExtractionError("Extraction run not found.", "RUN_NOT_FOUND", 404);
+      }
+      if (run.status !== "PROCESSING") {
+        throw new ExtractionError("This extraction run is already closed.", "RUN_CLOSED", 409);
       }
 
-      // 1. Evaluate with deterministic review policy (Week 3 Step 4)
-      const docType = (run.document.selectedDocType ||
-        run.document.docType ||
-        result.documentType) as DocumentType;
-      const reviewPolicy = new ExtractionReviewPolicyService();
-      const evaluation = reviewPolicy.evaluateDocumentExtraction({
+      const metadata = readMetadata(run.rawResponse);
+      const batches = { ...(metadata.batches ?? {}) };
+      if (batches[String(batchNumber)]) {
+        return { run, replayed: true as const };
+      }
+
+      const docType = run.document.selectedDocType as DocumentType;
+      const evaluation = new ExtractionReviewPolicyService().evaluateDocumentExtraction({
         expectedDocumentType: docType,
         extractionResult: result,
       });
 
-      // Upsert ExtractedFields: modelValue is immutable, currentValue is initialized
+      // 1. Fields
       for (const field of evaluation.fields) {
         const existing = await tx.extractedField.findUnique({
-          where: {
-            extractionRunId_fieldKey: {
-              extractionRunId: run.id,
-              fieldKey: field.fieldKey,
-            },
-          },
+          where: { extractionRunId_fieldKey: { extractionRunId: run.id, fieldKey: field.fieldKey } },
         });
-
-        const newConfidence = field.modelConfidence !== null ? Number(field.modelConfidence) : null;
-        const existingConfidence =
-          existing?.modelConfidence !== null && existing?.modelConfidence !== undefined
-            ? Number(existing.modelConfidence)
-            : null;
-
-        const shouldUpdate =
-          !existing ||
-          existing.currentValue === null ||
-          (newConfidence !== null && (existingConfidence === null || newConfidence > existingConfidence));
+        const newConfidence = field.modelConfidence;
+        const reviewReason = persistedReviewReason(field.reviewReason, field.modelReviewReason);
+        const values = {
+          modelValue: field.value,
+          currentValue: field.value,
+          unit: field.unit,
+          modelConfidence: newConfidence,
+          sourceQuote: field.sourceQuote,
+          pageNumber: field.pageNumber,
+          reviewReason,
+          reviewStatus: field.reviewStatus,
+        };
 
         if (!existing) {
           await tx.extractedField.create({
-            data: {
-              documentId: run.documentId,
-              extractionRunId: run.id,
-              fieldKey: field.fieldKey,
-              modelValue: field.value, // Immutable original AI output
-              currentValue: field.value, // Active value, initially identical
-              unit: field.unit,
-              modelConfidence: newConfidence,
-              sourceQuote: field.sourceQuote,
-              pageNumber: field.pageNumber,
-              reviewReason: field.reviewReason,
-              reviewStatus: field.reviewStatus,
-            },
+            data: { documentId: run.documentId, extractionRunId: run.id, fieldKey: field.fieldKey, ...values },
           });
-        } else if (shouldUpdate) {
-          await tx.extractedField.update({
-            where: { id: existing.id },
-            data: {
-              modelValue: existing.modelValue ?? field.value, // Never overwrite existing original
-              currentValue: field.value,
-              unit: field.unit,
-              modelConfidence: newConfidence,
-              sourceQuote: field.sourceQuote,
-              pageNumber: field.pageNumber,
-              reviewReason: field.reviewReason,
-              reviewStatus: field.reviewStatus,
-            },
-          });
+          continue;
+        }
+
+        const humanTouched =
+          HUMAN_REVIEW_STATUSES.has(existing.reviewStatus) || existing.currentValue !== existing.modelValue;
+        if (humanTouched || field.value === null) continue;
+
+        const existingConfidence = existing.modelConfidence === null ? null : Number(existing.modelConfidence);
+        const better =
+          existing.modelValue === null ||
+          (newConfidence !== null && (existingConfidence === null || newConfidence > existingConfidence));
+        if (better) {
+          await tx.extractedField.update({ where: { id: existing.id }, data: values });
         }
       }
 
-      // 2. Insert line items with review policy applied
+      // 2. Line items for this batch (replacing nothing: a batch number is written once)
       if (evaluation.lineItems.length > 0) {
+        // Printed line numbers are kept when they are unique; otherwise lines are numbered in order
+        // so no extracted line is silently dropped by the (run, batch, lineNumber) unique key.
+        const printed = evaluation.lineItems.map((item) => item.lineNumber);
+        const usePrinted = printed.every((n) => n > 0) && new Set(printed).size === printed.length;
         await tx.lineItem.createMany({
-          data: evaluation.lineItems.map((item) => ({
+          data: evaluation.lineItems.map((item, index) => ({
             documentId: run.documentId,
             extractionRunId: run.id,
             batchNumber,
-            lineNumber: item.lineNumber,
+            lineNumber: usePrinted ? item.lineNumber : index + 1,
             description: item.description,
             hsnCode: item.hsnCode,
-            quantity: item.quantity ? Number(item.quantity) : null,
+            quantity: item.quantity,
             quantityUnit: item.quantityUnit,
-            unitPrice: item.unitPrice ? Number(item.unitPrice) : null,
+            unitPrice: item.unitPrice,
             currency: item.currency,
-            lineTotal: item.lineTotal ? Number(item.lineTotal) : null,
-            modelConfidence:
-              item.modelConfidence !== null ? Number(item.modelConfidence) : null,
+            lineTotal: item.lineTotal,
+            modelConfidence: item.modelConfidence,
             sourceQuote: item.sourceQuote,
             pageNumber: item.pageNumber,
             reviewReason: item.reviewReason,
           })),
+          skipDuplicates: true,
         });
       }
 
-      // 3. Update page-level readability states
-      if (result.pageReadability && result.pageReadability.length > 0) {
-        for (const page of result.pageReadability) {
-          await tx.documentPage.upsert({
-            where: {
-              documentId_pageNumber: {
-                documentId: run.documentId,
-                pageNumber: page.pageNumber,
-              },
-            },
-            update: {
-              isReadable: page.isReadable,
-              reviewNote: page.reviewNote ?? null,
-              manualEntryRequired: !page.isReadable,
-            },
-            create: {
-              documentId: run.documentId,
-              pageNumber: page.pageNumber,
-              isReadable: page.isReadable,
-              reviewNote: page.reviewNote ?? null,
-              manualEntryRequired: !page.isReadable,
-            },
-          });
-        }
+      // 3. Page readability for exactly the pages in this batch. The AI may say a page is
+      //    unreadable; only a person marks it for manual entry (manualEntryRequired).
+      const reported = new Map((result.pageReadability ?? []).map((p) => [p.pageNumber, p]));
+      const batchPages = params.pageNumbers ?? [...reported.keys()];
+      for (const pageNumber of batchPages) {
+        const page = reported.get(pageNumber);
+        const isReadable = page ? page.isReadable : true;
+        const reviewNote = page?.reviewNote ?? null;
+        await tx.documentPage.upsert({
+          where: { documentId_pageNumber: { documentId: run.documentId, pageNumber } },
+          update: { isReadable, reviewNote },
+          create: { documentId: run.documentId, pageNumber, isReadable, reviewNote },
+        });
       }
 
-      // 4. Update Document detected type and mismatch flag
+      // 4. Detected type (first batch that reports one wins; a mismatch anywhere sticks)
       if (result.detectedType) {
         await tx.document.update({
           where: { id: run.documentId },
           data: {
-            detectedDocType: result.detectedType,
-            typeMismatch: result.typeMismatch,
+            detectedDocType: run.document.detectedDocType ?? result.detectedType,
+            typeMismatch: run.document.typeMismatch || Boolean(evaluation.typeMismatch),
           },
         });
       }
 
-      // 5. Update ExtractionRun and Document status
-      // Confidential-data retention: rawResponse is only stored if explicitly requested and sanitized
-      let rawResponseData: Record<string, unknown> | null = null;
-      if (result.usage || result.providerMetadata) {
-        rawResponseData = {
-          usage: result.usage,
-          providerMetadata: result.providerMetadata,
-          warnings: result.warnings,
-        };
-      }
+      // 5. Run bookkeeping — usage, safe metadata and warnings only (no prompts or images)
+      batches[String(batchNumber)] = {
+        pageNumbers: batchPages,
+        usage: result.usage,
+        latencyMs,
+        warnings: result.warnings,
+      };
+      const nextMetadata: RunMetadata = {
+        usage: addUsage(metadata.usage, result.usage),
+        providerMetadata: result.providerMetadata ?? metadata.providerMetadata,
+        warnings: [...new Set([...(metadata.warnings ?? []), ...result.warnings])],
+        batches,
+      };
       if (storeRawResponse && rawResponseContent) {
-        try {
-          rawResponseData = {
-            ...rawResponseData,
-            rawContent: JSON.parse(rawResponseContent),
-          };
-        } catch {
-          rawResponseData = {
-            ...rawResponseData,
-            rawContent: rawResponseContent.slice(0, 500),
-          };
-        }
+        nextMetadata.rawContent = rawResponseContent.slice(0, 20_000);
       }
+      const totalLatency = (run.latencyMs ?? 0) + (latencyMs ?? 0);
 
       const updatedRun = await tx.extractionRun.update({
         where: { id: run.id },
         data: {
           status: isFinal ? "COMPLETED" : "PROCESSING",
           completedAt: isFinal ? new Date() : null,
-          latencyMs: latencyMs ?? run.latencyMs,
-          rawResponse: rawResponseData as unknown as object,
+          latencyMs: totalLatency,
+          rawResponse: nextMetadata as Prisma.InputJsonValue,
         },
       });
 
-      if (isFinal) {
-        await tx.document.update({
-          where: { id: run.documentId },
-          data: { extractionStatus: "REVIEW_REQUIRED" },
-        });
+      if (!isFinal) return { run: updatedRun, replayed: false as const };
 
-        if (run.requestedById) {
-          await tx.auditEvent.create({
-            data: {
-              shipmentId: run.document.shipmentId,
-              actorId: run.requestedById,
-              action: "EXTRACTION_COMPLETED",
-              entityType: "ExtractionRun",
-              entityId: run.id,
-              metadata: {
-                documentId: run.documentId,
-                documentType: run.document.docType,
-                fieldsExtracted: result.fields.length,
-                lineItemsExtracted: result.lineItems.length,
-                latencyMs,
-              },
+      // 6. Finalize: document status from the persisted review state of this run.
+      const needsReview =
+        (await tx.extractedField.count({ where: { extractionRunId: run.id, reviewStatus: "REQUIRES_REVIEW" } })) > 0 ||
+        (await tx.documentPage.count({ where: { documentId: run.documentId, isReadable: false } })) > 0 ||
+        run.document.typeMismatch ||
+        Boolean(evaluation.typeMismatch);
+
+      await tx.document.update({
+        where: { id: run.documentId },
+        data: { extractionStatus: needsReview ? "REVIEW_REQUIRED" : "EXTRACTED" },
+      });
+
+      const shipment = await settleShipmentAfterRun(tx, run.document.shipmentId, run.id, { bumpRevision: true });
+
+      if (run.requestedById) {
+        await tx.auditEvent.create({
+          data: {
+            shipmentId: run.document.shipmentId,
+            actorId: run.requestedById,
+            action: "EXTRACTION_COMPLETED",
+            entityType: "ExtractionRun",
+            entityId: run.id,
+            metadata: {
+              documentId: run.documentId,
+              documentType: run.document.selectedDocType,
+              documentVersion: run.documentVersion,
+              batches: Object.keys(batches).length,
+              latencyMs: totalLatency,
+              revision: shipment.currentRevision,
             },
-          });
-        }
+          },
+        });
       }
 
-      return updatedRun;
-    });
+      return { run: updatedRun, replayed: false as const };
+    }, TRANSACTION_OPTIONS);
   }
 
   /**
-   * Retrieves an ExtractionAdapterOutput from a completed ExtractionRun,
-   * satisfying idempotency requirements by returning existing results
-   * without incurring duplicate AI provider calls.
+   * Rebuilds the ExtractionAdapterOutput of a completed run from the database, so an idempotent
+   * replay returns the stored result without calling the metered provider again.
    */
   async getExtractionRunResult(runId: string): Promise<ExtractionAdapterOutput | null> {
     const run = await this.prisma.extractionRun.findUnique({
       where: { id: runId },
       include: {
-        document: {
-          include: { pages: { orderBy: { pageNumber: "asc" } } },
-        },
+        document: { include: { pages: { orderBy: { pageNumber: "asc" } } } },
         fields: true,
-        lineItems: { orderBy: { lineNumber: "asc" } },
+        lineItems: { orderBy: [{ batchNumber: "asc" }, { lineNumber: "asc" }] },
       },
     });
 
     if (!run || !run.document) return null;
 
-    const rawResponse = (run.rawResponse as Record<string, unknown> | null) ?? null;
-    const usage = rawResponse?.usage as ExtractionAdapterOutput["usage"] | undefined;
-    const warnings = Array.isArray(rawResponse?.warnings) ? (rawResponse.warnings as string[]) : [];
-
+    const metadata = readMetadata(run.rawResponse);
     const fields: NormalizedField[] = run.fields.map((f) => ({
       fieldKey: f.fieldKey,
       value: f.currentValue,
       unit: f.unit,
       modelConfidence: f.modelConfidence !== null ? Number(f.modelConfidence) : null,
+      confidenceLabel: "model estimate",
       sourceQuote: f.sourceQuote,
       pageNumber: f.pageNumber,
       reviewStatus: f.reviewStatus as NormalizedField["reviewStatus"],
@@ -404,12 +475,13 @@ export class ExtractionPersistenceService {
       lineNumber: item.lineNumber,
       description: item.description,
       hsnCode: item.hsnCode,
-      quantity: item.quantity !== null ? String(item.quantity) : null,
+      quantity: item.quantity !== null ? item.quantity.toString() : null,
       quantityUnit: item.quantityUnit,
-      unitPrice: item.unitPrice !== null ? String(item.unitPrice) : null,
+      unitPrice: item.unitPrice !== null ? item.unitPrice.toString() : null,
       currency: item.currency,
-      lineTotal: item.lineTotal !== null ? String(item.lineTotal) : null,
+      lineTotal: item.lineTotal !== null ? item.lineTotal.toString() : null,
       modelConfidence: item.modelConfidence !== null ? Number(item.modelConfidence) : null,
+      confidenceLabel: "model estimate",
       sourceQuote: item.sourceQuote,
       pageNumber: item.pageNumber,
       reviewReason: item.reviewReason,
@@ -430,7 +502,7 @@ export class ExtractionPersistenceService {
       model: run.model,
       fields,
       lineItems,
-      usage,
+      usage: metadata.usage,
       providerMetadata: {
         provider: run.provider as "groq" | "openrouter",
         model: run.model,
@@ -438,12 +510,13 @@ export class ExtractionPersistenceService {
         schemaVersion: SCHEMA_VERSION,
         latencyMs: run.latencyMs ?? undefined,
       },
-      warnings,
+      warnings: metadata.warnings ?? [],
     };
   }
 
   /**
-   * 3. Record safe extraction failure without exposing raw secrets.
+   * 3. Record a failure with a safe code and message. The run (and any batches already saved on
+   * it) stays in history; a retry is a new run linked through retryOfRunId.
    */
   async recordExtractionFailure(params: RecordExtractionFailureParams) {
     const { runId, errorCode, errorMessage, latencyMs } = params;
@@ -453,16 +526,16 @@ export class ExtractionPersistenceService {
         where: { id: runId },
         include: { document: true },
       });
-      if (!run) return null;
+      if (!run || run.status !== "PROCESSING") return null;
 
       const failedRun = await tx.extractionRun.update({
         where: { id: run.id },
         data: {
           status: "FAILED",
           errorCode,
-          errorMessage,
+          errorMessage: errorMessage.slice(0, 300),
           completedAt: new Date(),
-          latencyMs: latencyMs ?? run.latencyMs,
+          latencyMs: (run.latencyMs ?? 0) + (latencyMs ?? 0),
         },
       });
 
@@ -470,6 +543,8 @@ export class ExtractionPersistenceService {
         where: { id: run.documentId },
         data: { extractionStatus: "FAILED" },
       });
+
+      await settleShipmentAfterRun(tx, run.document.shipmentId, run.id, { bumpRevision: false });
 
       if (run.requestedById) {
         await tx.auditEvent.create({
@@ -479,63 +554,70 @@ export class ExtractionPersistenceService {
             action: "EXTRACTION_FAILED",
             entityType: "ExtractionRun",
             entityId: run.id,
-            metadata: {
-              documentId: run.documentId,
-              errorCode,
-              errorMessage,
-            },
+            metadata: { documentId: run.documentId, errorCode },
           },
         });
       }
 
       return failedRun;
+    }, TRANSACTION_OPTIONS);
+  }
+
+  /** Marks PROCESSING runs older than STALE_RUN_AFTER_MS on a shipment's documents as FAILED. */
+  async expireStaleRuns(shipmentId: string, now = new Date()) {
+    const stale = await this.prisma.extractionRun.findMany({
+      where: {
+        status: "PROCESSING",
+        startedAt: { lt: new Date(now.getTime() - STALE_RUN_AFTER_MS) },
+        document: { shipmentId },
+      },
+      select: { id: true },
     });
+    for (const run of stale) {
+      await this.recordExtractionFailure({
+        runId: run.id,
+        errorCode: "ABANDONED",
+        errorMessage: "The extraction did not finish (the page may have been closed). Retry the extraction.",
+      });
+    }
+    return stale.length;
   }
 
   /**
-   * 4. Create one run per current document for a shipment extraction request.
+   * 4. Create (or return) one run per current document for a shipment extraction request,
+   * keyed by document version, model and prompt so repeated requests do not duplicate runs.
    */
   async createShipmentExtractionRuns(params: {
     shipmentId: string;
     requestedById: string;
     provider: string;
     model: string;
-    idempotencyPrefix?: string;
   }) {
-    const { shipmentId, requestedById, provider, model, idempotencyPrefix } = params;
-
-    const currentDocuments = await this.prisma.document.findMany({
-      where: { shipmentId, isCurrent: true },
-    });
+    const { shipmentId, requestedById, provider, model } = params;
+    const currentDocuments = await this.prisma.document.findMany({ where: { shipmentId, isCurrent: true } });
 
     if (currentDocuments.length === 0) {
-      throw new Error(`No current documents found for shipment ${shipmentId}.`);
+      throw new ExtractionError("No current documents to extract. Upload documents first.", "DOCUMENT_NOT_FOUND", 400);
     }
 
     const runs = [];
     for (const doc of currentDocuments) {
-      const idempotencyKey = idempotencyPrefix
-        ? `${idempotencyPrefix}-${doc.id}-${doc.documentVersion}`
-        : undefined;
-
       const { run } = await this.createOrGetExtractionRun({
         documentId: doc.id,
         requestedById,
         provider,
         model,
         pageCount: doc.pageCount || 1,
-        idempotencyKey,
+        idempotencyKey: initialExtractionKey({ documentId: doc.id, documentVersion: doc.documentVersion, provider, model }),
       });
-
       runs.push(run);
     }
-
     return runs;
   }
 
   /**
-   * 5. Check if shipment extraction is fully completed or has approved manual fallbacks.
-   * Keeps shipment blocked if any required document is missing, extracting, or unhandled.
+   * 5. Whether every required slot has a completed run (AI or manual fallback) and no
+   * document-level blocker. Partial completion is reported, never hidden.
    */
   async checkShipmentExtractionReadiness(shipmentId: string): Promise<ShipmentExtractionReadiness> {
     const currentDocuments = await this.prisma.document.findMany({
@@ -551,69 +633,52 @@ export class ExtractionPersistenceService {
     const missingSlots: DocumentType[] = [];
     const failedSlots: DocumentType[] = [];
     const blockingReasons: string[] = [];
+    const label = (slot: DocumentType) => slot.replaceAll("_", " ");
 
-    const docMap = new Map<DocumentType, (typeof currentDocuments)[number]>();
-    for (const doc of currentDocuments) {
-      docMap.set(doc.docType, doc);
-    }
+    const docMap = new Map(currentDocuments.map((doc) => [doc.selectedDocType as DocumentType, doc]));
 
     for (const slot of REQUIRED_SLOTS) {
       const doc = docMap.get(slot);
       if (!doc) {
         missingSlots.push(slot);
-        blockingReasons.push(`Missing mandatory ${slot.replace("_", " ")} document.`);
+        blockingReasons.push(`Missing mandatory ${label(slot)} document.`);
         continue;
       }
 
       const latestRun = doc.extractionRuns[0];
       if (!latestRun) {
         pendingSlots.push(slot);
-        blockingReasons.push(`${slot.replace("_", " ")} has not been extracted yet.`);
+        blockingReasons.push(`${label(slot)} has not been extracted yet.`);
         continue;
       }
-
       if (latestRun.status === "FAILED") {
         failedSlots.push(slot);
-        blockingReasons.push(
-          `${slot.replace("_", " ")} extraction failed: ${latestRun.errorCode ?? "Error"}.`,
-        );
+        blockingReasons.push(`${label(slot)} extraction failed: ${latestRun.errorCode ?? "ERROR"}. Retry or enter the values manually.`);
         continue;
       }
-
       if (latestRun.status === "PROCESSING" || latestRun.status === "QUEUED") {
         pendingSlots.push(slot);
-        blockingReasons.push(`${slot.replace("_", " ")} extraction is currently in progress.`);
+        blockingReasons.push(`${label(slot)} extraction is currently in progress.`);
         continue;
       }
 
-      if (latestRun.status === "COMPLETED") {
-        completedSlots.push(slot);
-
-        // Week 3 Step 4: Check document-level blockers
-        if (doc.typeMismatch) {
-          blockingReasons.push(
-            `Document type mismatch on ${slot}: detected ${doc.detectedDocType ?? "UNKNOWN"}.`,
-          );
-        }
-
-        const unreadablePages = doc.pages.filter((p) => !p.isReadable && !p.manualEntryRequired);
-        if (unreadablePages.length > 0) {
-          blockingReasons.push(
-            `Unreadable page(s) on ${slot.replace("_", " ")} require manual fallback.`,
-          );
-        }
+      completedSlots.push(slot);
+      if (doc.typeMismatch) {
+        blockingReasons.push(`Document type mismatch on ${label(slot)}: detected ${doc.detectedDocType ?? "UNKNOWN"}.`);
+      }
+      const unreadable = doc.pages.filter((p) => !p.isReadable && !p.manualEntryRequired).map((p) => p.pageNumber);
+      if (unreadable.length > 0) {
+        blockingReasons.push(`Unreadable page(s) ${unreadable.join(", ")} on ${label(slot)} need to be marked for manual entry.`);
       }
     }
 
-    const isReadyForReview =
-      completedSlots.length === REQUIRED_SLOTS.length &&
-      pendingSlots.length === 0 &&
-      missingSlots.length === 0 &&
-      failedSlots.length === 0 &&
-      blockingReasons.length === 0;
-
     return {
-      isReadyForReview,
+      isReadyForReview:
+        completedSlots.length === REQUIRED_SLOTS.length &&
+        pendingSlots.length === 0 &&
+        missingSlots.length === 0 &&
+        failedSlots.length === 0 &&
+        blockingReasons.length === 0,
       completedSlots,
       pendingSlots,
       missingSlots,
@@ -623,3 +688,37 @@ export class ExtractionPersistenceService {
   }
 }
 
+/**
+ * Server-side shipment state after a run ends: EXTRACTING while any other current document's
+ * latest run is still PROCESSING, otherwise NEEDS_REVIEW. A completed run bumps the revision.
+ * Exported shipments are never modified.
+ */
+async function settleShipmentAfterRun(
+  tx: Tx,
+  shipmentId: string,
+  finishedRunId: string,
+  options: { bumpRevision: boolean },
+) {
+  const shipment = await tx.shipment.findUniqueOrThrow({ where: { id: shipmentId } });
+  if (shipment.status === "EXPORTED") return shipment;
+
+  const stillProcessing = await tx.extractionRun.count({
+    where: {
+      id: { not: finishedRunId },
+      status: "PROCESSING",
+      document: { shipmentId, isCurrent: true },
+    },
+  });
+
+  const nextStatus = stillProcessing > 0 ? "EXTRACTING" : shipment.status === "EXTRACTING" || options.bumpRevision ? "NEEDS_REVIEW" : shipment.status;
+
+  if (!options.bumpRevision && nextStatus === shipment.status) return shipment;
+
+  return tx.shipment.update({
+    where: { id: shipmentId },
+    data: {
+      status: nextStatus,
+      ...(options.bumpRevision ? { currentRevision: { increment: 1 } } : {}),
+    },
+  });
+}

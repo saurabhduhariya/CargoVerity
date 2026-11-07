@@ -2,7 +2,7 @@ import "server-only";
 
 import Groq from "groq-sdk";
 
-import { requireAIConfig } from "@/lib/env";
+import { getEnv, requireAIConfig } from "@/lib/env";
 import { ProviderError } from "@/lib/errors";
 import {
   extractionSystemPrompt,
@@ -43,6 +43,9 @@ function providerError(error: unknown): ProviderError {
   if (status === 401 || status === 403) {
     return new ProviderError("Groq authentication failed. Check server credentials.", "AUTHENTICATION", status);
   }
+  if (status === 402) {
+    return new ProviderError("Groq rejected the request because the account quota is exhausted.", "QUOTA_EXCEEDED", status);
+  }
   if (status === 429) {
     return new ProviderError("Groq rate limit reached. Please retry in a few moments.", "RATE_LIMIT", status);
   }
@@ -55,6 +58,10 @@ function providerError(error: unknown): ProviderError {
   }
   if (status && status >= 500) {
     return new ProviderError("Groq service is temporarily unavailable.", "UNAVAILABLE", status);
+  }
+  if (error instanceof Error && error.name === "APIConnectionError") {
+    // Network failure before a response: treat like a 503 so it gets the single retry.
+    return new ProviderError("Groq could not be reached.", "UNAVAILABLE", 503);
   }
 
   return new ProviderError(
@@ -82,6 +89,7 @@ export class GroqProvider implements AIProvider {
   async extractDocument(input: ExtractionInput): Promise<ExtractionResult> {
     const config = requireAIConfig();
     if (config.provider !== this.name) {
+      // No status: permanent configuration problem, never retried.
       throw new ProviderError("Groq is not the configured AI provider.", "UNAVAILABLE");
     }
 
@@ -92,11 +100,14 @@ export class GroqProvider implements AIProvider {
       throw new ProviderError("Image batch exceeds maximum of 3 pages per request.", "REQUEST_FAILED");
     }
 
+    const env = getEnv();
     const apiKey = this.options.apiKey || config.apiKey;
-    const requestedTimeout = input.modelConfig?.timeoutMs ?? this.options.timeoutMs ?? 60_000;
+    const requestedTimeout = input.modelConfig?.timeoutMs ?? this.options.timeoutMs ?? env.AI_REQUEST_TIMEOUT_MS;
     const timeoutMs = Math.max(5_000, Math.min(requestedTimeout, 120_000));
 
-    const client = new Groq({ apiKey, timeout: timeoutMs });
+    // maxRetries: 0 — the SDK would otherwise retry twice on its own, on top of the
+    // application's single bounded retry in ExtractionService (up to 6 metered calls per batch).
+    const client = new Groq({ apiKey, timeout: timeoutMs, maxRetries: 0 });
     const content = createGroqVisionContent(input);
 
     const startTime = Date.now();
@@ -108,12 +119,19 @@ export class GroqProvider implements AIProvider {
           { role: "user", content },
         ],
         temperature: 0,
-        max_completion_tokens: 1_000,
+        max_completion_tokens: env.AI_MAX_COMPLETION_TOKENS,
         response_format: { type: "json_object" },
       });
       const latencyMs = Date.now() - startTime;
-      const responseContent = response.choices[0]?.message?.content;
+      const choice = response.choices[0];
+      const responseContent = choice?.message?.content;
 
+      if (choice?.finish_reason === "length") {
+        throw new ProviderError(
+          "The AI response was cut off at the output token limit. Retry, or enter the values manually.",
+          "INVALID_RESPONSE",
+        );
+      }
       if (!responseContent) {
         throw new ProviderError("Groq returned an empty response.", "INVALID_RESPONSE");
       }
@@ -137,12 +155,13 @@ export class GroqProvider implements AIProvider {
           rawRequestId: response.id,
           promptVersion: input.promptVersion ?? PROMPT_VERSION,
           schemaVersion: input.schemaVersion ?? SCHEMA_VERSION,
+          pageNumbers: input.pages.map((page) => page.pageNumber),
+          lowConfidenceThreshold: env.LOW_CONFIDENCE_THRESHOLD,
         });
-      } catch (validationError) {
+      } catch {
+        // Fixed message: validation details can echo document content from the model output.
         throw new ProviderError(
-          validationError instanceof Error
-            ? `Groq returned an invalid extraction response: ${validationError.message}`
-            : "Groq returned an invalid extraction response.",
+          "Groq returned a response that does not match the extraction schema.",
           "INVALID_RESPONSE",
         );
       }

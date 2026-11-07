@@ -94,28 +94,36 @@ function mergeResults(results: ExtractionResult[]): ExtractionResult {
   };
 }
 
-async function withRetry(provider: AIProvider, input: ExtractionInput) {
-  const maxRetries = Math.min(input.modelConfig?.maxRetries ?? getEnv().MAX_AI_RETRIES, 1);
+/** Default wait before the single retry (rate limits on Groq reset per second-scale windows). */
+export const DEFAULT_RETRY_DELAY_MS = 1_500;
+
+/**
+ * At most one retry (MAX_AI_RETRIES, capped at 1), and only for transient failures:
+ * HTTP 429, 408/504 timeouts and provider 5xx (see ProviderError.retryable). 402 quota,
+ * authentication, invalid output and configuration errors fail immediately.
+ */
+async function withRetry(provider: AIProvider, input: ExtractionInput, retryDelayMs: number) {
+  const maxRetries = Math.max(0, Math.min(input.modelConfig?.maxRetries ?? getEnv().MAX_AI_RETRIES, 1));
   let attempt = 0;
 
   while (true) {
     try {
       return await provider.extractDocument(input);
     } catch (error) {
-      const retryable =
-        error instanceof ProviderError &&
-        ["RATE_LIMIT", "TIMEOUT", "UNAVAILABLE"].includes(error.code);
-
+      const retryable = error instanceof ProviderError && error.retryable;
       if (!retryable || attempt >= maxRetries) throw error;
 
       attempt += 1;
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
     }
   }
 }
 
 export class ExtractionService {
-  constructor(private readonly provider: AIProvider = createAIProvider()) {}
+  constructor(
+    private readonly provider: AIProvider = createAIProvider(),
+    private readonly options: { retryDelayMs?: number } = {},
+  ) {}
 
   async extract(input: ExtractionInput): Promise<ExtractionResult> {
     const maxImages = Math.min(getEnv().MAX_AI_IMAGES_PER_REQUEST, 3);
@@ -134,7 +142,7 @@ export class ExtractionService {
 
     const results: ExtractionResult[] = [];
     for (const batch of batches) {
-      results.push(await withRetry(this.provider, batch));
+      results.push(await withRetry(this.provider, batch, this.options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS));
     }
 
     return mergeResults(results);

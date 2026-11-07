@@ -38,12 +38,6 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
               completedAt: true,
             },
           },
-          fields: {
-            select: {
-              id: true,
-              reviewStatus: true,
-            },
-          },
           pages: {
             select: {
               id: true,
@@ -59,11 +53,24 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
 
   if (!shipment) notFound();
 
+  // Field counts come from each document's latest COMPLETED run, not from every run in history.
+  const completedRuns = await prisma.extractionRun.findMany({
+    where: { documentId: { in: shipment.documents.map((d) => d.id) }, status: "COMPLETED" },
+    orderBy: { createdAt: "desc" },
+    select: { documentId: true, fields: { select: { reviewStatus: true, reviewReason: true } } },
+  });
+  const fieldsByDocument = new Map<string, Array<{ reviewStatus: string; reviewReason: string | null }>>();
+  for (const run of completedRuns) {
+    if (!fieldsByDocument.has(run.documentId)) fieldsByDocument.set(run.documentId, run.fields);
+  }
+
   const initialDocuments = shipment.documents.map((d) => {
     const latestRun = d.extractionRuns[0] ?? null;
-    const reviewRequiredCount = d.fields.filter(
+    const fields = fieldsByDocument.get(d.id) ?? [];
+    const reviewRequiredCount = fields.filter(
       (f) => f.reviewStatus === "REQUIRES_REVIEW",
     ).length;
+    const lowConfidenceCount = fields.filter((f) => f.reviewReason === "LOW_MODEL_CONFIDENCE").length;
     const unreadablePageCount = d.pages.filter(
       (p) => !p.isReadable && !p.manualEntryRequired,
     ).length;
@@ -93,8 +100,9 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
             completedAt: latestRun.completedAt ? latestRun.completedAt.toISOString() : null,
           }
         : null,
-      extractedFieldCount: d.fields.length,
+      extractedFieldCount: fields.filter((f) => f.reviewStatus !== "NOT_PRESENT").length,
       reviewRequiredCount,
+      lowConfidenceCount,
       unreadablePageCount,
       manualPagesCount,
     };

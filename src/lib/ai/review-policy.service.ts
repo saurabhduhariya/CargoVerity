@@ -81,6 +81,8 @@ export type FieldReviewEvaluation = {
   requirement: FieldRequirement;
   reviewStatus: ReviewStatus;
   reviewReason: ReviewReasonCode | null;
+  /** The model's own evidence note (e.g. CALCULATED, BLURRED_MARGIN), kept for the reviewer. */
+  modelReviewReason: string | null;
   isBlocker: boolean;
 };
 
@@ -153,6 +155,15 @@ export class ExtractionReviewPolicyService {
     fieldKey: string,
     fieldData?: Partial<NormalizedField> | null,
   ): FieldReviewEvaluation {
+    const modelReviewReason = fieldData?.reviewReason?.trim() || null;
+    return { ...this.evaluateFieldRules(documentType, fieldKey, fieldData), modelReviewReason };
+  }
+
+  private evaluateFieldRules(
+    documentType: DocumentType,
+    fieldKey: string,
+    fieldData?: Partial<NormalizedField> | null,
+  ): Omit<FieldReviewEvaluation, "modelReviewReason"> {
     const policy =
       DOCUMENT_FIELD_POLICIES[documentType]?.[fieldKey] ?? {
         requirement: "OPTIONAL" as const,

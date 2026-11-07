@@ -239,7 +239,8 @@ describe("Extraction Contracts & Validation (Week 3 Step 1)", () => {
 
   describe("Schema & Prompt Versions", () => {
     it("exports prompt and schema versions matching 2026.11 standard", () => {
-      expect(PROMPT_VERSION).toBe("2026.11-v1");
+      // Prompt text changed on 2026-11-07 (v2); the response JSON schema is unchanged (v1).
+      expect(PROMPT_VERSION).toBe("2026.11-v2");
       expect(SCHEMA_VERSION).toBe("2026.11-v1");
       expect(extractionSystemPrompt("INVOICE")).toContain(PROMPT_VERSION);
       expect(extractionSystemPrompt("INVOICE")).toContain(SCHEMA_VERSION);

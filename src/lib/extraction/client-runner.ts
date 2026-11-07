@@ -59,15 +59,59 @@ export async function renderBlobPages(blob: Blob, mimeType: string): Promise<Ren
 
 export type ExtractionProgressCallback = (step: string) => void;
 
+/** Error carrying the server's safe error code so the UI can show a plain-language message. */
+export class ExtractionRequestError extends Error {
+  constructor(message: string, readonly code?: string) {
+    super(message);
+    this.name = "ExtractionRequestError";
+  }
+}
+
+async function readJson(response: Response) {
+  try {
+    return await response.json();
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Starts (or resumes) the server-side run, then renders the stored document with PDF.js and
+ * sends it in batches of up to 3 pages. A completed run is served from the database, and a
+ * batch the server already stored is not sent to the provider again.
+ */
 export async function runDocumentExtraction(params: {
   documentId: string;
   documentType: DocumentType;
   signedUrl?: string;
   fileBlob?: Blob;
   mimeType?: string;
+  retry?: boolean;
   onProgress?: ExtractionProgressCallback;
 }) {
   const { documentId, documentType, onProgress } = params;
+
+  onProgress?.("Starting extraction run…");
+  const startRes = await fetch(`/api/documents/${documentId}/extract`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ retry: Boolean(params.retry) }),
+  });
+  const started = await readJson(startRes);
+  if (!startRes.ok) {
+    throw new ExtractionRequestError(started.error ?? "Could not start extraction.", started.code);
+  }
+  if (started.status === "COMPLETED") {
+    onProgress?.("Extraction already completed for this document version.");
+    return { runId: started.runId as string, cached: true, fieldCount: 0, lineItemCount: 0, warningCount: 0 };
+  }
+  if (started.status === "FAILED") {
+    throw new ExtractionRequestError(
+      "The last extraction failed. Use Retry extraction to start a new run.",
+      "RUN_CLOSED",
+    );
+  }
+  const runId = started.runId as string;
 
   onProgress?.("Obtaining secure download authorization…");
 
@@ -104,18 +148,15 @@ export async function runDocumentExtraction(params: {
   onProgress?.("Rendering pages locally with PDF.js…");
   const pages = await renderBlobPages(blob, mimeType);
 
-  let runId: string | undefined;
   let fieldCount = 0;
   let lineItemCount = 0;
   let warningCount = 0;
-  let detectedDocType: string | null = null;
-  let typeMismatch = false;
 
   for (let index = 0; index < pages.length; index += 3) {
     const batch = pages.slice(index, index + 3);
-    const startP = batch[0]?.pageNumber;
-    const endP = batch.at(-1)?.pageNumber;
-    onProgress?.(`Extracting pages ${startP}–${endP} with AI model…`);
+    onProgress?.(
+      `Extracting pages ${batch[0]?.pageNumber}–${batch.at(-1)?.pageNumber} of ${pages.length} with the AI model…`,
+    );
 
     const response = await fetch("/api/extractions", {
       method: "POST",
@@ -125,36 +166,22 @@ export async function runDocumentExtraction(params: {
         documentType,
         runId,
         batchNumber: Math.floor(index / 3),
-        isFinal: index + 3 >= pages.length,
         pages: batch,
       }),
     });
 
-    const data = await response.json();
+    const data = await readJson(response);
     if (!response.ok) {
-      throw new Error(data.error ?? "AI extraction failed.");
+      throw new ExtractionRequestError(data.error ?? "AI extraction failed.", data.code);
     }
-
-    runId = data.runId;
     if (data.result) {
       fieldCount += data.result.fields?.length ?? 0;
       lineItemCount += data.result.lineItems?.length ?? 0;
       warningCount += data.result.warnings?.length ?? 0;
-      if (data.result.documentType) {
-        detectedDocType = data.result.documentType;
-        typeMismatch = detectedDocType !== documentType;
-      }
     }
+    if (data.isFinal) break;
   }
 
   onProgress?.("Extraction completed.");
-
-  return {
-    runId,
-    fieldCount,
-    lineItemCount,
-    warningCount,
-    detectedDocType,
-    typeMismatch,
-  };
+  return { runId, cached: false, fieldCount, lineItemCount, warningCount };
 }

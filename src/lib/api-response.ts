@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 
-import { ConfigurationError, ConflictError, DocumentUploadError, ProviderError } from "@/lib/errors";
+import {
+  ConfigurationError,
+  ConflictError,
+  DocumentUploadError,
+  ExtractionError,
+  ProviderError,
+} from "@/lib/errors";
 
 /**
  * Field or index names involved in a Prisma P2002 unique-constraint error.
@@ -27,7 +33,7 @@ function uniqueConstraintTargets(error: object): string[] {
 export function apiError(error: unknown) {
   const message = error instanceof Error ? error.message : "Unexpected server error.";
 
-  if (error instanceof DocumentUploadError) {
+  if (error instanceof DocumentUploadError || error instanceof ExtractionError) {
     return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
   }
 
@@ -74,7 +80,16 @@ export function apiError(error: unknown) {
     return NextResponse.json({ error: message }, { status: 503 });
   }
   if (error instanceof ProviderError) {
-    const status = error.code === "RATE_LIMIT" ? 429 : error.code === "TIMEOUT" ? 504 : error.code === "AUTHENTICATION" ? 502 : 503;
+    const status =
+      error.code === "RATE_LIMIT"
+        ? 429
+        : error.code === "TIMEOUT"
+          ? 504
+          : error.code === "AUTHENTICATION" || error.code === "INVALID_RESPONSE"
+            ? 502
+            : error.code === "REQUEST_FAILED"
+              ? 502
+              : 503;
     return NextResponse.json({ error: message, code: error.code }, { status });
   }
 

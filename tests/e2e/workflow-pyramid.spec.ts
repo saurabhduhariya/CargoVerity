@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { login as sharedLogin } from "./helpers";
+
 const executiveEmail = process.env.PLAYWRIGHT_E2E_EMAIL;
 const executivePassword = process.env.PLAYWRIGHT_E2E_PASSWORD;
 const managerEmail = process.env.PLAYWRIGHT_MANAGER_EMAIL;
@@ -11,12 +13,7 @@ test.skip(
 );
 
 async function login(page: Page, email: string, pass: string) {
-  await page.context().clearCookies();
-  await page.goto("/login");
-  await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill(pass);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await sharedLogin(page, email, pass);
 }
 
 test.describe("Week 6 Step 1: Complete End-to-End Test Pyramid (8 Flows)", () => {

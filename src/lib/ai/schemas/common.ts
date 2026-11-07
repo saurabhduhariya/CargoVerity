@@ -26,7 +26,22 @@ export function toCanonicalDecimalString(value: unknown): string | null {
   return null;
 }
 
-const scalar = z.union([z.string(), z.number()]).nullable().optional();
+const scalar = z.union([z.string().max(500), z.number()]).nullable().optional();
+
+/**
+ * Reasons a model may give when a present value has no direct quote/page evidence.
+ * Free text is accepted (models vary), but these are the codes the prompt asks for.
+ */
+export const EVIDENCE_REVIEW_REASONS = [
+  "CALCULATED",
+  "BLURRED_MARGIN",
+  "STAMP_OBSTRUCTED",
+  "HANDWRITTEN",
+  "PARTIALLY_VISIBLE",
+  "OUTSIDE_PROVIDED_PAGES",
+] as const;
+
+const reviewReason = z.string().max(200).nullable().optional();
 
 /**
  * Week 3 Step 1: Common ExtractedValueSchema
@@ -38,9 +53,9 @@ export const ExtractedValueSchema = z
     value: scalar,
     unit: z.string().nullable().optional(),
     confidence: z.number().min(0).max(1).nullable().optional(),
-    sourceQuote: z.string().nullable().optional(),
+    sourceQuote: z.string().max(1000).nullable().optional(),
     pageNumber: z.number().int().positive().nullable().optional(),
-    reviewReason: z.string().nullable().optional(),
+    reviewReason,
   })
   .strict();
 
@@ -65,9 +80,9 @@ export const lineItemSchema = z
     currency: z.string().nullable().optional(),
     lineTotal: scalar,
     confidence: z.number().min(0).max(1).nullable().optional(),
-    sourceQuote: z.string().nullable().optional(),
+    sourceQuote: z.string().max(1000).nullable().optional(),
     pageNumber: z.number().int().positive().nullable().optional(),
-    reviewReason: z.string().nullable().optional(),
+    reviewReason,
   })
   .strict();
 

@@ -189,7 +189,7 @@ describe("AI Provider Adapters (Week 3 Step 3)", () => {
       }
     });
 
-    it("maps 402 status to safe UNAVAILABLE ProviderError", async () => {
+    it("maps 402 status to a non-retryable QUOTA_EXCEEDED ProviderError", async () => {
       process.env.AI_PROVIDER = "openrouter";
       const provider = new OpenRouterProvider({ model: "openrouter/free" });
 
@@ -202,7 +202,8 @@ describe("AI Provider Adapters (Week 3 Step 3)", () => {
       await expect(
         provider.extractDocument({ documentType: "INVOICE", pages: [makePage(1)] }),
       ).rejects.toMatchObject({
-        code: "UNAVAILABLE",
+        code: "QUOTA_EXCEEDED",
+        retryable: false,
         message: "OpenRouter rejected the request because no credit is available.",
       });
     });

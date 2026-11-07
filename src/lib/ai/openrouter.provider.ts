@@ -18,7 +18,7 @@ function providerError(status: number | undefined): ProviderError {
   if (status === 402) {
     return new ProviderError(
       "OpenRouter rejected the request because no credit is available.",
-      "UNAVAILABLE",
+      "QUOTA_EXCEEDED",
       status,
     );
   }
@@ -34,7 +34,11 @@ function providerError(status: number | undefined): ProviderError {
   return new ProviderError("OpenRouter extraction request failed.", "REQUEST_FAILED", status);
 }
 
-export function createOpenRouterChatRequest(input: ExtractionInput, model: string) {
+export function createOpenRouterChatRequest(
+  input: ExtractionInput,
+  model: string,
+  maxTokens = getEnv().AI_MAX_COMPLETION_TOKENS,
+) {
   return {
     model,
     messages: [
@@ -60,7 +64,7 @@ export function createOpenRouterChatRequest(input: ExtractionInput, model: strin
       },
     ],
     temperature: 0,
-    max_tokens: 6_000,
+    max_tokens: maxTokens,
     response_format: { type: "json_object" },
   };
 }
@@ -95,7 +99,7 @@ export class OpenRouterProvider implements AIProvider {
 
     const env = getEnv();
     const apiKey = this.options.apiKey || config.apiKey;
-    const requestedTimeout = input.modelConfig?.timeoutMs ?? this.options.timeoutMs ?? 60_000;
+    const requestedTimeout = input.modelConfig?.timeoutMs ?? this.options.timeoutMs ?? env.AI_REQUEST_TIMEOUT_MS;
     const timeoutMs = Math.max(5_000, Math.min(requestedTimeout, 120_000));
 
     const controller = new AbortController();
@@ -118,20 +122,33 @@ export class OpenRouterProvider implements AIProvider {
       });
 
       const latencyMs = Date.now() - startTime;
-      const data = (await response.json()) as {
+      // Check the status before reading the body: error bodies may be HTML or plain text.
+      if (!response.ok) throw providerError(response.status);
+
+      let data: {
         id?: string;
         model?: string;
-        choices?: Array<{ message?: { content?: string | null } }>;
+        choices?: Array<{ finish_reason?: string | null; message?: { content?: string | null } }>;
         usage?: {
           prompt_tokens?: number;
           completion_tokens?: number;
           total_tokens?: number;
         };
       };
+      try {
+        data = await response.json();
+      } catch {
+        throw new ProviderError("OpenRouter returned a response that is not JSON.", "INVALID_RESPONSE");
+      }
 
-      if (!response.ok) throw providerError(response.status);
-
-      const content = data.choices?.[0]?.message?.content;
+      const choice = data.choices?.[0];
+      if (choice?.finish_reason === "length") {
+        throw new ProviderError(
+          "The AI response was cut off at the output token limit. Retry, or enter the values manually.",
+          "INVALID_RESPONSE",
+        );
+      }
+      const content = choice?.message?.content;
       if (!content) {
         throw new ProviderError("OpenRouter returned an empty response.", "INVALID_RESPONSE");
       }
@@ -144,23 +161,33 @@ export class OpenRouterProvider implements AIProvider {
         requestCount: 1,
       };
 
-      return validateAndNormalizeResponse({
-        documentType: input.documentType,
-        content,
-        provider: this.name,
-        model: data.model || this.model,
-        latencyMs,
-        usage,
-        rawRequestId: data.id,
-        promptVersion: input.promptVersion ?? PROMPT_VERSION,
-        schemaVersion: input.schemaVersion ?? SCHEMA_VERSION,
-      });
+      try {
+        return validateAndNormalizeResponse({
+          documentType: input.documentType,
+          content,
+          provider: this.name,
+          model: data.model || this.model,
+          latencyMs,
+          usage,
+          rawRequestId: data.id,
+          promptVersion: input.promptVersion ?? PROMPT_VERSION,
+          schemaVersion: input.schemaVersion ?? SCHEMA_VERSION,
+          pageNumbers: input.pages.map((page) => page.pageNumber),
+          lowConfidenceThreshold: env.LOW_CONFIDENCE_THRESHOLD,
+        });
+      } catch {
+        throw new ProviderError(
+          "OpenRouter returned a response that does not match the extraction schema.",
+          "INVALID_RESPONSE",
+        );
+      }
     } catch (error) {
       if (error instanceof ProviderError) throw error;
-      if (error instanceof DOMException && error.name === "AbortError") {
+      if (error instanceof Error && error.name === "AbortError") {
         throw new ProviderError("OpenRouter extraction request timed out.", "TIMEOUT", 504);
       }
-      throw providerError(undefined);
+      // Network failure before any response: retryable like a 503.
+      throw new ProviderError("OpenRouter could not be reached.", "UNAVAILABLE", 503);
     } finally {
       clearTimeout(timeout);
     }

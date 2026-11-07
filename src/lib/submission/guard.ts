@@ -245,6 +245,7 @@ export function evaluateSubmissionGuard(input: SubmissionGuardInput): Submission
 
       const isLowConfidence =
         (field.modelConfidence !== null && field.modelConfidence < lowConfidenceThreshold) ||
+        field.reviewReason === "LOW_MODEL_CONFIDENCE" ||
         field.reviewReason === "LOW_CONFIDENCE" ||
         field.reviewReason === "low_model_confidence";
 
@@ -351,7 +352,14 @@ export async function evaluateShipmentSubmission(
         where: { isCurrent: true },
         include: {
           pages: true,
-          fields: true,
+          // Only the latest completed run counts (the one reviewers and cross-checks use);
+          // fields of superseded or failed runs stay in history but do not gate submission.
+          extractionRuns: {
+            where: { status: "COMPLETED" },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            include: { fields: true },
+          },
         },
       },
       crossCheckRuns: {
@@ -393,7 +401,7 @@ export async function evaluateShipmentSubmission(
         isReadable: p.isReadable,
         manualEntryRequired: p.manualEntryRequired,
       })),
-      fields: doc.fields.map((f) => ({
+      fields: (doc.extractionRuns[0]?.fields ?? []).map((f) => ({
         id: f.id,
         fieldKey: f.fieldKey,
         currentValue: f.currentValue,
