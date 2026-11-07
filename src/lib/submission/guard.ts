@@ -3,6 +3,10 @@ import { DOCUMENT_FIELD_POLICIES } from "@/lib/ai/review-policy.service";
 import { getEnv } from "@/lib/env";
 import { getPrisma } from "@/lib/db";
 import { evaluateClearance } from "@/lib/crosschecks/resolution-state";
+import { ReviewError } from "@/lib/errors";
+
+/** Minimal client surface used to load the guard input (PrismaClient or a transaction client). */
+type SubmissionClient = Pick<ReturnType<typeof getPrisma>, "shipment">;
 import type {
   ShipmentStatus,
   DocumentStatus,
@@ -19,6 +23,9 @@ export const REQUIRED_DOCUMENT_TYPES: DocumentType[] = [
   "BILL_OF_LADING",
 ];
 
+/** Statuses from which an Executive may submit for approval. */
+export const SUBMITTABLE_STATUSES: readonly ShipmentStatus[] = ["DRAFT", "IN_REVIEW", "NEEDS_REVIEW"];
+
 export const CONFIRMED_REVIEW_STATUSES: ReviewStatus[] = [
   "CONFIRMED",
   "CORRECTED",
@@ -31,6 +38,7 @@ export type SubmissionBlockerCode =
   | "MISSING_REQUIRED_DOCUMENT"
   | "DOCUMENT_TYPE_MISMATCH"
   | "DOCUMENT_EXTRACTION_FAILED"
+  | "DOCUMENT_NOT_EXTRACTED"
   | "REQUIRED_FIELD_MISSING"
   | "REQUIRED_FIELD_UNCONFIRMED"
   | "LOW_CONFIDENCE_FIELD_UNCONFIRMED"
@@ -50,11 +58,20 @@ export type SubmissionBlocker = {
   checkRuleKey?: string;
 };
 
+export type PendingManagerException = {
+  checkId: string;
+  checkRuleKey: string;
+  resolutionId: string;
+  evidence: string | null;
+};
+
 export type SubmissionGuardResult = {
   allowed: boolean;
   reasons: SubmissionBlockerCode[];
   blockingReasons: string[];
   blockers: SubmissionBlocker[];
+  /** Failed checks cleared only by an accepted exception that still needs manager sign-off. */
+  pendingManagerExceptions: PendingManagerException[];
 };
 
 export type SubmissionGuardDocumentPage = {
@@ -148,11 +165,16 @@ export function evaluateSubmissionGuard(input: SubmissionGuardInput): Submission
     });
   }
 
-  // 2. Shipment status check: Cannot submit if already approved or exported
-  if (input.shipmentStatus === "APPROVED" || input.shipmentStatus === "EXPORTED") {
+  // 2. Shipment status check: only DRAFT / IN_REVIEW / NEEDS_REVIEW can be submitted.
+  if (!SUBMITTABLE_STATUSES.includes(input.shipmentStatus)) {
     blockers.push({
       code: "INVALID_SHIPMENT_STATUS",
-      message: `Cannot submit a shipment that is already ${input.shipmentStatus.toLowerCase()}.`,
+      message:
+        input.shipmentStatus === "READY_FOR_APPROVAL"
+          ? "This shipment has already been submitted and is waiting for manager approval."
+          : input.shipmentStatus === "EXTRACTING"
+            ? "Extraction is still running. Wait for it to finish, review the values, then submit."
+            : `Cannot submit a shipment that is already ${input.shipmentStatus.toLowerCase()}.`,
     });
   }
 
@@ -177,6 +199,7 @@ export function evaluateSubmissionGuard(input: SubmissionGuardInput): Submission
     }
   }
 
+  const docsWithoutValues = new Set<DocumentType>();
   for (const requiredType of REQUIRED_DOCUMENT_TYPES) {
     const doc = currentDocsByType.get(requiredType);
     if (!doc) {
@@ -196,13 +219,27 @@ export function evaluateSubmissionGuard(input: SubmissionGuardInput): Submission
       });
     }
 
-    // If extraction failed and has no manual fallback fields entered
-    if (doc.extractionStatus === "FAILED" && doc.fields.length === 0) {
-      blockers.push({
-        code: "DOCUMENT_EXTRACTION_FAILED",
-        documentType: requiredType,
-        message: `Document ${formatDocTypeName(requiredType)} extraction failed and has no manual fallback fields.`,
-      });
+    // No usable values: extraction failed with no manual fallback, or it never completed.
+    // (Manual fallback values live in the latest completed run, so `fields` covers both paths.)
+    if (doc.fields.length === 0) {
+      if (doc.extractionStatus === "FAILED") {
+        blockers.push({
+          code: "DOCUMENT_EXTRACTION_FAILED",
+          documentType: requiredType,
+          message: `Document ${formatDocTypeName(requiredType)} extraction failed and has no manual fallback fields. Retry extraction or enter the values manually.`,
+        });
+        docsWithoutValues.add(requiredType);
+      } else if (doc.extractionStatus === "UPLOADED" || doc.extractionStatus === "PROCESSING") {
+        blockers.push({
+          code: "DOCUMENT_NOT_EXTRACTED",
+          documentType: requiredType,
+          message:
+            doc.extractionStatus === "PROCESSING"
+              ? `Extraction of the ${formatDocTypeName(requiredType)} is still running.`
+              : `The ${formatDocTypeName(requiredType)} has not been extracted yet. Run extraction or enter the values manually.`,
+        });
+        docsWithoutValues.add(requiredType);
+      }
     }
   }
 
@@ -213,6 +250,7 @@ export function evaluateSubmissionGuard(input: SubmissionGuardInput): Submission
   for (const requiredType of REQUIRED_DOCUMENT_TYPES) {
     const doc = currentDocsByType.get(requiredType);
     if (!doc) continue; // already blocked by Check 4
+    if (docsWithoutValues.has(requiredType)) continue; // one exact reason instead of one per field
 
     const fieldPolicies = DOCUMENT_FIELD_POLICIES[requiredType] || {};
     for (const [fieldKey, policy] of Object.entries(fieldPolicies)) {
@@ -272,18 +310,22 @@ export function evaluateSubmissionGuard(input: SubmissionGuardInput): Submission
     for (const page of doc.pages) {
       if (!page.isReadable || page.manualEntryRequired) {
         const pageFields = doc.fields.filter((f) => f.pageNumber === page.pageNumber);
-        const hasUnconfirmedPageFields =
-          pageFields.length === 0 ||
-          pageFields.some((f) => !CONFIRMED_REVIEW_STATUSES.includes(f.reviewStatus));
+        const unconfirmed = pageFields.filter((f) => !CONFIRMED_REVIEW_STATUSES.includes(f.reviewStatus));
+        // A page a reviewer marked for manual entry needs at least one entered value. A page only
+        // the AI reported unreadable blocks on its unconfirmed values; missing required values are
+        // already caught by the required-field gate, so a blank page cannot deadlock submission.
+        const missingManualValues = page.manualEntryRequired && pageFields.length === 0;
 
-        if (hasUnconfirmedPageFields) {
+        if (missingManualValues || unconfirmed.length > 0) {
           blockers.push({
             code: "UNREADABLE_PAGE_FIELD_UNCONFIRMED",
             documentType: doc.docType,
             pageNumber: page.pageNumber,
-            message: `Manual fields for unreadable page ${page.pageNumber} of ${formatDocTypeName(
-              doc.docType,
-            )} must be confirmed before submission.`,
+            message: missingManualValues
+              ? `Page ${page.pageNumber} of ${formatDocTypeName(doc.docType)} is marked for manual entry but has no manually entered values yet.`
+              : `Values from unreadable page ${page.pageNumber} of ${formatDocTypeName(doc.docType)} must be confirmed before submission (${unconfirmed
+                  .map((f) => f.fieldKey)
+                  .join(", ")}).`,
           });
         }
       }
@@ -293,9 +335,19 @@ export function evaluateSubmissionGuard(input: SubmissionGuardInput): Submission
   // 8. Cross-check results & resolutions check (Rules 6 & 7), via the shared clearance helper.
   //    Only a valid ACCEPTED_EXCEPTION clears a failing BLOCKING check; WARNING failures never block;
   //    SOURCE_CORRECTED / DOCUMENT_REPLACEMENT are audit links and never clear a current failure.
+  const pendingManagerExceptions: PendingManagerException[] = [];
   if (input.latestCheckRun && input.latestCheckRun.revision === input.currentRevision) {
     for (const check of input.latestCheckRun.results) {
       const clearance = evaluateClearance(check, { isLatestRun: true, atCurrentRevision: true });
+      // Rule 7: an exception that clears submission but not approval is explicitly pending.
+      if (clearance.clearedForSubmission && clearance.blocksApproval && clearance.activeException) {
+        pendingManagerExceptions.push({
+          checkId: check.id,
+          checkRuleKey: check.ruleKey,
+          resolutionId: clearance.activeException.id,
+          evidence: clearance.activeException.evidence ?? null,
+        });
+      }
       if (!clearance.blocksSubmission) continue;
 
       if (clearance.problem === "EXCEPTION_MISSING_EVIDENCE") {
@@ -329,19 +381,25 @@ export function evaluateSubmissionGuard(input: SubmissionGuardInput): Submission
     reasons,
     blockingReasons,
     blockers,
+    pendingManagerExceptions,
   };
 }
 
 /**
- * Server-side evaluation loading full shipment context from the database.
+ * Loads the guard input from the database. Executives only see their own shipments
+ * (`actorId` scope); Managers see all. Returns null when the shipment is not visible.
  */
-export async function evaluateShipmentSubmission(
+async function loadSubmissionInput(
+  client: SubmissionClient,
   shipmentId: string,
   userRole: UserRole,
-): Promise<SubmissionGuardResult> {
-  const prisma = getPrisma();
-  const shipment = await prisma.shipment.findUnique({
-    where: { id: shipmentId },
+  actorId?: string,
+): Promise<SubmissionGuardInput | null> {
+  const shipment = await client.shipment.findFirst({
+    where: {
+      id: shipmentId,
+      ...(userRole !== "MANAGER" && actorId ? { createdById: actorId } : {}),
+    },
     include: {
       documents: {
         where: { isCurrent: true },
@@ -351,7 +409,7 @@ export async function evaluateShipmentSubmission(
           // fields of superseded or failed runs stay in history but do not gate submission.
           extractionRuns: {
             where: { status: "COMPLETED" },
-            orderBy: { createdAt: "desc" },
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
             take: 1,
             include: { fields: true },
           },
@@ -364,7 +422,7 @@ export async function evaluateShipmentSubmission(
           results: {
             include: {
               resolutions: {
-                orderBy: { createdAt: "asc" },
+                orderBy: [{ createdAt: "asc" }, { id: "asc" }],
               },
             },
           },
@@ -373,13 +431,11 @@ export async function evaluateShipmentSubmission(
     },
   });
 
-  if (!shipment) {
-    throw new Error("Shipment not found.");
-  }
+  if (!shipment) return null;
 
   const latestCheckRun = shipment.crossCheckRuns[0] ?? null;
 
-  const input: SubmissionGuardInput = {
+  return {
     shipmentId: shipment.id,
     currentRevision: shipment.currentRevision,
     shipmentStatus: shipment.status,
@@ -400,7 +456,7 @@ export async function evaluateShipmentSubmission(
         id: f.id,
         fieldKey: f.fieldKey,
         currentValue: f.currentValue,
-        modelConfidence: f.modelConfidence ? Number(f.modelConfidence) : null,
+        modelConfidence: f.modelConfidence !== null && f.modelConfidence !== undefined ? Number(f.modelConfidence) : null,
         reviewStatus: f.reviewStatus,
         reviewReason: f.reviewReason,
         pageNumber: f.pageNumber,
@@ -428,38 +484,89 @@ export async function evaluateShipmentSubmission(
         }
       : null,
   };
+}
 
-  return evaluateSubmissionGuard(input);
+function shipmentNotFound() {
+  return new ReviewError("Shipment not found or inaccessible.", "SHIPMENT_NOT_FOUND", 404);
+}
+
+/**
+ * Server-side evaluation loading full shipment context from the database.
+ * Pass `actorId` so Executives can only evaluate their own shipments.
+ */
+export async function evaluateShipmentSubmission(
+  shipmentId: string,
+  userRole: UserRole,
+  options: { actorId?: string; prismaClient?: SubmissionClient } = {},
+): Promise<SubmissionGuardResult & { currentRevision: number; shipmentStatus: ShipmentStatus }> {
+  const client = options.prismaClient ?? getPrisma();
+  const input = await loadSubmissionInput(client, shipmentId, userRole, options.actorId);
+  if (!input) throw shipmentNotFound();
+  return { ...evaluateSubmissionGuard(input), currentRevision: input.currentRevision, shipmentStatus: input.shipmentStatus };
 }
 
 /**
  * Executes shipment submission to manager (READY_FOR_APPROVAL).
- * Enforces role check, executes submission guard, and updates status in a transaction.
+ *
+ * - Executive only; Executives can submit only their own shipments.
+ * - `expectedRevision` (optional) must match the revision the reviewer saw (409 otherwise).
+ * - Inside one transaction the shipment row is locked with a conditional no-op update at the
+ *   evaluated revision, the guard is evaluated AGAIN on the locked state, and only then is the
+ *   status changed. Any concurrent edit (all of which bump the revision) either commits first and
+ *   makes the lock fail with 409, or waits until the submission has committed.
  */
 export async function submitShipmentForApproval(
   shipmentId: string,
   appUser: { id: string; role: UserRole },
+  options: { expectedRevision?: number; prismaClient?: ReturnType<typeof getPrisma> } = {},
 ) {
   if (appUser.role !== "EXECUTIVE") {
     throw new Error("FORBIDDEN");
   }
 
-  const guardResult = await evaluateShipmentSubmission(shipmentId, appUser.role);
-  if (!guardResult.allowed) {
-    return {
-      success: false,
-      status: 422,
-      guardResult,
-    };
+  const prisma = options.prismaClient ?? getPrisma();
+  const preliminary = await evaluateShipmentSubmission(shipmentId, appUser.role, {
+    actorId: appUser.id,
+    prismaClient: prisma,
+  });
+
+  if (options.expectedRevision !== undefined && options.expectedRevision !== preliminary.currentRevision) {
+    throw new ReviewError("The shipment changed since you loaded it. Refresh and review the latest values before submitting.", "STALE_REVISION", 409);
   }
 
-  const prisma = getPrisma();
-  const updatedShipment = await prisma.$transaction(async (tx) => {
+  if (!preliminary.allowed) {
+    return { success: false as const, status: 422, guardResult: preliminary };
+  }
+
+  const revision = preliminary.currentRevision;
+
+  const outcome = await prisma.$transaction(async (tx) => {
+    const locked = await tx.shipment.updateMany({
+      where: { id: shipmentId, currentRevision: revision, status: { in: [...SUBMITTABLE_STATUSES] } },
+      data: { currentRevision: revision },
+    });
+    if (locked.count !== 1) {
+      const current = await tx.shipment.findUnique({ where: { id: shipmentId }, select: { status: true } });
+      if (current?.status === "READY_FOR_APPROVAL") {
+        throw new ReviewError("This shipment has already been submitted for approval.", "SHIPMENT_LOCKED", 409);
+      }
+      if (current && !SUBMITTABLE_STATUSES.includes(current.status)) {
+        throw new ReviewError(`A shipment with status ${current.status} cannot be submitted.`, "SHIPMENT_LOCKED", 409);
+      }
+      throw new ReviewError("The shipment changed while submitting. Refresh and review the latest values.", "STALE_REVISION", 409);
+    }
+
+    // Authoritative evaluation on the locked row.
+    const input = await loadSubmissionInput(tx as unknown as SubmissionClient, shipmentId, appUser.role, appUser.id);
+    if (!input) throw shipmentNotFound();
+    const guardResult = evaluateSubmissionGuard(input);
+    if (!guardResult.allowed) {
+      return { success: false as const, guardResult };
+    }
+
     const updated = await tx.shipment.update({
       where: { id: shipmentId },
-      data: {
-        status: "READY_FOR_APPROVAL",
-      },
+      data: { status: "READY_FOR_APPROVAL" },
     });
 
     await tx.auditEvent.create({
@@ -470,19 +577,19 @@ export async function submitShipmentForApproval(
         entityType: "Shipment",
         entityId: shipmentId,
         metadata: {
-          previousStatus: "NEEDS_REVIEW",
+          previousStatus: input.shipmentStatus,
           revision: updated.currentRevision,
+          checkRunId: input.latestCheckRun?.id ?? null,
+          pendingManagerExceptions: guardResult.pendingManagerExceptions,
         },
       },
     });
 
-    return updated;
-  });
+    return { success: true as const, shipment: updated, guardResult };
+  }, { maxWait: 10_000, timeout: 30_000 });
 
-  return {
-    success: true,
-    status: 200,
-    shipment: updatedShipment,
-    guardResult,
-  };
+  if (!outcome.success) {
+    return { success: false as const, status: 422, guardResult: outcome.guardResult };
+  }
+  return { success: true as const, status: 200, shipment: outcome.shipment, guardResult: outcome.guardResult };
 }

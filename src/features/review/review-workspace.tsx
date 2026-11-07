@@ -670,28 +670,43 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
           pageNumber: pageNum,
           manualEntryRequired: true,
           reviewNote: "Marked unreadable in review workspace shell",
+          expectedRevision: shipmentRevision,
         }),
       });
 
+      const data = await response.json();
       if (!response.ok) {
-        const data = await response.json();
-        setStatusMessage(data.error ?? "Failed to mark page as unreadable.");
-      } else {
-        setDocuments((prev) =>
-          prev.map((d) =>
-            d.id === activeDoc.id
-              ? {
-                  ...d,
-                  pages: d.pages.map((p) =>
-                    p.pageNumber === pageNum
-                      ? { ...p, isReadable: false, manualEntryRequired: true }
-                      : p,
-                  ),
-                }
-              : d,
-          ),
+        setStatusMessage(
+          response.status === 409
+            ? `Conflict (409): ${data.error ?? "Stale revision. Refresh to see the latest data."}`
+            : data.error ?? "Failed to mark page as unreadable.",
         );
-        setStatusMessage(`Page ${pageNum} marked for manual entry.`);
+      } else {
+        // The server keeps the AI's readability evidence and records the human manual-entry flag.
+        setDocuments((prev) =>
+          prev.map((d) => {
+            if (d.id !== activeDoc.id) return d;
+            const exists = d.pages.some((p) => p.pageNumber === pageNum);
+            return {
+              ...d,
+              pages: exists
+                ? d.pages.map((p) => (p.pageNumber === pageNum ? { ...p, manualEntryRequired: true } : p))
+                : [
+                    ...d.pages,
+                    {
+                      id: data.page?.id ?? `page-${pageNum}`,
+                      pageNumber: pageNum,
+                      isReadable: data.page?.isReadable ?? true,
+                      manualEntryRequired: true,
+                      reviewNote: data.page?.reviewNote ?? null,
+                    },
+                  ],
+            };
+          }),
+        );
+        if (data.revision) setShipmentRevision(data.revision);
+        if (data.shipmentStatus) setShipmentStatus(data.shipmentStatus);
+        setStatusMessage(`Page ${pageNum} marked for manual entry. Enter its values with "Add manual field".`);
       }
     } catch {
       setStatusMessage("Error updating page readability.");
@@ -720,6 +735,8 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
           fieldKey: newFieldKey.trim(),
           value: newFieldValue.trim() || null,
           reason: newFieldReason.trim(),
+          // Link the value to the page being inspected so unreadable-page gates can see it.
+          pageNumber: currentPage,
           expectedRevision: shipmentRevision,
         }),
       });
@@ -987,6 +1004,8 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
     try {
       const response = await fetch(`/api/shipments/${shipment.id}/submit`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expectedRevision: shipmentRevision }),
       });
 
       const data = await response.json();
@@ -997,11 +1016,22 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
           setStatusMessage("Submission blocked by validation gates. Please review the issues below.");
           return;
         }
+        if (response.status === 409) {
+          setStatusMessage(`Conflict (409): ${data.error ?? "The shipment changed. Refresh to see the latest version."}`);
+          return;
+        }
         throw new Error(data.error || "Failed to submit shipment for approval.");
       }
 
       setShipmentStatus("READY_FOR_APPROVAL");
-      setStatusMessage("Shipment successfully submitted for manager approval!");
+      const pending = (data.guard?.pendingManagerExceptions ?? []) as Array<{ checkRuleKey: string }>;
+      setStatusMessage(
+        pending.length > 0
+          ? `Submitted for manager approval. ${pending.length} accepted exception(s) await manager sign-off: ${pending
+              .map((p) => p.checkRuleKey.replaceAll("_", " "))
+              .join(", ")}.`
+          : "Shipment successfully submitted for manager approval!",
+      );
       setSubmitBlockers(null);
     } catch (err) {
       setStatusMessage(err instanceof Error ? err.message : "Submission failed.");
