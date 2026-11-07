@@ -2,6 +2,28 @@ import { NextResponse } from "next/server";
 
 import { ConfigurationError, ConflictError, ProviderError } from "@/lib/errors";
 
+/**
+ * Field or index names involved in a Prisma P2002 unique-constraint error.
+ * The classic engine reports `meta.target` (field list). Prisma 7 driver adapters
+ * (`@prisma/adapter-pg`) instead report `meta.driverAdapterError.cause.constraint`
+ * with `fields` or an `index` name such as `Shipment_reference_key`.
+ */
+function uniqueConstraintTargets(error: object): string[] {
+  const meta = "meta" in error && typeof error.meta === "object" && error.meta !== null
+    ? (error.meta as Record<string, unknown>)
+    : null;
+  if (!meta) return [];
+
+  if (Array.isArray(meta.target)) return meta.target.map(String);
+  if (typeof meta.target === "string") return [meta.target];
+
+  const cause = (meta.driverAdapterError as { cause?: { constraint?: unknown } } | undefined)?.cause;
+  const constraint = cause?.constraint as { fields?: unknown; index?: unknown } | undefined;
+  if (Array.isArray(constraint?.fields)) return constraint.fields.map(String);
+  if (typeof constraint?.index === "string") return [constraint.index];
+  return [];
+}
+
 export function apiError(error: unknown) {
   const message = error instanceof Error ? error.message : "Unexpected server error.";
 
@@ -15,15 +37,8 @@ export function apiError(error: unknown) {
     "code" in error &&
     error.code === "P2002"
   ) {
-    const target =
-      "meta" in error &&
-      typeof error.meta === "object" &&
-      error.meta !== null &&
-      "target" in error.meta &&
-      Array.isArray(error.meta.target)
-        ? error.meta.target.map(String)
-        : [];
-    const conflictMessage = target.includes("reference")
+    const target = uniqueConstraintTargets(error);
+    const conflictMessage = target.some((name) => /(^|_)reference($|_)/i.test(name))
       ? "That shipment reference already exists. Choose a unique reference."
       : "A record with those details already exists.";
 
@@ -31,10 +46,25 @@ export function apiError(error: unknown) {
   }
 
   if (message === "AUTHENTICATION_REQUIRED") {
-    return NextResponse.json({ error: "Authentication required." }, { status: 401 });
+    return NextResponse.json(
+      { error: "Authentication required.", code: "AUTHENTICATION_REQUIRED" },
+      { status: 401 },
+    );
+  }
+  if (message === "ACCOUNT_NOT_PROVISIONED") {
+    return NextResponse.json(
+      {
+        error: "Your account has no CargoVerity role yet. Ask an administrator to provision it.",
+        code: "ACCOUNT_NOT_PROVISIONED",
+      },
+      { status: 403 },
+    );
   }
   if (message === "FORBIDDEN") {
-    return NextResponse.json({ error: "You do not have permission for this action." }, { status: 403 });
+    return NextResponse.json(
+      { error: "You do not have permission for this action.", code: "FORBIDDEN" },
+      { status: 403 },
+    );
   }
   if (error instanceof ConfigurationError || /not configured|configuration is missing/i.test(message)) {
     return NextResponse.json({ error: message }, { status: 503 });

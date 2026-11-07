@@ -1,10 +1,10 @@
 import Link from "next/link";
-import { notFound, redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 import { connection } from "next/server";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { requireAppUser } from "@/lib/auth";
+import { requirePageAppUser } from "@/lib/auth-page";
 import { getPrisma } from "@/lib/db";
 import { ShipmentDocumentSlots } from "@/features/documents/shipment-document-slots";
 
@@ -12,14 +12,8 @@ export const instant = false;
 
 export default async function ShipmentPage({ params }: { params: Promise<{ id: string }> }) {
   await connection();
-  let appUser;
-  try {
-    const auth = await requireAppUser();
-    appUser = auth.appUser;
-  } catch {
-    redirect("/login");
-  }
   const { id } = await params;
+  const { appUser } = await requirePageAppUser(`/shipments/${encodeURIComponent(id)}`);
   const prisma = getPrisma();
   const shipment = await prisma.shipment.findFirst({
     where: { id, ...(appUser.role === "MANAGER" ? {} : { createdById: appUser.id }) },

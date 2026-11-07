@@ -29,6 +29,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DocumentUpload } from "@/features/documents/document-upload";
 import { EnrichedShipment } from "@/lib/shipments";
+import { buildLoginPath } from "@/lib/auth-paths";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 
 type DashboardStats = {
@@ -38,7 +39,7 @@ type DashboardStats = {
   clearedOrExported: number;
 };
 
-export function DashboardShell({ email }: { email: string }) {
+export function DashboardShell({ email, role }: { email: string; role: "EXECUTIVE" | "MANAGER" }) {
   const [shipments, setShipments] = useState<EnrichedShipment[]>([]);
   const [stats, setStats] = useState<DashboardStats | null>(null);
 
@@ -60,6 +61,22 @@ export function DashboardShell({ email }: { email: string }) {
   const [loading, setLoading] = useState(true);
   const router = useRouter();
 
+  /** Returns true when the response means the session is gone and the user was redirected. */
+  const redirectOnAuthFailure = useCallback(
+    (response: Response, data: { code?: string } | null) => {
+      if (response.status === 401) {
+        router.replace(buildLoginPath({ reason: "session-expired" }));
+        return true;
+      }
+      if (response.status === 403 && data?.code === "ACCOUNT_NOT_PROVISIONED") {
+        router.replace(buildLoginPath({ reason: "not-provisioned" }));
+        return true;
+      }
+      return false;
+    },
+    [router],
+  );
+
   const loadShipments = useCallback(async () => {
     setLoading(true);
     const params = new URLSearchParams();
@@ -75,9 +92,11 @@ export function DashboardShell({ email }: { email: string }) {
         cache: "no-store",
       });
       const data = await response.json();
+      if (redirectOnAuthFailure(response, data)) return;
       if (!response.ok) {
         setError(data.error ?? "Could not load shipments.");
       } else {
+        setError(null);
         setShipments(data.shipments ?? []);
         if (data.stats) setStats(data.stats);
       }
@@ -86,7 +105,7 @@ export function DashboardShell({ email }: { email: string }) {
     } finally {
       setLoading(false);
     }
-  }, [search, statusFilter, supplierFilter, fromDate, toDate, sortOption]);
+  }, [search, statusFilter, supplierFilter, fromDate, toDate, sortOption, redirectOnAuthFailure]);
 
   useEffect(() => {
     let active = true;
@@ -102,6 +121,7 @@ export function DashboardShell({ email }: { email: string }) {
       .then(async (response) => ({ response, data: await response.json() }))
       .then(({ response, data }) => {
         if (!active) return;
+        if (redirectOnAuthFailure(response, data)) return;
         if (!response.ok) {
           setError(data.error ?? "Could not load shipments.");
         } else {
@@ -120,7 +140,7 @@ export function DashboardShell({ email }: { email: string }) {
     return () => {
       active = false;
     };
-  }, [search, statusFilter, supplierFilter, fromDate, toDate, sortOption]);
+  }, [search, statusFilter, supplierFilter, fromDate, toDate, sortOption, redirectOnAuthFailure]);
 
   async function createShipment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -137,6 +157,7 @@ export function DashboardShell({ email }: { email: string }) {
         }),
       });
       const data = await response.json();
+      if (redirectOnAuthFailure(response, data)) return;
       if (!response.ok) {
         setError(data.error ?? "Could not create shipment.");
       } else {
@@ -154,6 +175,7 @@ export function DashboardShell({ email }: { email: string }) {
   async function signOut() {
     await getSupabaseBrowserClient().auth.signOut();
     router.push("/");
+    router.refresh();
   }
 
   function clearFilters() {
@@ -175,7 +197,8 @@ export function DashboardShell({ email }: { email: string }) {
               CargoVerity
             </p>
             <p className="mt-1 text-sm text-slate-500">
-              Customs Clearance Workbench · {email}
+              Customs Clearance Workbench · {email} ·{" "}
+              <span data-testid="current-role">{role === "MANAGER" ? "Manager" : "Executive"}</span>
             </p>
           </div>
           <div className="flex items-center gap-3">

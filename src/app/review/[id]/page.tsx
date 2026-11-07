@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
-import { requireAppUser } from "@/lib/auth";
+import { requirePageAppUser } from "@/lib/auth-page";
 import { getPrisma } from "@/lib/db";
 import {
   ReviewWorkspace,
@@ -17,8 +17,8 @@ export default async function ReviewPage({
   params: Promise<{ id: string }>;
 }) {
   await connection();
-  const { appUser } = await requireAppUser();
   const { id } = await params;
+  const { appUser } = await requirePageAppUser(`/review/${encodeURIComponent(id)}`);
   const prisma = getPrisma();
 
   // 1. Try resolving as Shipment ID

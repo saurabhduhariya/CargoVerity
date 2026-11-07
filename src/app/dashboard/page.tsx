@@ -1,8 +1,7 @@
-import { redirect } from "next/navigation";
 import { connection } from "next/server";
 
 import { DashboardShell } from "@/features/dashboard/dashboard-shell";
-import { getAuthenticatedSupabaseUser } from "@/lib/auth";
+import { requirePageAppUser } from "@/lib/auth-page";
 import { getSupabaseBrowserConfig } from "@/lib/supabase/browser-config";
 
 export const instant = false;
@@ -15,10 +14,9 @@ export default async function DashboardPage() {
     return <SetupRequired />;
   }
 
-  const user = await getAuthenticatedSupabaseUser();
-  if (!user?.email) redirect("/login");
+  const { appUser } = await requirePageAppUser("/dashboard");
 
-  return <DashboardShell email={user.email} />;
+  return <DashboardShell email={appUser.email} role={appUser.role} />;
 }
 
 function SetupRequired() {

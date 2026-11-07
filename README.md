@@ -36,33 +36,38 @@ Docker is optional and is not required for local development or Vercel deploymen
 
 ## Local setup
 
+A fresh checkout installs, tests and builds without any secrets:
+
+```bash
+npm ci            # runs `prisma generate`; no DIRECT_URL needed
+npm test
+npm run build
+```
+
+To run the app against Supabase:
+
 ```bash
 cp .env.example .env
-# Fill DIRECT_URL before Prisma 7 runs during npm ci.
-npm ci
-npm run db:generate
+# Fill the Supabase, database and AI provider values in .env.
+npm run db:migrate   # requires DIRECT_URL
 npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000). Configure the Supabase and provider variables in `.env` before using `/login` or the dashboard.
 
-For a Supabase database migration, set `DIRECT_URL` and run:
+The Prisma CLI (migrations) uses `DIRECT_URL`. The app runtime also prefers `DIRECT_URL` when it is set, because interactive transactions need a session connection; otherwise it uses `DATABASE_URL`.
 
-```bash
-npm run db:migrate
-```
+### Accounts and roles
 
-The runtime Prisma connection uses `DATABASE_URL`; Prisma CLI migrations use `DIRECT_URL`.
+Application roles (`EXECUTIVE`, `MANAGER`) are stored in the database and granted only by the controlled seed. Signing up in Supabase Auth does not give access: a signed-in account without a role sees "no CargoVerity role yet" and every API call returns `403 ACCOUNT_NOT_PROVISIONED`.
 
-After creating synthetic users in Supabase Auth, the controlled role seed can create/update their application roles. Set the `SEED_*` values locally, then run:
-
-```bash
-npm run db:seed
-```
+1. Create the synthetic users in the Supabase dashboard (Authentication → Users).
+2. Put their Auth user IDs and emails in the `SEED_*` variables in `.env`.
+3. Run `npm run db:seed`. When `SUPABASE_SECRET_KEY` is set, the seed first checks that each ID exists in Supabase Auth with the same email.
 
 ## Environment variables
 
-See [`.env.example`](.env.example). The most important values are:
+See [`.env.example`](.env.example), which lists every variable the app reads, including operating limits, the role seed and Playwright credentials. The most important values are:
 
 ```env
 NEXT_PUBLIC_SUPABASE_URL=
@@ -87,9 +92,10 @@ npm run lint
 npm run typecheck
 npm test
 npm run build
+npm run test:integration   # needs DIRECT_URL or DATABASE_URL; creates and removes synthetic rows
 ```
 
-The Playwright smoke test requires a browser installation:
+The Playwright tests require a browser installation. Unauthenticated checks run with only the Supabase public variables; the login and role flows need the `PLAYWRIGHT_*` synthetic accounts in `.env`:
 
 ```bash
 npx playwright install chromium
@@ -98,8 +104,10 @@ npm run test:e2e
 
 ## Documentation
 
-- [`docs/architecture.md`](docs/architecture.md) — implemented application and provider architecture.
-- [`docs/ai-extraction.md`](docs/ai-extraction.md) — provider limits, schemas and failure handling.
-- [`docs/deployment.md`](docs/deployment.md) — Supabase, Vercel Hobby and free-provider setup.
+- [`docs/assumptions.md`](docs/assumptions.md): decision log (export template, field policy, tolerances, roles, regions, retention, benchmark).
+- [`docs/ai-feasibility.md`](docs/ai-feasibility.md): Week 1 provider spike, limits, latency and cost estimate.
+- [`docs/architecture.md`](docs/architecture.md): implemented application and provider architecture.
+- [`docs/ai-extraction.md`](docs/ai-extraction.md): provider limits, schemas and failure handling.
+- [`docs/deployment.md`](docs/deployment.md): Supabase, Vercel Hobby and free-provider setup.
 
 No secrets, real client documents or generated build output belong in this repository.
