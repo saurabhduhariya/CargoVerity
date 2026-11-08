@@ -142,12 +142,8 @@ export class OpenRouterProvider implements AIProvider {
       }
 
       const choice = data.choices?.[0];
-      if (choice?.finish_reason === "length") {
-        throw new ProviderError(
-          "The AI response was cut off at the output token limit. Retry, or enter the values manually.",
-          "INVALID_RESPONSE",
-        );
-      }
+      // Only a reply that stops at the token cap AND fails validation is reported as cut off.
+      const hitTokenLimit = choice?.finish_reason === "length";
       const content = choice?.message?.content;
       if (!content) {
         throw new ProviderError("OpenRouter returned an empty response.", "INVALID_RESPONSE");
@@ -177,7 +173,9 @@ export class OpenRouterProvider implements AIProvider {
         });
       } catch {
         throw new ProviderError(
-          "OpenRouter returned a response that does not match the extraction schema.",
+          hitTokenLimit
+            ? "The AI response was cut off at the output token limit. Retry, or enter the values manually."
+            : "OpenRouter returned a response that does not match the extraction schema.",
           "INVALID_RESPONSE",
         );
       }

@@ -1,3 +1,4 @@
+import { SafeRequestError } from "@/lib/errors";
 import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -125,7 +126,7 @@ export async function authorizeShipmentAccess(
   });
 
   if (!shipment) {
-    throw new Error("Shipment not found or inaccessible.");
+    throw new SafeRequestError("Shipment not found or inaccessible.");
   }
 
   return shipment;
@@ -260,7 +261,7 @@ export async function deleteAuthorizedDocument(
 ): Promise<{ success: true; documentId: string; shipmentId: string; newRevision: number }> {
   const document = await authorizeDocumentAccess(prisma, params.documentId, params.appUser);
   if (!document) {
-    throw new Error("Document not found or inaccessible.");
+    throw new SafeRequestError("Document not found or inaccessible.");
   }
 
   // 1. Delete physical object in private Supabase Storage

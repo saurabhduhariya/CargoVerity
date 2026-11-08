@@ -1,3 +1,4 @@
+import { SafeRequestError } from "@/lib/errors";
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-response";
 import { requireAppUser } from "@/lib/auth";
@@ -32,7 +33,7 @@ export async function POST(
     });
 
     if (!shipment) {
-      throw new Error("Shipment not found or inaccessible.");
+      throw new SafeRequestError("Shipment not found or inaccessible.");
     }
 
     const { run, revision, results } = await createCrossCheckRun({
@@ -74,7 +75,7 @@ export async function GET(
     });
 
     if (!shipment) {
-      throw new Error("Shipment not found or inaccessible.");
+      throw new SafeRequestError("Shipment not found or inaccessible.");
     }
 
     const url = new URL(request.url);

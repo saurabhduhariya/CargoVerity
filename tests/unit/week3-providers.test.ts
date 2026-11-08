@@ -63,10 +63,17 @@ describe("GroqProvider", () => {
   });
 
   it("fails a response cut off at the token cap instead of trusting partial JSON", async () => {
-    create.mockResolvedValue({ choices: [{ finish_reason: "length", message: { content: validInvoice } }] });
+    const truncated = validInvoice.slice(0, Math.floor(validInvoice.length / 2));
+    create.mockResolvedValue({ choices: [{ finish_reason: "length", message: { content: truncated } }] });
     await expect(
       new GroqProvider({ model: "m" }).extractDocument({ documentType: "INVOICE", pages: [page(1)] }),
     ).rejects.toMatchObject({ code: "INVALID_RESPONSE", message: expect.stringMatching(/output token limit/) });
+  });
+
+  it("accepts a complete, valid reply that happened to stop exactly at the token cap", async () => {
+    create.mockResolvedValue({ id: "r2", model: "m", choices: [{ finish_reason: "length", message: { content: validInvoice } }], usage: {} });
+    const result = await new GroqProvider({ model: "m" }).extractDocument({ documentType: "INVOICE", pages: [page(1)] });
+    expect(result.fields.length).toBeGreaterThan(0);
   });
 
   it("returns a fixed message for schema-invalid output, never the model text", async () => {

@@ -33,7 +33,7 @@ export async function renderBlobPages(blob: Blob, mimeType: string): Promise<Ren
   const buffer = await blob.arrayBuffer();
   const pdf = await pdfjs.getDocument({ data: buffer }).promise;
   if (pdf.numPages > 50) {
-    throw new Error("This demo accepts at most 50 PDF pages.");
+    throw new Error("PDF documents are limited to 50 pages.");
   }
 
   const pages: RenderedPage[] = [];
@@ -61,7 +61,7 @@ export type ExtractionProgressCallback = (step: string) => void;
 
 /** Error carrying the server's safe error code so the UI can show a plain-language message. */
 export class ExtractionRequestError extends Error {
-  constructor(message: string, readonly code?: string) {
+  constructor(message: string, readonly code?: string, readonly retryAfterSeconds?: number) {
     super(message);
     this.name = "ExtractionRequestError";
   }
@@ -80,7 +80,7 @@ async function readJson(response: Response) {
  * sends it in batches of up to 3 pages. A completed run is served from the database, and a
  * batch the server already stored is not sent to the provider again.
  */
-export async function runDocumentExtraction(params: {
+async function runDocumentExtractionOnce(params: {
   documentId: string;
   documentType: DocumentType;
   signedUrl?: string;
@@ -172,7 +172,11 @@ export async function runDocumentExtraction(params: {
 
     const data = await readJson(response);
     if (!response.ok) {
-      throw new ExtractionRequestError(data.error ?? "AI extraction failed.", data.code);
+      throw new ExtractionRequestError(
+        data.error ?? "AI extraction failed.",
+        data.code,
+        typeof data.retryAfterSeconds === "number" ? data.retryAfterSeconds : undefined,
+      );
     }
     if (data.result) {
       fieldCount += data.result.fields?.length ?? 0;
@@ -184,4 +188,34 @@ export async function runDocumentExtraction(params: {
 
   onProgress?.("Extraction completed.");
   return { runId, cached: false, fieldCount, lineItemCount, warningCount };
+}
+
+const MAX_RATE_LIMIT_WAITS = 3;
+const FALLBACK_WAIT_SECONDS = 30;
+const MAX_WAIT_SECONDS = 120;
+
+function sleep(milliseconds: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
+
+/**
+ * Runs one document's extraction. When the AI provider's per-minute limit is hit, it waits for
+ * the time the provider asked for, shows a countdown, and starts a new run (the limited run stays
+ * in history as failed). After three waits the rate-limit error is shown as before.
+ */
+export async function runDocumentExtraction(params: Parameters<typeof runDocumentExtractionOnce>[0]) {
+  let retry = Boolean(params.retry);
+  for (let waits = 0; ; waits += 1) {
+    try {
+      return await runDocumentExtractionOnce({ ...params, retry });
+    } catch (error) {
+      if (!(error instanceof ExtractionRequestError) || error.code !== "RATE_LIMIT" || waits >= MAX_RATE_LIMIT_WAITS) throw error;
+      const seconds = Math.min(Math.max(error.retryAfterSeconds ?? FALLBACK_WAIT_SECONDS, 1), MAX_WAIT_SECONDS) + 1;
+      for (let remaining = seconds; remaining > 0; remaining -= 1) {
+        params.onProgress?.(`The AI provider allows limited output per minute. Retrying in ${remaining} s (attempt ${waits + 2} of ${MAX_RATE_LIMIT_WAITS + 1})…`);
+        await sleep(1000);
+      }
+      retry = true;
+    }
+  }
 }

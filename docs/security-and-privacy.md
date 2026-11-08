@@ -83,8 +83,8 @@ CargoVerity is designed with a defense-in-depth security model to process custom
   - JPEG: Verified binary magic bytes `0xFF 0xD8 0xFF`.
 - **Integrity Checksums:** Incoming files are hashed using SHA-256 (`createHash("sha256")`).
 - **Resource Limits:**
-  - Maximum PDF size: `MAX_PDF_BYTES` (default 25 MB).
-  - Maximum image size: `MAX_IMAGE_BYTES` (default 10 MB).
+  - Maximum PDF size: `MAX_PDF_BYTES` (default 10 MiB).
+  - Maximum image size: `MAX_IMAGE_BYTES` (default 7 MB).
   - Maximum page count: `MAX_PDF_PAGES` (default 50 pages).
   - Password-protected or corrupted PDFs are rejected immediately with safe error codes.
 
@@ -92,7 +92,7 @@ CargoVerity is designed with a defense-in-depth security model to process custom
 - **Log Isolation:** Structured AI extraction telemetry (`src/lib/ai/logger.ts`) logs only safe metadata:
   `{ event, runId, shipmentId, modelId, promptVersion, latencyMs, errorCode }`
   Raw prompts, base64 image strings, document contents, and API keys are strictly excluded.
-- **Client Error Masking:** `apiError()` converts internal exceptions, database errors, and provider rejections into generic client-safe messages (`400 Bad Request`, `401 Unauthorized`, `403 Forbidden`, `409 Conflict`, `429 Rate Limit`, `502 Bad Gateway`). Stack traces and connection URLs are never sent to the client.
+- **Client Error Masking:** `apiError()` returns only fixed, typed messages written by our own code (upload, extraction, review, provider and `SafeRequestError` messages). Any other exception, including database and driver errors, returns HTTP 500 with a generic message and a short `errorId`. Provider, configuration and storage failures also carry an `errorId`. The server log line for that ID (`event: api_error`) holds only the ID, a safe error code and the error class, never the message or stack, so support can match a user report to a log entry without exposing content.
 
 ### 9. PII and Importer Contact Minimization
 - **Export Scrubbing:** The canonical `demo-v1` export profile excludes phone numbers, personal mobile contacts, personal emails, and banking coordinates.
@@ -130,8 +130,3 @@ CargoVerity is designed with a defense-in-depth security model to process custom
 - **Unit Test Suite:** [`tests/unit/security-hardening.test.ts`](file:///home/saurabh/Documents/CargoVerity/tests/unit/security-hardening.test.ts) — **18 / 18 tests passing**.
 - **Integration Test Suite:** [`tests/integration/pyramid-flows.test.ts`](file:///home/saurabh/Documents/CargoVerity/tests/integration/pyramid-flows.test.ts) (Flow 14 cascade deletion) — **15 / 15 tests passing**.
 - **Secrets Scanning:** Verified clean with zero tracked credentials or secret leaks.
-`;
-
-  writeFileSync(resolve(process.cwd(), "docs/security-and-privacy.md"), markdown, "utf8");
-  console.log("Written docs/security-and-privacy.md successfully.");
-

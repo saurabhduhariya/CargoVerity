@@ -383,3 +383,65 @@ describe("Field Confirmation and Correction (Week 4 Step 7)", () => {
     });
   });
 });
+
+describe("Skipping the check recompute on confirmation", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("recomputes by default, so existing callers are unchanged", async () => {
+    actAsExecutive();
+    const state = makeState();
+    vi.spyOn(db, "getPrisma").mockReturnValue(fakePrisma(state) as never);
+    const recompute = mockRecompute();
+
+    const response = await review({ status: "CONFIRMED", expectedRevision: 2 });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(recompute).toHaveBeenCalledOnce();
+    expect(body.crossChecksStale).toBe(false);
+    expect(body.crossCheckRunId).toBe("run-new");
+  });
+
+  it("confirms and bumps the revision without a recompute when recompute is false", async () => {
+    actAsExecutive();
+    const state = makeState();
+    vi.spyOn(db, "getPrisma").mockReturnValue(fakePrisma(state) as never);
+    const recompute = mockRecompute();
+
+    const response = await review({ status: "CONFIRMED", expectedRevision: 2, recompute: false });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(recompute).not.toHaveBeenCalled();
+    expect(state.shipment.currentRevision).toBe(3);
+    expect(state.field.reviewStatus).toBe("CONFIRMED");
+    expect(state.audits).toHaveLength(1);
+    expect(body).toMatchObject({ revision: 3, crossChecks: null, crossCheckRunId: null, crossChecksStale: true });
+  });
+
+  it("still recomputes when a value is corrected, even if recompute is false", async () => {
+    actAsExecutive();
+    const state = makeState();
+    vi.spyOn(db, "getPrisma").mockReturnValue(fakePrisma(state) as never);
+    const recompute = mockRecompute();
+
+    const response = await review({ status: "CORRECTED", value: "3165", reason: "Matches the packing list", expectedRevision: 2, recompute: false });
+
+    expect(response.status).toBe(200);
+    expect(recompute).toHaveBeenCalledOnce();
+    expect((await response.json()).crossChecksStale).toBe(false);
+  });
+
+  it("rejects a non-boolean recompute value", async () => {
+    actAsExecutive();
+    const state = makeState();
+    vi.spyOn(db, "getPrisma").mockReturnValue(fakePrisma(state) as never);
+
+    const response = await review({ status: "CONFIRMED", expectedRevision: 2, recompute: "no" });
+
+    expect(response.status).toBe(400);
+    expect(state.shipment.currentRevision).toBe(2);
+  });
+});

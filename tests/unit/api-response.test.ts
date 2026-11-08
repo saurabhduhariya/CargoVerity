@@ -53,3 +53,14 @@ describe("API error responses", () => {
     });
   });
 });
+
+describe("API safe error IDs (Week 6 Step 5)", () => {
+  it("hides unexpected error text and returns an error ID", async () => {
+    const response = apiError(new Error("connect ECONNREFUSED 10.0.0.5:5432 password=hunter2"));
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(JSON.stringify(body)).not.toMatch(/ECONNREFUSED|hunter2/);
+    expect(body.errorId).toMatch(/^[0-9a-f]{8}$/);
+  });
+});

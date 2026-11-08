@@ -23,7 +23,7 @@ import {
   validateStoredDocumentBuffer,
 } from "@/lib/documents/validation";
 import { getEnv } from "@/lib/env";
-import { DocumentUploadError } from "@/lib/errors";
+import { DocumentUploadError, SafeRequestError } from "@/lib/errors";
 import { createSupabaseAdminClient } from "@/lib/supabase/server";
 
 /**
@@ -226,7 +226,7 @@ export async function recordDocumentVersions(
       where: { id: params.shipmentId },
       select: { status: true, currentRevision: true },
     });
-    if (!before) throw new Error("Shipment not found or inaccessible.");
+    if (!before) throw new SafeRequestError("Shipment not found or inaccessible.");
     assertShipmentEditable(before.status);
 
     const bumped = await tx.shipment.updateMany({

@@ -160,3 +160,106 @@ describe("manual entry baselines and protected confirmations", () => {
     expect(isReviewActionCurrent({ revision: 6, runId: null }, { ...data, latestCheckRun: null })).toBe(true);
   });
 });
+
+describe("document links across server refreshes", () => {
+  function refreshed() {
+    const data = makeReviewData();
+    const next = structuredClone(data);
+    next.shipment.currentRevision++;
+    // A server refresh signs a new link for every document.
+    next.documents.forEach((doc) => { doc.signedUrl = `${doc.signedUrl}?token=new`; });
+    return { data, next };
+  }
+
+  it("keeps the link the viewer already uses so a confirm does not reload the PDF", () => {
+    const { data, next } = refreshed();
+    const state = reviewStateReducer(createReviewState(data), { type: "incoming", data: next });
+    expect(state.snapshot.documents.map((doc) => doc.signedUrl)).toEqual(data.documents.map((doc) => doc.signedUrl));
+    expect(state.snapshot.shipment.currentRevision).toBe(next.shipment.currentRevision);
+  });
+
+  it("still takes the new field data from the refresh", () => {
+    const { data, next } = refreshed();
+    next.documents[0].fields[0].currentValue = "3200";
+    const state = reviewStateReducer(createReviewState(data), { type: "incoming", data: next });
+    expect(state.snapshot.documents[0].fields[0].currentValue).toBe("3200");
+  });
+
+  it("accepts a link for a document that had none", () => {
+    const { data, next } = refreshed();
+    data.documents[0].signedUrl = "";
+    const state = reviewStateReducer(createReviewState(data), { type: "incoming", data: next });
+    expect(state.snapshot.documents[0].signedUrl).toBe(next.documents[0].signedUrl);
+  });
+
+  it("keeps a link that was refreshed after an expiry", () => {
+    const { data, next } = refreshed();
+    const withFresh = reviewStateReducer(createReviewState(data), { type: "document-url", documentId: data.documents[0].id, url: "/fixture/invoice.pdf?token=renewed" });
+    const state = reviewStateReducer(withFresh, { type: "incoming", data: next });
+    expect(state.snapshot.documents[0].signedUrl).toBe("/fixture/invoice.pdf?token=renewed");
+  });
+});
+
+describe("optimistic confirmation", () => {
+  const fieldStatus = (state: ReturnType<typeof createReviewState>, id: string) =>
+    state.snapshot.documents.flatMap((doc) => doc.fields).find((f) => f.id === id)?.reviewStatus;
+
+  function pendingField() {
+    const data = makeReviewData();
+    const field = data.documents[0].fields.find((f) => f.reviewStatus !== "CONFIRMED")!;
+    return { data, field };
+  }
+
+  it("shows the field as confirmed straight away", () => {
+    const { data, field } = pendingField();
+    const state = reviewStateReducer(createReviewState(data), { type: "optimistic-confirm", fieldId: field.id });
+    expect(fieldStatus(state, field.id)).toBe("CONFIRMED");
+    expect(state.snapshot.shipment.currentRevision).toBe(data.shipment.currentRevision);
+  });
+
+  it("keeps the field confirmed when a refresh arrives before the server has answered", () => {
+    const { data, field } = pendingField();
+    const state = reviewStateReducer(createReviewState(data), { type: "optimistic-confirm", fieldId: field.id });
+    // The refresh still carries the old status because the save has not been committed yet.
+    const refreshed = reviewStateReducer(state, { type: "incoming", data: structuredClone(data) });
+    expect(fieldStatus(refreshed, field.id)).toBe("CONFIRMED");
+  });
+
+  it("puts the previous status back when the save is refused", () => {
+    const { data, field } = pendingField();
+    const confirmed = reviewStateReducer(createReviewState(data), { type: "optimistic-confirm", fieldId: field.id });
+    const restored = reviewStateReducer(confirmed, { type: "optimistic-clear", fieldId: field.id, restore: { reviewStatus: field.reviewStatus, reviewReason: field.reviewReason ?? null } });
+    expect(fieldStatus(restored, field.id)).toBe(field.reviewStatus);
+    // A later refresh no longer re-applies the confirmation.
+    const refreshed = reviewStateReducer(restored, { type: "incoming", data: structuredClone(data) });
+    expect(fieldStatus(refreshed, field.id)).toBe(field.reviewStatus);
+  });
+
+  it("applies a committed save to the current snapshot without undoing other pending confirmations", () => {
+    const { data } = pendingField();
+    const [first, second] = data.documents[0].fields;
+    let state = reviewStateReducer(createReviewState(data), { type: "optimistic-confirm", fieldId: first.id });
+    state = reviewStateReducer(state, { type: "optimistic-confirm", fieldId: second.id });
+    // The first save comes back. The second is still in flight and must stay confirmed.
+    state = reviewStateReducer(state, {
+      type: "patch-snapshot", savedFieldId: first.id,
+      update: (current) => ({
+        ...current,
+        shipment: { ...current.shipment, currentRevision: current.shipment.currentRevision + 1 },
+        documents: current.documents.map((doc) => ({ ...doc, fields: doc.fields.map((f) => f.id === first.id ? { ...f, reviewStatus: "CONFIRMED" } : f) })),
+      }),
+    });
+    expect(state.snapshot.shipment.currentRevision).toBe(data.shipment.currentRevision + 1);
+    expect(fieldStatus(state, first.id)).toBe("CONFIRMED");
+    expect(fieldStatus(state, second.id)).toBe("CONFIRMED");
+    expect(state.optimistic[first.id]).toBeUndefined();
+    expect(state.optimistic[second.id]).toBeDefined();
+  });
+
+  it("ignores a patch that would move the revision backwards", () => {
+    const { data } = pendingField();
+    const state = createReviewState(data);
+    const next = reviewStateReducer(state, { type: "patch-snapshot", update: (current) => ({ ...current, shipment: { ...current.shipment, currentRevision: current.shipment.currentRevision - 1 } }) });
+    expect(next).toBe(state);
+  });
+});

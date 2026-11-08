@@ -34,6 +34,25 @@ export function createGroqVisionContent(input: ExtractionInput): ChatCompletionC
   ];
 }
 
+/**
+ * Groq says how long to wait in its 429 body ("Please try again in 1.74s" / "2m3.5s" / "350ms")
+ * and in the standard retry-after header. Only the duration is read; nothing else is kept.
+ */
+export function groqRetryAfterMs(error: unknown): number | undefined {
+  const headers = (error as { headers?: unknown } | null)?.headers;
+  const headerValue = headers && typeof (headers as Headers).get === "function"
+    ? (headers as Headers).get("retry-after")
+    : headers && typeof headers === "object" ? (headers as Record<string, unknown>)["retry-after"] : undefined;
+  const seconds = Number(headerValue);
+  if (Number.isFinite(seconds) && seconds > 0) return Math.round(seconds * 1000);
+
+  const text = error instanceof Error ? error.message : "";
+  const match = text.match(/try again in\s+(?:(\d+(?:\.\d+)?)m(?!s))?\s*(?:(\d+(?:\.\d+)?)s)?\s*(?:(\d+(?:\.\d+)?)ms)?/i);
+  if (!match) return undefined;
+  const total = (Number(match[1] ?? 0) * 60 + Number(match[2] ?? 0)) * 1000 + Number(match[3] ?? 0);
+  return total > 0 ? Math.round(total) : undefined;
+}
+
 function providerError(error: unknown): ProviderError {
   const status =
     typeof error === "object" && error !== null && "status" in error
@@ -47,7 +66,7 @@ function providerError(error: unknown): ProviderError {
     return new ProviderError("Groq rejected the request because the account quota is exhausted.", "QUOTA_EXCEEDED", status);
   }
   if (status === 429) {
-    return new ProviderError("Groq rate limit reached. Please retry in a few moments.", "RATE_LIMIT", status);
+    return new ProviderError("Groq rate limit reached. Please retry in a few moments.", "RATE_LIMIT", status, groqRetryAfterMs(error));
   }
   if (
     status === 408 ||
@@ -125,13 +144,9 @@ export class GroqProvider implements AIProvider {
       const latencyMs = Date.now() - startTime;
       const choice = response.choices[0];
       const responseContent = choice?.message?.content;
-
-      if (choice?.finish_reason === "length") {
-        throw new ProviderError(
-          "The AI response was cut off at the output token limit. Retry, or enter the values manually.",
-          "INVALID_RESPONSE",
-        );
-      }
+      // A reply that stops at the token cap can still be a complete JSON object. Only a reply that
+      // then fails validation is reported as cut off; a truncated object can never validate.
+      const hitTokenLimit = choice?.finish_reason === "length";
       if (!responseContent) {
         throw new ProviderError("Groq returned an empty response.", "INVALID_RESPONSE");
       }
@@ -159,9 +174,11 @@ export class GroqProvider implements AIProvider {
           lowConfidenceThreshold: env.LOW_CONFIDENCE_THRESHOLD,
         });
       } catch {
-        // Fixed message: validation details can echo document content from the model output.
+        // Fixed messages: validation details can echo document content from the model output.
         throw new ProviderError(
-          "Groq returned a response that does not match the extraction schema.",
+          hitTokenLimit
+            ? "The AI response was cut off at the output token limit. Retry, or enter the values manually."
+            : "Groq returned a response that does not match the extraction schema.",
           "INVALID_RESPONSE",
         );
       }

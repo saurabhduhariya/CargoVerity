@@ -7,15 +7,34 @@ import type {
   ReviewWorkspaceInitialData,
 } from "./review-types";
 
+/** Field status shown immediately while the save is still on its way to the server. */
+export type OptimisticFieldStatus = { reviewStatus: string; reviewReason: string | null };
+
 export type ReviewState = {
   incoming: ReviewWorkspaceInitialData;
   snapshot: ReviewWorkspaceInitialData;
   drafts: Record<string, FieldDraft>;
   refreshRequired: boolean;
+  /** Fields whose save has not been confirmed by the server yet. Re-applied over every refresh. */
+  optimistic: Record<string, OptimisticFieldStatus>;
 };
 
 export function createReviewState(data: ReviewWorkspaceInitialData): ReviewState {
-  return { incoming: data, snapshot: data, drafts: {}, refreshRequired: false };
+  return { incoming: data, snapshot: data, drafts: {}, refreshRequired: false, optimistic: {} };
+}
+
+function setFieldStatus(data: ReviewWorkspaceInitialData, fieldId: string, status: OptimisticFieldStatus): ReviewWorkspaceInitialData {
+  if (!data.documents.some((doc) => doc.fields.some((field) => field.id === fieldId))) return data;
+  return {
+    ...data,
+    documents: data.documents.map((doc) => doc.fields.some((field) => field.id === fieldId)
+      ? { ...doc, fields: doc.fields.map((field) => field.id === fieldId ? { ...field, reviewStatus: status.reviewStatus, reviewReason: status.reviewReason } : field) }
+      : doc),
+  };
+}
+
+function applyOptimistic(data: ReviewWorkspaceInitialData, optimistic: Record<string, OptimisticFieldStatus>): ReviewWorkspaceInitialData {
+  return Object.entries(optimistic).reduce((result, [fieldId, status]) => setFieldStatus(result, fieldId, status), data);
 }
 
 export function reconcileFieldDrafts(drafts: Record<string, FieldDraft>, documents: ReviewWorkspaceDocument[]): Record<string, FieldDraft> {
@@ -65,17 +84,58 @@ export function isReviewActionCurrent(
 type ReviewStateAction =
   | { type: "incoming"; data: ReviewWorkspaceInitialData }
   | { type: "snapshot"; data: ReviewWorkspaceInitialData; savedFieldId?: string }
+  /** Applies a change to the CURRENT snapshot, so overlapping saves cannot overwrite each other. */
+  | { type: "patch-snapshot"; update: (current: ReviewWorkspaceInitialData) => ReviewWorkspaceInitialData; savedFieldId?: string }
+  | { type: "optimistic-confirm"; fieldId: string }
+  | { type: "optimistic-clear"; fieldId: string; restore?: OptimisticFieldStatus }
   | { type: "draft"; doc: ReviewWorkspaceDocument; field: ReviewWorkspaceField; patch: Partial<Pick<FieldDraft, "value" | "reason" | "error">> }
   | { type: "discard"; fieldId: string }
   | { type: "acknowledge"; fieldId: string }
   | { type: "document-url"; documentId: string; url: string }
   | { type: "refresh-required" };
 
+/**
+ * Every server refresh signs fresh download links, which would make the viewer re-download and
+ * redraw an unchanged PDF after each save. A document id never changes its file, so keep the link
+ * the viewer already uses. The viewer fetches a fresh link by itself if this one has expired.
+ */
+function keepKnownDocumentUrls(incoming: ReviewWorkspaceInitialData, previous: ReviewWorkspaceInitialData): ReviewWorkspaceInitialData {
+  const known = new Map(previous.documents.map((doc) => [doc.id, doc.signedUrl]));
+  const needsKeeping = (doc: ReviewWorkspaceInitialData["documents"][number]) => {
+    const url = known.get(doc.id);
+    return Boolean(url) && url !== doc.signedUrl;
+  };
+  if (!incoming.documents.some(needsKeeping)) return incoming;
+  return {
+    ...incoming,
+    documents: incoming.documents.map((doc) => (needsKeeping(doc) ? { ...doc, signedUrl: known.get(doc.id) as string } : doc)),
+  };
+}
+
 export function reviewStateReducer(state: ReviewState, action: ReviewStateAction): ReviewState {
   if (action.type === "incoming") {
     if (action.data.shipment.id !== state.snapshot.shipment.id) return createReviewState(action.data);
     if (action.data.shipment.currentRevision < state.snapshot.shipment.currentRevision) return { ...state, incoming: action.data };
-    return { incoming: action.data, snapshot: action.data, drafts: reconcileFieldDrafts(state.drafts, action.data.documents), refreshRequired: false };
+    const snapshot = applyOptimistic(keepKnownDocumentUrls(action.data, state.snapshot), state.optimistic);
+    return { ...state, incoming: action.data, snapshot, drafts: reconcileFieldDrafts(state.drafts, snapshot.documents), refreshRequired: false };
+  }
+  if (action.type === "patch-snapshot") {
+    const next = action.update(state.snapshot);
+    if (next.shipment.id !== state.snapshot.shipment.id || next.shipment.currentRevision < state.snapshot.shipment.currentRevision) return state;
+    const drafts = { ...state.drafts };
+    const optimistic = { ...state.optimistic };
+    if (action.savedFieldId) { delete drafts[action.savedFieldId]; delete optimistic[action.savedFieldId]; }
+    const snapshot = applyOptimistic(next, optimistic);
+    return { ...state, snapshot, drafts: reconcileFieldDrafts(drafts, snapshot.documents), optimistic };
+  }
+  if (action.type === "optimistic-confirm") {
+    const status: OptimisticFieldStatus = { reviewStatus: "CONFIRMED", reviewReason: null };
+    return { ...state, snapshot: setFieldStatus(state.snapshot, action.fieldId, status), optimistic: { ...state.optimistic, [action.fieldId]: status } };
+  }
+  if (action.type === "optimistic-clear") {
+    const optimistic = { ...state.optimistic };
+    delete optimistic[action.fieldId];
+    return { ...state, optimistic, snapshot: action.restore ? setFieldStatus(state.snapshot, action.fieldId, action.restore) : state.snapshot };
   }
   if (action.type === "snapshot") {
     if (action.data.shipment.id !== state.snapshot.shipment.id || action.data.shipment.currentRevision < state.snapshot.shipment.currentRevision) return state;

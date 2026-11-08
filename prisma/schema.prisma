@@ -196,6 +196,8 @@ model ExtractionRun {
   pageCount       Int
   inputSizeBytes  Int?
   latencyMs       Int?
+  promptTokens     Int             @default(0)
+  completionTokens Int             @default(0)
   rawResponse     Json?
   errorCode       String?
   errorMessage    String?
@@ -208,6 +210,7 @@ model ExtractionRun {
   @@index([documentId, createdAt])
   @@index([documentId, documentVersion])
   @@index([requestedById])
+  @@index([createdAt])
 }
 
 model ExtractedField {

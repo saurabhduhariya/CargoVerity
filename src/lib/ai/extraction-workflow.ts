@@ -3,6 +3,7 @@ import "server-only";
 import { z } from "zod";
 
 import type { PrismaClient, ShipmentStatus } from "@/generated/prisma/client";
+import { assertAiBudgetAvailable } from "@/lib/ai/budget";
 import { PROMPT_VERSION } from "@/lib/ai/extraction-prompts";
 import { ExtractionService } from "@/lib/ai/extraction.service";
 import { logExtractionAttempt } from "@/lib/ai/logger";
@@ -96,6 +97,8 @@ export async function startDocumentExtraction(
       model: params.provider.model,
     });
   }
+
+  await assertAiBudgetAvailable(prisma);
 
   const { run, isExisting } = await persistence.createOrGetExtractionRun({
     documentId: document.id,

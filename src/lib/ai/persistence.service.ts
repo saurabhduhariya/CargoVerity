@@ -398,6 +398,8 @@ export class ExtractionPersistenceService {
           status: isFinal ? "COMPLETED" : "PROCESSING",
           completedAt: isFinal ? new Date() : null,
           latencyMs: totalLatency,
+          promptTokens: { increment: result.usage?.promptTokens ?? 0 },
+          completionTokens: { increment: result.usage?.completionTokens ?? 0 },
           rawResponse: nextMetadata as Prisma.InputJsonValue,
         },
       });

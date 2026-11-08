@@ -96,6 +96,8 @@ function mergeResults(results: ExtractionResult[]): ExtractionResult {
 
 /** Default wait before the single retry (rate limits on Groq reset per second-scale windows). */
 export const DEFAULT_RETRY_DELAY_MS = 1_500;
+/** Longest provider-requested wait the server holds a request open for; longer waits go back to the browser. */
+export const MAX_INLINE_RETRY_WAIT_MS = 8_000;
 
 /**
  * At most one retry (MAX_AI_RETRIES, capped at 1), and only for transient failures:
@@ -112,9 +114,12 @@ async function withRetry(provider: AIProvider, input: ExtractionInput, retryDela
     } catch (error) {
       const retryable = error instanceof ProviderError && error.retryable;
       if (!retryable || attempt >= maxRetries) throw error;
+      // A rate limit that needs a long wait is handed back to the caller instead of holding this request open.
+      const requestedWait = error instanceof ProviderError ? error.retryAfterMs : undefined;
+      if (requestedWait !== undefined && requestedWait > MAX_INLINE_RETRY_WAIT_MS) throw error;
 
       attempt += 1;
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      await new Promise((resolve) => setTimeout(resolve, Math.max(retryDelayMs, requestedWait ?? 0)));
     }
   }
 }

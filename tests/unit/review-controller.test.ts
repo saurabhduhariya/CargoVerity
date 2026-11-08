@@ -33,17 +33,49 @@ function controller(data: ReviewWorkspaceInitialData, statePatch: Partial<drafts
 }
 
 describe("guarded review controller request contracts", () => {
-  it("confirms only the saved value at the current revision", async () => {
+  it("confirms only the saved value at the current revision, without recomputing checks per confirm", async () => {
     const data = makeReviewData();
     const field = data.documents[0].fields[0];
-    fetchMock.mockResolvedValueOnce(Response.json({ field: { ...field, reviewStatus: "CONFIRMED" }, revision: 7, crossChecks: [], crossCheckRunId: "server-run-7" }));
+    fetchMock.mockResolvedValueOnce(Response.json({ field: { ...field, reviewStatus: "CONFIRMED" }, revision: 7, crossChecks: null, crossCheckRunId: null, crossChecksStale: true }));
+    fetchMock.mockResolvedValueOnce(Response.json({ revision: 7, runId: "server-run-7", results: [] }));
     expect(await controller(data).saveField(data.documents[0], field, "CONFIRMED")).toBe(true);
     const [url, request] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/fields/invoice-weight/review");
     expect(request?.method).toBe("POST");
     expect(request?.cache).toBe("no-store");
-    expect(JSON.parse(request!.body as string)).toEqual({ status: "CONFIRMED", value: "3120", expectedRevision: 6 });
-    expect(router.refresh).toHaveBeenCalledOnce();
+    expect(JSON.parse(request!.body as string)).toEqual({ status: "CONFIRMED", value: "3120", expectedRevision: 6, recompute: false });
+    // One recompute and one quiet page refresh follow, once the confirmations have been saved.
+    await vi.waitFor(() => expect(router.refresh).toHaveBeenCalledOnce(), { timeout: 3000 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toBe(`/api/shipments/${data.shipment.id}/crosschecks`);
+  });
+
+  it("sends back-to-back confirmations in order, each at the revision the previous one produced", async () => {
+    const data = makeReviewData();
+    const [first, second] = data.documents[0].fields;
+    fetchMock
+      .mockResolvedValueOnce(Response.json({ field: { ...first, reviewStatus: "CONFIRMED" }, revision: 7, crossChecksStale: true }))
+      .mockResolvedValueOnce(Response.json({ field: { ...second, reviewStatus: "CONFIRMED" }, revision: 8, crossChecksStale: true }))
+      .mockResolvedValue(Response.json({ revision: 8, runId: "run-8", results: [] }));
+    const review = controller(data);
+    const results = await Promise.all([review.saveField(data.documents[0], first, "CONFIRMED"), review.saveField(data.documents[0], second, "CONFIRMED")]);
+    expect(results).toEqual([true, true]);
+    expect(JSON.parse(fetchMock.mock.calls[0][1]!.body as string)).toMatchObject({ expectedRevision: 6 });
+    expect(JSON.parse(fetchMock.mock.calls[1][1]!.body as string)).toMatchObject({ expectedRevision: 7 });
+    await vi.waitFor(() => expect(router.refresh).toHaveBeenCalledOnce(), { timeout: 3000 });
+    // Two confirmations, but only one recompute.
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/crosschecks"))).toHaveLength(1);
+  });
+
+  it("puts a refused confirmation back and does not send the confirmations queued behind a stale one", async () => {
+    const data = makeReviewData();
+    const [first, second] = data.documents[0].fields;
+    fetchMock.mockResolvedValueOnce(Response.json({ error: "The shipment changed since you loaded it.", code: "STALE_REVISION" }, { status: 409 }));
+    const review = controller(data);
+    const results = await Promise.all([review.saveField(data.documents[0], first, "CONFIRMED"), review.saveField(data.documents[0], second, "CONFIRMED")]);
+    expect(results).toEqual([false, false]);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(router.refresh).not.toHaveBeenCalled();
   });
 
   it("never sends a confirmation for a retained reason-only draft", async () => {

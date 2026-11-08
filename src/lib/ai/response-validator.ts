@@ -150,9 +150,25 @@ function normalizePageReadability(page: unknown) {
 function normalizeResponsePayload(payload: unknown) {
   if (!isJsonRecord(payload)) return payload;
 
-  const normalized: JsonRecord = { ...payload };
+  const { header, ...rest } = payload;
+  const normalized: JsonRecord = { ...rest };
+  // Some models nest the two header items under "header". Hoist them to the top level;
+  // anything else inside "header" stays in place so the strict schema still rejects it.
+  if (isJsonRecord(header)) {
+    const { detectedDocumentType, pageReadability, ...unknownHeaderKeys } = header;
+    if (normalized.detectedDocumentType === undefined && detectedDocumentType !== undefined) {
+      normalized.detectedDocumentType = detectedDocumentType;
+    }
+    if (normalized.pageReadability === undefined && pageReadability !== undefined) {
+      normalized.pageReadability = pageReadability;
+    }
+    if (Object.keys(unknownHeaderKeys).length > 0) normalized.header = unknownHeaderKeys;
+  } else if (header !== undefined) {
+    normalized.header = header;
+  }
+
   for (const key of Object.keys(normalized)) {
-    if (key === "lineItems" || key === "pageReadability") continue;
+    if (key === "lineItems" || key === "pageReadability" || key === "header") continue;
     if (isJsonRecord(normalized[key])) normalized[key] = normalizeFieldObject(normalized[key]);
   }
   if (Array.isArray(normalized.lineItems)) {

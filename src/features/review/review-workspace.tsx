@@ -63,7 +63,7 @@ type ManualPageTarget = ReviewActionBase & { documentId: string; page: number };
 export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceInitialData }) {
   const router = useRouter();
   const controller = useReviewController(initialData);
-  const { snapshot, drafts, feedback, setFeedback, busy, isRefreshing, refreshRequired, isReadOnly, dispatch } = controller;
+  const { snapshot, drafts, feedback, setFeedback, busy, isRefreshing, settling, refreshRequired, isReadOnly, dispatch } = controller;
   const { shipment, documents, crossChecks } = snapshot;
   const isDesktop = useSyncExternalStore(subscribeDesktop, getDesktopSnapshot, getDesktopServerSnapshot);
   const initialDocType = documents.find((doc) => doc.id === initialData.initialDocumentId)?.docType ?? DOCUMENT_TYPES.find((type) => documents.some((doc) => doc.docType === type)) ?? "INVOICE";
@@ -97,7 +97,10 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
   const page = Math.min(currentPage, maxPages);
   const activePage = activeDoc?.pages.find((item) => item.pageNumber === page);
   const isManager = snapshot.currentUserRole === "MANAGER";
-  const disabled = Boolean(busy || isRefreshing || refreshRequired);
+  // Field controls stay usable while earlier confirmations are still being saved in the background.
+  // Everything else (submit, approve, export, checks, manual entry) waits until those saves settle.
+  const fieldsDisabled = Boolean(busy || isRefreshing || refreshRequired);
+  const disabled = fieldsDisabled || settling;
   const documentReadOnly = isReadOnly || activeDoc?.extractionStatus === "PROCESSING";
 
   const [manualEntries, setManualEntries] = useState<Record<string, ManualFieldEntry>>({});
@@ -140,11 +143,11 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
   const unresolvedChecks = crossChecks.filter((check) => ["MISMATCH", "INCOMPLETE"].includes(checkDisplayStatus(check))).length;
 
   useEffect(() => {
-    if (!hasDrafts && !managerComment) return;
+    if (!hasDrafts && !managerComment && !settling) return;
     function beforeUnload(event: BeforeUnloadEvent) { event.preventDefault(); event.returnValue = ""; }
     window.addEventListener("beforeunload", beforeUnload);
     return () => window.removeEventListener("beforeunload", beforeUnload);
-  }, [hasDrafts, managerComment]);
+  }, [hasDrafts, managerComment, settling]);
 
   const goToNextUncertainField = useCallback(() => {
     const fields = activeDoc?.fields.filter(isFieldUncertain) ?? [];
@@ -241,8 +244,8 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
     setEvidenceReturn(null);
   }
 
-  function requestRunChange(execute: () => Promise<boolean>, title = "Start a new check run?") {
-    if (disabled || isReadOnly) return;
+  function requestRunChange(execute: () => Promise<boolean>, title = "Start a new check run?", options: { fieldSave?: boolean } = {}) {
+    if ((options.fieldSave ? fieldsDisabled : disabled) || isReadOnly) return;
     if (crossChecks.some((check) => check.resolutions?.length || check.activeResolution) || dirtyResolutions.length > 0) {
       const action: PendingAction = {
         ...actionBase(), title,
@@ -447,12 +450,12 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
         <TabsContent value="fields" className="min-h-0 flex-1 pt-0" tabIndex={-1}>
           <FieldsInspector
             doc={activeDoc} drafts={drafts} category={category} reviewFilter={reviewFilter} focusedId={focusedUncertainId}
-            disabled={disabled} readOnly={documentReadOnly} manualOpen={manualEntry?.open ?? false} manualDraft={manualDraft}
+            disabled={fieldsDisabled} readOnly={documentReadOnly} manualOpen={manualEntry?.open ?? false} manualDraft={manualDraft}
             manualError={manualError} manualConflict={manualConflict} onCategory={setCategory} onReviewFilter={setReviewFilter}
             onNext={goToNextUncertainField} onManualOpen={setManualOpen} onManualDraft={setManualDraft}
             onManualSave={saveManualDraft} onManualAcknowledge={acknowledgeManualDraft}
             onDraft={(doc, field, patch) => dispatch({ type: "draft", doc, field, patch })}
-            onSave={(doc, field, action) => requestRunChange(() => controller.saveField(doc, field, action), "Save and recompute checks?")}
+            onSave={(doc, field, action) => requestRunChange(() => controller.saveField(doc, field, action), "Save and recompute checks?", { fieldSave: true })}
             onDiscard={(fieldId) => dispatch({ type: "discard", fieldId })} onAcknowledge={(fieldId) => dispatch({ type: "acknowledge", fieldId })}
             onEvidence={inspectEvidence} shipmentLink={shipmentLink}
           />
@@ -502,6 +505,7 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
               {uncertainTotal ? <span className="inline-flex items-center gap-1.5 text-xs font-medium text-warning"><span aria-hidden="true" className="size-2 rounded-full bg-warning-strong" />{uncertainTotal} to review</span> : null}
               {unresolvedChecks ? <span className="text-xs font-medium text-danger">{unresolvedChecks} check{unresolvedChecks === 1 ? "" : "s"} failing</span> : null}
             </div> : null}
+            <span role="status" aria-live="polite" className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">{settling ? <><span aria-hidden="true" className="size-1.5 rounded-full bg-foreground-secondary motion-safe:animate-pulse" />Saving…</> : null}</span>
             <Button type="button" size="icon" variant="ghost" disabled={Boolean(busy || isRefreshing)} loading={isRefreshing} onClick={controller.refreshLatest} aria-label="Refresh latest shipment" title="Refresh">{isRefreshing ? null : <RefreshCw className="size-4" aria-hidden="true" />}</Button>
             <Button type="button" size="sm" variant="outline" disabled={Boolean(busy)} onClick={() => setExportOpen(true)}><FileDown className="size-4" aria-hidden="true" />Export preview</Button>
             {isManager && shipment.status === "READY_FOR_APPROVAL" ? <Button type="button" size="sm" disabled={disabled || hasDrafts} onClick={() => { setManagerDecision("APPROVE"); setDialogError(null); setManagerTarget(actionBase()); }}><ShieldCheck className="size-4" aria-hidden="true" />Manager decision</Button> : !isManager && snapshot.currentUserRole === "EXECUTIVE" && !isReadOnly && shipment.status !== "READY_FOR_APPROVAL" ? <Button type="button" size="sm" disabled={disabled || hasDrafts || checksStale} loading={busy === "Submitting shipment"} onClick={() => { void controller.submit().then((saved) => { if (!saved) { setInspectorTab("checks"); setMobilePane("review"); } }); }}><Send className="size-4" aria-hidden="true" />Submit to manager</Button> : null}

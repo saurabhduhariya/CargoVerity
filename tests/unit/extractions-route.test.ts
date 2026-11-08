@@ -60,7 +60,8 @@ describe("POST /api/extractions (Week 3 Step 3)", () => {
     const response = await postExtraction(request({}));
     expect(response.status).toBe(status);
     const body = await response.json();
-    expect(body).toEqual({ error: error.message, code });
+    expect(body).toMatchObject({ error: error.message, code });
+    expect("errorId" in body).toBe(error instanceof ProviderError);
   });
 });
 

@@ -39,6 +39,12 @@ export const reviewFieldSchema = z.object({
   value: z.string().max(500).nullable().optional(),
   reason: z.string().trim().max(500).optional(),
   expectedRevision: z.number().int().positive(),
+  /**
+   * Set to false to skip the cross-check recompute for this request. Only confirmations may skip
+   * it: they change no value, so the caller recomputes once after a burst of confirmations. The
+   * response then reports `crossChecksStale: true` until that recompute has run.
+   */
+  recompute: z.boolean().optional(),
 });
 
 export const correctFieldSchema = z.object({
@@ -99,10 +105,13 @@ export async function applyFieldAction(
     reason?: string | null;
     expectedRevision: number;
     route: "review" | "correction";
+    /** Defaults to true. Honoured only for confirmations; any value change always recomputes. */
+    recompute?: boolean;
   },
 ) {
   const { fieldId, actor, action, expectedRevision } = params;
   const reason = params.reason?.trim() || null;
+  const recompute = action === "CONFIRMED" ? params.recompute !== false : true;
 
   const field = await prisma.extractedField.findFirst({
     where: {
@@ -214,28 +223,32 @@ export async function applyFieldAction(
   let crossChecks: unknown[] | null = null;
   let crossCheckRunId: string | null = null;
   let crossChecksStale = false;
-  try {
-    const run = await crossCheckService.createCrossCheckRun({
-      shipmentId: shipment.id,
-      requestedById: actor.id,
-      triggeredBy: auditAction,
-      prismaClient: prisma,
-    });
-    crossCheckRunId = run.run.id;
-    crossChecks = run.results.map((result) => {
-      const clearance = evaluateClearance(result);
-      return {
-        ...result,
-        effectiveStatus: clearance.derivedStatus,
-        derivedStatus: clearance.derivedStatus,
-        activeResolution: null,
-        clearedForSubmission: clearance.clearedForSubmission,
-        clearedForApproval: clearance.clearedForApproval,
-      };
-    });
-  } catch (error) {
-    console.error("[fields.recompute_failed]", safeErrorCode(error));
+  if (!recompute) {
     crossChecksStale = true;
+  } else {
+    try {
+      const run = await crossCheckService.createCrossCheckRun({
+        shipmentId: shipment.id,
+        requestedById: actor.id,
+        triggeredBy: auditAction,
+        prismaClient: prisma,
+      });
+      crossCheckRunId = run.run.id;
+      crossChecks = run.results.map((result) => {
+        const clearance = evaluateClearance(result);
+        return {
+          ...result,
+          effectiveStatus: clearance.derivedStatus,
+          derivedStatus: clearance.derivedStatus,
+          activeResolution: null,
+          clearedForSubmission: clearance.clearedForSubmission,
+          clearedForApproval: clearance.clearedForApproval,
+        };
+      });
+    } catch (error) {
+      console.error("[fields.recompute_failed]", safeErrorCode(error));
+      crossChecksStale = true;
+    }
   }
 
   return {
@@ -263,6 +276,7 @@ export function confirmOrReviewField(
     reason: input.reason ?? null,
     expectedRevision: input.expectedRevision,
     route: "review",
+    recompute: input.recompute,
   });
 }
 

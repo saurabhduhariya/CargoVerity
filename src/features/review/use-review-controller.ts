@@ -1,6 +1,6 @@
 "use client";
 
-import { useReducer, useRef, useState, useTransition } from "react";
+import { useEffect, useReducer, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { createReviewState, reviewStateReducer } from "./review-drafts";
 import { formatFieldLabel, isAllowedPreApprovalStatus, validateFieldCorrection } from "./review-presentation";
@@ -33,12 +33,19 @@ type ActionResponse = {
   supersededMappingIds?: string[];
 };
 
+/** Server codes meaning "the data you are looking at is out of date": drafts stay, a refresh is required. */
+const STALE_CODES = ["STALE_REVISION", "FIELD_SUPERSEDED", "CHECK_NOT_LATEST", "SHIPMENT_LOCKED", "EXTRACTION_LOCKED", "EXTRACTION_IN_PROGRESS", "NOT_SUBMITTED", "STALE_CHECK_RUN", "MAPPING_CONFLICT"];
+/** Pause before the background refresh so a burst of saves causes one refresh, not one per save. */
+const QUIET_REFRESH_DELAY_MS = 600;
+
 export function useReviewController(initialData: ReviewWorkspaceInitialData) {
   const router = useRouter();
   const [state, dispatch] = useReducer(reviewStateReducer, initialData, createReviewState);
   // App Router refreshes preserve client state. Reconcile new server props without resetting drafts.
   if (state.incoming !== initialData) dispatch({ type: "incoming", data: initialData });
   const [isRefreshing, startRefresh] = useTransition();
+  // Background refreshes never lock the screen, so their pending state is deliberately unused.
+  const [, startQuietRefresh] = useTransition();
   const [busy, setBusy] = useState<string | null>(null);
   const busyRef = useRef(false);
   const [feedback, setFeedback] = useState<ReviewFeedback | null>(null);
@@ -47,8 +54,89 @@ export function useReviewController(initialData: ReviewWorkspaceInitialData) {
   const shipmentRevision = snapshot.shipment.currentRevision;
   const isReadOnly = !isAllowedPreApprovalStatus(snapshot.shipment.status);
 
+  // Field saves are sent one after another so each one carries the revision the previous one produced.
+  const queueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const pendingRef = useRef(0);
+  const [pendingSaves, setPendingSaves] = useState(0);
+  const [recomputing, setRecomputing] = useState(false);
+  const revisionRef = useRef(shipmentRevision);
+  const refreshRequiredRef = useRef(refreshRequired);
+  const needsRecomputeRef = useRef(false);
+  const quietTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => { revisionRef.current = Math.max(revisionRef.current, shipmentRevision); }, [shipmentRevision]);
+  useEffect(() => { refreshRequiredRef.current = refreshRequired; }, [refreshRequired]);
+  useEffect(() => () => { if (quietTimer.current) clearTimeout(quietTimer.current); }, []);
+
   function refreshLatest() {
     startRefresh(() => router.refresh());
+  }
+
+  /** Re-reads the page data a moment later without locking anything. Calls within the delay merge. */
+  function refreshQuietly() {
+    if (quietTimer.current) clearTimeout(quietTimer.current);
+    quietTimer.current = setTimeout(() => {
+      quietTimer.current = null;
+      startQuietRefresh(() => router.refresh());
+    }, QUIET_REFRESH_DELAY_MS);
+  }
+
+  function enqueue<T>(task: () => Promise<T>): Promise<T> {
+    pendingRef.current += 1;
+    setPendingSaves(pendingRef.current);
+    const run = queueRef.current.then(task, task);
+    queueRef.current = run.catch(() => undefined);
+    return run.finally(() => {
+      pendingRef.current -= 1;
+      setPendingSaves(pendingRef.current);
+      if (pendingRef.current === 0) void settleAfterSaves();
+    });
+  }
+
+  /** After a burst of confirmations: one cross-check recompute, then one quiet refresh. */
+  async function settleAfterSaves() {
+    if (needsRecomputeRef.current && !refreshRequiredRef.current) {
+      needsRecomputeRef.current = false;
+      setRecomputing(true);
+      try {
+        const response = await fetch(`/api/shipments/${snapshot.shipment.id}/crosschecks`, { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" } });
+        const data = await response.json() as ActionResponse;
+        if (response.ok && data.revision === revisionRef.current) {
+          const checks = data.latestRun?.results ?? data.crossChecks ?? data.results;
+          const runId = data.crossCheckRunId ?? data.runId;
+          dispatch({ type: "patch-snapshot", update: (current) => ({
+            ...current,
+            ...(checks ? { crossChecks: checks } : {}),
+            crossChecksStale: false,
+            ...(data.latestRun ? { latestCheckRun: data.latestRun } : runId ? { latestCheckRun: { id: runId, revision: data.revision as number, createdAt: null } } : {}),
+          }) });
+        } else if (response.ok) {
+          // The shipment moved on while the checks ran; the next burst of saves recomputes again.
+          needsRecomputeRef.current = true;
+        }
+      } catch {
+        // Checks stay marked as not current. The Checks tab offers Re-run checks.
+      } finally {
+        setRecomputing(false);
+      }
+    }
+    refreshQuietly();
+  }
+
+  /** Writes a saved field and the revision/check data from the response into the CURRENT snapshot. */
+  function commitField(data: ActionResponse, saved: ReviewWorkspaceField, fieldId: string) {
+    const revision = data.revision ?? data.shipment?.currentRevision ?? revisionRef.current;
+    revisionRef.current = Math.max(revisionRef.current, revision);
+    const runId = data.crossCheckRunId ?? data.runId;
+    const checks = data.latestRun?.results ?? data.crossChecks ?? data.results;
+    dispatch({ type: "patch-snapshot", savedFieldId: fieldId, update: (current) => ({
+      ...current,
+      documents: current.documents.map((d) => ({ ...d, fields: d.fields.map((f) => f.id === fieldId ? { ...f, ...saved } : f) })),
+      shipment: { ...current.shipment, currentRevision: revision, status: data.shipmentStatus ?? data.shipment?.status ?? current.shipment.status },
+      ...(checks ? { crossChecks: checks, crossChecksStale: Boolean(data.crossChecksStale) } : {}),
+      ...(data.latestRun ? { latestCheckRun: data.latestRun } : runId ? { latestCheckRun: { id: runId, revision, createdAt: null } } : {}),
+      ...(data.crossChecksStale ? { crossChecksStale: true } : {}),
+    }) });
+    setSubmitBlockers([]);
   }
 
   function updateSnapshot(data: ActionResponse, patch: Partial<ReviewWorkspaceInitialData> = {}, savedFieldId?: string) {
@@ -67,6 +155,10 @@ export function useReviewController(initialData: ReviewWorkspaceInitialData) {
 
   async function mutate(label: string, url: string, body: unknown, onSuccess: (data: ActionResponse) => void, options: { method?: string; field?: ReviewWorkspaceField; doc?: ReviewWorkspaceDocument } = {}): Promise<boolean> {
     if (busyRef.current || isRefreshing) return false;
+    if (pendingRef.current > 0) {
+      setFeedback({ kind: "info", message: "Finishing your earlier saves. Try again in a moment." });
+      return false;
+    }
     if (refreshRequired) {
       setFeedback({ kind: "warning", message: "Refresh the latest shipment before saving. Your drafts are retained." });
       return false;
@@ -78,7 +170,7 @@ export function useReviewController(initialData: ReviewWorkspaceInitialData) {
       const response = await fetch(url, { method: options.method ?? "POST", headers: { "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), cache: "no-store" });
       const data = await response.json() as ActionResponse;
       if (!response.ok) {
-        const stale = response.status === 409 && ["STALE_REVISION", "FIELD_SUPERSEDED", "CHECK_NOT_LATEST", "SHIPMENT_LOCKED", "EXTRACTION_LOCKED", "EXTRACTION_IN_PROGRESS", "NOT_SUBMITTED", "STALE_CHECK_RUN", "MAPPING_CONFLICT"].includes(data.code ?? "");
+        const stale = response.status === 409 && STALE_CODES.includes(data.code ?? "");
         if (stale) dispatch({ type: "refresh-required" });
         if (Array.isArray(data.blockingReasons)) setSubmitBlockers(data.blockingReasons);
         const message = data.error ?? `${label} could not be completed.`;
@@ -87,7 +179,7 @@ export function useReviewController(initialData: ReviewWorkspaceInitialData) {
         return false;
       }
       onSuccess(data);
-      refreshLatest();
+      refreshQuietly();
       return true;
     } catch {
       // A lost response may follow a committed write. Never retry at a guessed revision.
@@ -117,15 +209,64 @@ export function useReviewController(initialData: ReviewWorkspaceInitialData) {
       setFeedback({ kind: "error", message: error });
       return false;
     }
+    if (action === "CONFIRMED") return confirmInBackground(field);
+    // A correction changes a value, so it keeps the blocking flow. It waits for earlier saves first.
+    if (pendingRef.current > 0) await queueRef.current;
     return mutate(`Saving ${formatFieldLabel(field.fieldKey)}`, `/api/fields/${field.id}/review`, {
-      status: action, value: action === "CONFIRMED" ? field.currentValue : value,
-      reason: action === "CONFIRMED" ? undefined : draft?.reason.trim(), expectedRevision: shipmentRevision,
+      status: action, value,
+      reason: draft?.reason.trim(), expectedRevision: revisionRef.current,
     }, (data) => {
       const saved = data.field;
       if (!saved) throw new Error("Missing saved field");
-      updateSnapshot(data, { documents: snapshot.documents.map((d) => d.id === doc.id ? { ...d, fields: d.fields.map((f) => f.id === field.id ? { ...f, ...saved } : f) } : d) }, field.id);
-      setFeedback({ kind: data.crossChecksStale ? "warning" : "success", message: `${formatFieldLabel(field.fieldKey)} ${action === "CONFIRMED" ? "confirmed" : "saved"} at revision ${data.revision}.${data.approvalInvalidated ? " The previous submission was withdrawn; review and resubmit." : ""}${data.crossChecksStale ? " Checks could not be refreshed. Re-run checks before submitting." : ""}` });
+      commitField(data, saved, field.id);
+      setFeedback({ kind: data.crossChecksStale ? "warning" : "success", message: `${formatFieldLabel(field.fieldKey)} saved at revision ${data.revision}.${data.approvalInvalidated ? " The previous submission was withdrawn; review and resubmit." : ""}${data.crossChecksStale ? " Checks could not be refreshed. Re-run checks before submitting." : ""}` });
     }, { field, doc });
+  }
+
+  /**
+   * A confirmation changes no value, so the field is shown as confirmed immediately and the save is
+   * sent in the background. If the server refuses, the field goes back and the reason is shown.
+   */
+  function confirmInBackground(field: ReviewWorkspaceField): Promise<boolean> {
+    const label = formatFieldLabel(field.fieldKey);
+    const previous = { reviewStatus: field.reviewStatus, reviewReason: field.reviewReason ?? null };
+    dispatch({ type: "optimistic-confirm", fieldId: field.id });
+    setFeedback(null);
+    const undo = (message: string, kind: ReviewFeedback["kind"] = "error") => {
+      dispatch({ type: "optimistic-clear", fieldId: field.id, restore: previous });
+      setFeedback({ kind, message });
+      return false;
+    };
+    return enqueue(async () => {
+      if (refreshRequiredRef.current) return undo("Refresh the latest shipment before saving. Your drafts are retained.", "warning");
+      try {
+        const response = await fetch(`/api/fields/${field.id}/review`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, cache: "no-store",
+          body: JSON.stringify({ status: "CONFIRMED", value: field.currentValue, expectedRevision: revisionRef.current, recompute: false }),
+        });
+        const data = await response.json() as ActionResponse;
+        if (!response.ok) {
+          const stale = response.status === 409 && STALE_CODES.includes(data.code ?? "");
+          if (stale) { refreshRequiredRef.current = true; dispatch({ type: "refresh-required" }); }
+          if (Array.isArray(data.blockingReasons)) setSubmitBlockers(data.blockingReasons);
+          const message = data.error ?? `Saving ${label} could not be completed.`;
+          return undo(stale ? `${message} Your drafts are retained; refresh the latest shipment.` : message, stale ? "warning" : "error");
+        }
+        const saved = data.field;
+        if (!saved) throw new Error("Missing saved field");
+        commitField(data, saved, field.id);
+        needsRecomputeRef.current = Boolean(data.crossChecksStale) || needsRecomputeRef.current;
+        setFeedback({ kind: "success", message: `${label} confirmed at revision ${data.revision}.${data.approvalInvalidated ? " The previous submission was withdrawn; review and resubmit." : ""}` });
+        return true;
+      } catch {
+        // A lost response may follow a committed write. Never retry at a guessed revision.
+        refreshRequiredRef.current = true;
+        dispatch({ type: "refresh-required" });
+        dispatch({ type: "optimistic-clear", fieldId: field.id });
+        setFeedback({ kind: "error", message: "The response was interrupted. Your drafts are retained. Refresh the latest shipment to check whether the action was saved before retrying." });
+        return false;
+      }
+    });
   }
 
   async function markPage(doc: ReviewWorkspaceDocument, page: number, reviewNote: string) {
@@ -210,5 +351,8 @@ export function useReviewController(initialData: ReviewWorkspaceInitialData) {
     });
   }
 
-  return { snapshot, drafts, feedback, setFeedback, submitBlockers, setSubmitBlockers, busy, isRefreshing, refreshRequired, isReadOnly, dispatch, refreshLatest, saveField, markPage, saveManualField, resolveCheck, recheck, mapLines, removeMapping, submit, decide };
+  /** Saves or the follow-up check recompute are still running in the background. */
+  const settling = pendingSaves > 0 || recomputing;
+
+  return { snapshot, drafts, feedback, setFeedback, submitBlockers, setSubmitBlockers, busy, isRefreshing, settling, refreshRequired, isReadOnly, dispatch, refreshLatest, saveField, markPage, saveManualField, resolveCheck, recheck, mapLines, removeMapping, submit, decide };
 }

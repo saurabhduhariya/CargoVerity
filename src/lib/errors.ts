@@ -2,6 +2,17 @@ export class ConfigurationError extends Error {
   readonly code = "CONFIGURATION_ERROR";
 }
 
+/** Fixed, user-safe message written by our own code (e.g. not found or inaccessible); returned as-is. */
+export class SafeRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status = 400,
+  ) {
+    super(message);
+    this.name = "SafeRequestError";
+  }
+}
+
 export class ConflictError extends Error {
   readonly code = "CONFLICT";
 }
@@ -53,6 +64,8 @@ export class ProviderError extends Error {
     message: string,
     readonly code: ProviderErrorCode,
     readonly status?: number,
+    /** How long the provider asked us to wait (rate limits only), in milliseconds. */
+    readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = "ProviderError";
@@ -76,6 +89,7 @@ export type ExtractionErrorCode =
   | "RUN_CLOSED"
   | "EXTRACTION_IN_PROGRESS"
   | "EXTRACTION_LOCKED"
+  | "AI_BUDGET_REACHED"
   | "INVALID_PAGES"
   | "INVALID_IMAGE"
   | "MANUAL_ENTRY_NOT_UNLOCKED"

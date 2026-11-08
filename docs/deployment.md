@@ -48,7 +48,27 @@ The current PDF rendering and provider calls are bounded, but Vercel serverless 
 
 ## Docker
 
-Docker is optional. The existing Dockerfile is a Node 24 standalone-image baseline for local verification; it is not required for Vercel and does not introduce any legacy paid cloud dependency.
+The `Dockerfile` is a multi-stage Node 24 build (`deps`, `builder`, `runner`) that uses Next.js standalone output, runs as the non-root `node` user, and listens on `0.0.0.0:$PORT` (default 8080; `HOSTNAME=0.0.0.0` is set explicitly because Docker otherwise sets `HOSTNAME` to the container ID, which would make Next bind to the wrong address). `.dockerignore` keeps `.env*`, `.git`, test reports, and local tool folders out of the build context.
+
+Build (browser-visible values are inlined at build time, so pass them as build arguments; these are the project URL and publishable key only):
+
+```bash
+docker build \
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co \
+  --build-arg NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_... \
+  -t cargoverity:local .
+```
+
+Run (server-only secrets are supplied at run time, never baked into the image):
+
+```bash
+docker run --rm -p 8080:8080 --env-file .env.production cargoverity:local
+```
+
+Notes:
+- Changing `NEXT_PUBLIC_*` values requires a rebuild. All other settings in `.env.example` (database URLs, `SUPABASE_SECRET_KEY`, AI keys, limits, budget) are read from the environment when the server runs.
+- Run `npm run db:migrate` separately from a controlled terminal; the image does not contain the Prisma CLI and does not migrate on start.
+- Keep `.env` out of the build context. Next.js copies a local `.env` into the standalone output if it is present.
 
 ## Secrets and logs
 
