@@ -203,7 +203,7 @@ describe("Accuracy & Supplier Reports Engine (Week 5 Step 6)", () => {
       const demoReport = calculateAccuracyReport(testFields, { isLabelledBenchmark: false });
       expect(demoReport.dataset.type).toBe("SYNTHETIC_DEMO");
       expect(demoReport.dataset.isLabelledBenchmark).toBe(false);
-      expect(demoReport.dataset.watermark).toContain("SYNTHETIC DEMO DATA");
+      expect(demoReport.dataset.watermark).toContain("SAMPLE DATA");
 
       const benchmarkReport = calculateAccuracyReport(testFields, { isLabelledBenchmark: true });
       expect(benchmarkReport.dataset.type).toBe("LABELLED_BENCHMARK");
@@ -217,7 +217,7 @@ describe("Accuracy & Supplier Reports Engine (Week 5 Step 6)", () => {
       expect(report.benchmarkTarget.targetPercentage).toBe(95);
       expect(report.benchmarkTarget.targetClaimed).toBe(false);
       expect(report.benchmarkTarget.disclaimer).toMatch(/200-shipment labelled evaluation set/i);
-      expect(report.benchmarkTarget.disclaimer).toMatch(/Current metrics represent real evaluated synthetic demo shipments/i);
+      expect(report.benchmarkTarget.disclaimer).toMatch(/Current metrics come from the sample shipments/i);
     });
   });
 
@@ -343,7 +343,7 @@ describe("Accuracy & Supplier Reports Engine (Week 5 Step 6)", () => {
       );
       const json = await response.json();
       expect(json.dataset.type).toBe("SYNTHETIC_DEMO");
-      expect(json.dataset.watermark).toContain("SYNTHETIC DEMO DATA");
+      expect(json.dataset.watermark).toContain("SAMPLE DATA");
     });
   });
 });

@@ -311,17 +311,17 @@ export function calculateAccuracyReport(
         options?.datasetLabel ??
         (isLabelled
           ? "Client Labelled Benchmark (200-Shipment Ground Truth)"
-          : "Synthetic Demo Dataset (Development & Demonstration Set)"),
+          : "Sample shipments (development set)"),
       isLabelledBenchmark: isLabelled,
       watermark: isLabelled
         ? "CLIENT PRODUCTION BENCHMARK"
-        : "SYNTHETIC DEMO DATA — NOT CLIENT PRODUCTION BENCHMARK",
+        : "SAMPLE DATA — NOT THE CLIENT PRODUCTION BENCHMARK",
     },
     benchmarkTarget: {
       targetPercentage: 95,
       targetClaimed: false, // Rule 12: Do NOT claim 95% target without the client's 200-shipment labelled set
       disclaimer:
-        "The 95% extraction accuracy target is a client benchmark KPI that can only be claimed against the official 200-shipment labelled evaluation set. Current metrics represent real evaluated synthetic demo shipments.",
+        "The 95% extraction accuracy target is a client benchmark KPI that can only be claimed against the official 200-shipment labelled evaluation set. Current metrics come from the sample shipments reviewed so far.",
     },
     generatedAt: new Date().toISOString(),
   };

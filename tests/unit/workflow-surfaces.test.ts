@@ -38,7 +38,7 @@ describe("honest report presentation", () => {
     expect(html).toContain("Manual entries");
     expect(html).toContain("Unreviewed");
     expect(html).toContain("Absent / not applicable");
-    expect(html).toContain("Synthetic demo");
+    expect(html).toContain("Sample shipments");
     expect(html).toContain("Target not claimed");
     expect(html).not.toContain("directly eliminates");
     expect(html).not.toContain("Week 5");

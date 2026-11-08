@@ -112,7 +112,7 @@ export default function Home() {
 
       <footer className="border-t border-border">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-5 py-8 sm:flex-row sm:items-center sm:justify-between sm:px-8">
-          <p className="text-xs leading-5 text-muted-foreground"><span className="font-semibold text-foreground">CargoVerity</span> · Synthetic-data demo. Not customs clearance or a filing service.</p>
+          <p className="text-xs leading-5 text-muted-foreground"><span className="font-semibold text-foreground">CargoVerity</span> · Document verification for freight forwarders and customs brokers.</p>
           <Link href="/dashboard" className={cn("inline-flex min-h-11 w-fit items-center gap-2 rounded-control px-3 text-sm font-medium text-foreground-secondary hover:bg-surface-subtle hover:text-foreground", FOCUS_RING_STYLES)}>Go to shipments <ArrowRight className="size-4" aria-hidden="true" /></Link>
         </div>
       </footer>

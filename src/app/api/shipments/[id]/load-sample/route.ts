@@ -65,7 +65,7 @@ export async function POST(
       shipment: result.shipment,
       documents: result.documents,
       skipped: result.skipped,
-      message: `Loaded synthetic demo documents for ${parsed.data.scenario} into private storage.`,
+      message: `Loaded sample documents for ${parsed.data.scenario} into private storage.`,
     });
   } catch (error) {
     return apiError(error);

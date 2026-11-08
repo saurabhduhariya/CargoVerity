@@ -114,13 +114,12 @@ test("upload, reject, replace and preview a document through private storage", a
   await anonymous.close();
 });
 
-test("loads a synthetic demo scenario into all three slots", async ({ page }) => {
+test("loads a sample scenario into all three slots", async ({ page }) => {
   await loginAndCreateShipment(page, `E2E-SAMPLE-${Date.now()}`);
 
-  await page.getByText("Load synthetic sample documents", { exact: true }).click();
-  await expect(page.getByText("Synthetic demo", { exact: true }).first()).toBeVisible();
+  await page.getByText("Load sample documents", { exact: true }).click();
   await page.getByLabel("Sample scenario").selectOption("SHP-24811");
-  await page.getByRole("button", { name: "Load synthetic documents" }).click();
+  await page.getByRole("button", { name: "Load sample documents" }).click();
 
   await expect(page.getByText(/SHP-24811 sample documents loaded/)).toBeVisible({
     timeout: 60_000,
@@ -131,6 +130,6 @@ test("loads a synthetic demo scenario into all three slots", async ({ page }) =>
   await expect(page.getByText("rev 2").first()).toBeVisible();
 
   // Loading the same scenario again is rejected instead of creating duplicate versions.
-  await page.getByRole("button", { name: "Load synthetic documents" }).click();
-  await expect(page.getByText("These synthetic documents are already loaded for this shipment.")).toBeVisible();
+  await page.getByRole("button", { name: "Load sample documents" }).click();
+  await expect(page.getByText("These sample documents are already loaded for this shipment.")).toBeVisible();
 });

@@ -40,9 +40,9 @@ describe("public UI accessibility", () => {
     expect(html).toContain("Sample data only. Changes stay in this preview.");
     expect(html).toContain("Not for customs filing.");
     expect(html).toContain("AI never approves or exports a shipment.");
-    expect(html).toContain("Not customs clearance or a filing service.");
+    expect(html).not.toMatch(/demo/i);
     expect(html).toContain('data-uncertain="true"');
-    expect(html).toContain("Synthetic excerpt");
+    expect(html).toContain("Sample excerpt");
     expect(html).toContain("Illustrative source · page 1");
     expect(html).toContain("Needs review");
     expect(html).toContain("Compare with source");
@@ -97,7 +97,7 @@ describe("public UI accessibility", () => {
     const html = renderToStaticMarkup(createElement(LoginForm, { reason: "session-expired" }));
     expect(html).toContain('role="alert"');
     expect(html).toContain("border-warning-border bg-warning-surface");
-    expect(html).toMatch(/<button[^>]*min-h-11[^>]*>Need a demo account/);
+    expect(html).toMatch(/<button[^>]*min-h-11[^>]*>Need an account/);
     expect(html).toMatch(/<a[^>]*min-h-11[^>]*focus-visible:ring-2[^>]*>Return home/);
   });
 

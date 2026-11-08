@@ -21,7 +21,6 @@ export default function LoginPage({ searchParams }: { searchParams: LoginSearchP
           </Suspense>
         </div>
       </main>
-      <footer className="px-6 py-6 text-center text-xs text-muted-foreground">Synthetic-data demo</footer>
     </div>
   );
 }

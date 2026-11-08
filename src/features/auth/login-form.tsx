@@ -62,7 +62,7 @@ export function LoginForm({
 
   return (
     <div className="mt-7">
-        {mode === "sign-up" ? <h2 className="mb-5 text-base font-semibold">Create a demo account</h2> : null}
+        {mode === "sign-up" ? <h2 className="mb-5 text-base font-semibold">Create an account</h2> : null}
         <form className="space-y-4" aria-busy={busy} onSubmit={submit}>
           <div className="space-y-2"><Label htmlFor={emailId}>Email</Label><Input id={emailId} type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} disabled={busy} required /></div>
           <div className="space-y-2"><Label htmlFor={passwordId}>Password</Label><div className="relative"><Input id={passwordId} type={showPassword ? "text" : "password"} className="pr-12" autoComplete={mode === "sign-in" ? "current-password" : "new-password"} minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} disabled={busy} required /><button type="button" disabled={busy} aria-label={showPassword ? "Hide password" : "Show password"} aria-pressed={showPassword} className="absolute inset-y-0 right-0 flex w-11 items-center justify-center rounded-control text-muted-foreground hover:text-foreground" onClick={() => setShowPassword((value) => !value)}>{showPassword ? <EyeOff className="size-4" aria-hidden="true" /> : <Eye className="size-4" aria-hidden="true" />}</button></div></div>
@@ -71,7 +71,7 @@ export function LoginForm({
         </form>
         <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 border-t border-border pt-3">
         <Button className="h-auto min-h-11 px-0 py-2 text-foreground-secondary hover:text-foreground" variant="ghost" type="button" disabled={busy} onClick={() => { setMode(mode === "sign-in" ? "sign-up" : "sign-in"); setMessage(null); }}>
-          {mode === "sign-in" ? "Need a demo account? Create one" : "Already have an account? Sign in"}
+          {mode === "sign-in" ? "Need an account? Create one" : "Already have an account? Sign in"}
         </Button>
         <Link className={cn("flex min-h-11 items-center rounded-control text-sm text-foreground-secondary hover:text-foreground", FOCUS_RING_STYLES)} href="/">Return home</Link>
         </div>
