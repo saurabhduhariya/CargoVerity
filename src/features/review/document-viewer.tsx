@@ -147,7 +147,7 @@ export function DocumentViewer({ url, mimeType, fileName, page, zoom, rotation, 
   const imageHeight = size ? size.height * imageScale : width;
 
   return (
-    <div ref={viewportRef} className="relative h-full min-h-0 w-full overflow-auto overscroll-contain bg-viewer-background p-4" data-testid="document-viewer" data-state={state} data-page={page} tabIndex={0} aria-label="Scrollable document page">
+    <div ref={viewportRef} role="region" className="relative h-full min-h-0 w-full overflow-auto overscroll-contain bg-viewer-background p-4" data-testid="document-viewer" data-state={state} data-page={page} tabIndex={0} aria-label="Scrollable document page">
       <p className="sr-only" aria-live="polite">{statusText}</p>
       {state === "error" ? (
         <FeedbackState kind="error" title="Private document unavailable" description="The secure link may have expired, storage may be unavailable, or the file could not be read. No substitute document is shown." className="mx-auto max-w-md p-4" action={<Button type="button" variant="outline" loading={retrying} onClick={() => void retry()}>Retry secure document</Button>} />

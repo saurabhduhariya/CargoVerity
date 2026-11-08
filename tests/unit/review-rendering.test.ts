@@ -149,6 +149,8 @@ describe("rendered check evidence and mappings", () => {
 describe("server-rendered workspace shell", () => {
   it("renders both desktop panes and the Fields, Checks and History inspector without a hydration workaround", () => {
     const html = renderToStaticMarkup(createElement(ReviewWorkspace, { initialData: makeReviewData() }));
+    expect(html).toMatch(/<div role="group"[^>]*aria-label="Document controls"/);
+    expect(html).toMatch(/<div role="region"[^>]*aria-label="Scrollable document page"/);
     expect(html).toContain('data-layout="desktop"');
     expect(html).toContain('data-testid="document-pane"');
     expect(html).toContain('data-testid="review-inspector"');

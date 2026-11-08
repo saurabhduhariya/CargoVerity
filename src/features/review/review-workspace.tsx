@@ -406,7 +406,7 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
         <Button type="button" variant="ghost" size="icon" disabled={!activeDoc} aria-label="Rotate document 90 degrees" title="Rotate 90° (R)" onClick={() => setRotation((value) => calculateNextRotation(value))}><RotateCw className="size-4" aria-hidden="true" /></Button>
         <Button type="button" variant="ghost" size="icon" disabled={!activeDoc} aria-label="Open original secure document in new tab" onClick={() => activeDoc && void openOriginal(activeDoc)}><ExternalLink className="size-4" aria-hidden="true" /></Button>
       </div>
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2" aria-label="Document controls">
+      <div role="group" className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2" aria-label="Document controls">
         <div className="flex items-center gap-1">
           <Button type="button" size="icon" variant="ghost" disabled={!activeDoc || page <= 1} aria-label="Previous page" title="Previous page ([)" onClick={() => setCurrentPage((value) => Math.max(1, value - 1))}><ChevronLeft className="size-4" aria-hidden="true" /></Button>
           <Label htmlFor="document-page" className="sr-only">Document page</Label>

@@ -203,7 +203,7 @@ export function DashboardShell({ email, role }: { email: string; role: "EXECUTIV
       <section aria-labelledby="queue-heading" className="min-w-0 rounded-panel border border-border bg-surface">
         <div className="space-y-3 border-b border-border p-4 sm:space-y-4 sm:p-5">
           <div className="flex flex-wrap items-center justify-between gap-3"><Typography id="queue-heading" variant="section-title">Operations queue</Typography><span className="text-xs text-muted-foreground">{sortOption === "risk" ? "Server priority · highest first" : sortOption === "date_desc" ? "Created · newest first" : "Created · oldest first"}</span></div>
-          <div role="group" aria-label="Queue views" className="flex gap-2 overflow-x-auto sm:flex-wrap">
+          <div role="group" aria-label="Queue views" className="-m-1 flex flex-wrap gap-2 p-1">
             {([ ["all", "All shipments"], ["attention", "Needs action"], ["documents", "Missing documents"], ["approval", "Awaiting approval"] ] as const).map(([key, label]) => <Button key={key} type="button" size="sm" variant="ghost" aria-pressed={view === key} className={`shrink-0 whitespace-nowrap ${view === key ? "border-info-border bg-selected text-info" : ""}`} onClick={() => changeFilter(() => setView(key), false)}>{label}<span className="shrink-0 whitespace-nowrap font-mono text-xs tabular-nums">{loading ? "—" : shipments.filter((shipment) => matchesQueueView(shipment, key)).length}</span></Button>)}
           </div>
           <div className="grid items-end gap-3 lg:grid-cols-[minmax(220px,1.6fr)_1fr_1fr_1fr]">

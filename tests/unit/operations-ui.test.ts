@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ShipmentDocumentSlots, uploadFileToSignedUrl, uploadProgressLabel, type DocumentSlotItem } from "@/features/documents/shipment-document-slots";
+import { DashboardShell } from "@/features/dashboard/dashboard-shell";
 import { documentStateLabel, formatQueueDate, matchesQueueView, mergeSupplierOptions, queueActionLabel, queuePriority } from "@/features/dashboard/queue-presentation";
 import type { EnrichedShipment } from "@/lib/shipments";
 
@@ -58,6 +59,13 @@ function buttonAttributes(html: string, label: string) {
 }
 
 describe("queue presentation uses server-derived actions", () => {
+  it("wraps queue views on mobile and leaves padding for keyboard focus rings", () => {
+    const html = renderToStaticMarkup(createElement(DashboardShell, { email: "synthetic@example.test", role: "EXECUTIVE" }));
+    const group = html.match(/<div role="group" aria-label="Queue views" class="([^"]+)"/);
+    expect(group?.[1]).toContain("flex-wrap");
+    expect(group?.[1]).toContain("p-1");
+    expect(group?.[1]).not.toContain("overflow-x-auto");
+  });
   it("filters without inferring approval from badges or risk scores", () => {
     expect(matchesQueueView(shipment(), "documents")).toBe(true);
     expect(matchesQueueView(shipment({ riskScore: 100 }), "attention")).toBe(false);
