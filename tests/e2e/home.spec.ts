@@ -11,8 +11,89 @@ test("CargoVerity foundation page loads", async ({ page }) => {
 
   await expect(page).toHaveTitle("CargoVerity");
   await expect(
-    page.getByRole("heading", { name: "Every document. Every detail. Verified." }),
+    page.getByRole("heading", { name: "Every detail. Verified." }),
   ).toBeVisible();
+});
+
+for (const width of [1440, 390]) {
+  test(`review preview compares and corrects only local sample data at ${width}px`, async ({ page }) => {
+    const mutations: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().includes("/api/") && ["POST", "PUT", "PATCH", "DELETE"].includes(request.method())) {
+        mutations.push(`${request.method()} ${request.url()}`);
+      }
+    });
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/");
+    const preview = page.getByRole("region", { name: "Interactive review example" });
+    await expect(preview.getByText("Needs review", { exact: true })).toBeVisible();
+    await expect(preview.getByText("3,210", { exact: true })).toBeVisible();
+
+    await preview.getByRole("tab", { name: "Packing list", exact: true }).click();
+    await expect(preview.getByRole("figure", { name: "Packing list synthetic source, page 1" })).toBeVisible();
+    await expect(preview.getByRole("tabpanel").getByText("Matches source", { exact: true })).toBeVisible();
+    await preview.getByRole("tab", { name: "Bill of lading", exact: true }).click();
+    await expect(preview.getByRole("figure", { name: "Bill of lading synthetic source, page 1" })).toBeVisible();
+    await preview.getByRole("button", { name: "Compare with invoice", exact: true }).click();
+    await expect(preview.getByRole("tab", { name: "Invoice", exact: true })).toBeFocused();
+    await expect(preview.getByText("Source reads 3,120 kg, not 3,210 kg. Two digits were transposed.")).toBeVisible();
+    await expect(preview.getByText("3,210", { exact: true })).toBeVisible();
+
+    await preview.getByRole("button", { name: "Use source value", exact: true }).click();
+    await expect(preview.getByText("Corrected by you", { exact: true })).toBeVisible();
+    await expect(preview.getByText("Original extraction: 3,210 kg. Your correction stays in this demo.")).toBeVisible();
+    await expect(preview.getByRole("status")).toContainText("No shipment was changed.");
+    await preview.getByRole("tab", { name: "Packing list", exact: true }).click();
+    await expect(preview.getByRole("tabpanel").getByText("The sample weight agrees with your corrected invoice. The original extraction is retained for comparison.")).toBeVisible();
+    await preview.getByRole("button", { name: "View corrected invoice", exact: true }).click();
+    await expect(preview.getByRole("status")).toContainText("original sample extraction was 3,210 kg");
+    await expect(preview.getByText("Corrected by you", { exact: true })).toBeVisible();
+    await preview.getByRole("button", { name: "Reset", exact: true }).click();
+    await expect(preview.getByRole("button", { name: "Compare with source", exact: true })).toBeVisible();
+    await expect(preview.getByText("3,210", { exact: true })).toBeVisible();
+    expect(mutations).toEqual([]);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
+test("review preview supports keyboard document switching and explicit review", async ({ page }) => {
+  await page.goto("/");
+  const preview = page.getByRole("region", { name: "Interactive review example" });
+  const invoice = preview.getByRole("tab", { name: "Invoice", exact: true });
+  await invoice.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(preview.getByRole("tab", { name: "Packing list", exact: true })).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(preview.getByRole("tab", { name: "Bill of lading", exact: true })).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(invoice).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(preview.getByRole("tabpanel")).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(preview.getByRole("button", { name: "Compare with source", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(preview.getByRole("button", { name: "Use source value", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(preview.getByText("Corrected by you", { exact: true })).toBeVisible();
+});
+
+test("review preview keeps enlarged document labels inside their tabs", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  const preview = page.getByRole("region", { name: "Interactive review example" });
+  await expect(preview).toBeVisible();
+  await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+  for (const label of ["Invoice", "Packing list", "Bill of lading"]) {
+    await preview.getByRole("tab", { name: label, exact: true }).click();
+    expect(await preview.getByRole("tab").evaluateAll((tabs) => tabs.every((tab) => {
+      const label = tab.querySelector("span")!;
+      const range = document.createRange();
+      range.selectNodeContents(label);
+      const box = tab.getBoundingClientRect();
+      return [...range.getClientRects()].every((rect) => rect.left >= box.left && rect.right <= box.right && rect.top >= box.top && rect.bottom <= box.bottom);
+    }))).toBe(true);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
 test("login page renders its sign-in form", async ({ page }) => {
