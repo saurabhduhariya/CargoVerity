@@ -22,11 +22,13 @@ async function ensureShipmentWithDocuments(page: Page) {
   await login(page, account!.email, account!.password);
   if (shipmentId) return shipmentId;
 
+  await page.getByRole("button", { name: "New shipment", exact: true }).click();
   await page.locator("input#reference").fill(`E2E-VIEWER-${Date.now()}`);
   await page.getByRole("button", { name: /create shipment/i }).click();
   await expect(page).toHaveURL(/\/shipments\/[0-9a-f-]+$/, { timeout: 30_000 });
   shipmentId = page.url().split("/").pop()!;
 
+  await page.getByText("Load synthetic sample documents", { exact: true }).click();
   await page.getByLabel("Select Synthetic Scenario").selectOption("SHP-24811");
   await page.getByRole("button", { name: "Load synthetic documents" }).click();
   await expect(page.getByText(/Successfully loaded synthetic demo documents for SHP-24811/)).toBeVisible({ timeout: 60_000 });

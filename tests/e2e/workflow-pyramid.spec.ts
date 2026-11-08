@@ -27,6 +27,7 @@ test.describe("Week 6 Step 1: Complete End-to-End Test Pyramid (8 Flows)", () =>
     await login(page, executiveEmail!, executivePassword!);
 
     // Create a new shipment using the dedicated input#supplier selector
+    await page.getByRole("button", { name: "New shipment", exact: true }).click();
     await page.getByLabel("Shipment reference").fill(shipmentRef);
     await page.locator("input#supplier").fill("Apex Global Synthetic Ltd");
     await page.getByRole("button", { name: "Create shipment" }).click();
@@ -37,7 +38,6 @@ test.describe("Week 6 Step 1: Complete End-to-End Test Pyramid (8 Flows)", () =>
 
     expect(sharedShipmentId).toMatch(/^[0-9a-f-]+$/);
     await expect(page.getByText(shipmentRef).first()).toBeVisible();
-    await expect(page.getByText("Current revision")).toBeVisible();
     await expect(page.getByText("rev 1").first()).toBeVisible();
 
     // Load synthetic documents via fixture loader
@@ -87,6 +87,7 @@ test.describe("Week 6 Step 1: Complete End-to-End Test Pyramid (8 Flows)", () =>
 
     // Create a fresh unapproved shipment
     const unapprovedRef = `E2E-UNAPPROVED-${Date.now()}`;
+    await page.getByRole("button", { name: "New shipment", exact: true }).click();
     await page.getByLabel("Shipment reference").fill(unapprovedRef);
     await page.locator("input#supplier").fill("Unapproved Test Supplier");
     await page.getByRole("button", { name: "Create shipment" }).click();
@@ -134,6 +135,7 @@ test.describe("Week 6 Step 1: Complete End-to-End Test Pyramid (8 Flows)", () =>
     await login(page, executiveEmail!, executivePassword!);
 
     const fallbackRef = `E2E-FALLBACK-${Date.now()}`;
+    await page.getByRole("button", { name: "New shipment", exact: true }).click();
     await page.getByLabel("Shipment reference").fill(fallbackRef);
     await page.locator("input#supplier").fill("Manual Fallback Logistics");
     await page.getByRole("button", { name: "Create shipment" }).click();
@@ -163,6 +165,7 @@ test.describe("Week 6 Step 1: Complete End-to-End Test Pyramid (8 Flows)", () =>
     await login(page, executiveEmail!, executivePassword!);
 
     const lowConfRef = `E2E-LOWCONF-${Date.now()}`;
+    await page.getByRole("button", { name: "New shipment", exact: true }).click();
     await page.getByLabel("Shipment reference").fill(lowConfRef);
     await page.locator("input#supplier").fill("Low Confidence Supplier");
     await page.getByRole("button", { name: "Create shipment" }).click();

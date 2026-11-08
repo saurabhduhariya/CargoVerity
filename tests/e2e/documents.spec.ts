@@ -39,6 +39,7 @@ async function loginAndCreateShipment(page: Page, reference: string) {
     }
   }
 
+  await page.getByRole("button", { name: "New shipment", exact: true }).click();
   await page.locator("input#reference").fill(reference);
   await page.getByRole("button", { name: /create shipment/i }).click();
   await expect(page).toHaveURL(/\/shipments\/[0-9a-f-]+$/, { timeout: 30_000 });
@@ -116,7 +117,8 @@ test("upload, reject, replace and preview a document through private storage", a
 test("loads a synthetic demo scenario into all three slots", async ({ page }) => {
   await loginAndCreateShipment(page, `E2E-SAMPLE-${Date.now()}`);
 
-  await expect(page.getByText("Synthetic demo", { exact: true })).toBeVisible();
+  await page.getByText("Load synthetic sample documents", { exact: true }).click();
+  await expect(page.getByText("Synthetic demo", { exact: true }).first()).toBeVisible();
   await page.getByLabel("Select Synthetic Scenario").selectOption("SHP-24811");
   await page.getByRole("button", { name: "Load synthetic documents" }).click();
 

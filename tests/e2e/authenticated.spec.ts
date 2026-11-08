@@ -22,6 +22,7 @@ test(`login, create shipment, open its detail page and see it in the queue (${ac
   await login(page, account!.email!, account!.password!);
   await expect(page.getByTestId("current-role")).toHaveText(account!.label);
 
+  await page.getByRole("button", { name: "New shipment", exact: true }).click();
   await page.locator("input#reference").fill(reference);
   await page.locator("input#supplier").fill("Synthetic E2E Supplier");
   await page.getByRole("button", { name: /create shipment/i }).click();
@@ -34,7 +35,7 @@ test(`login, create shipment, open its detail page and see it in the queue (${ac
 
   // The new shipment appears in the database-backed queue.
   await page.goto("/dashboard");
-  await page.getByPlaceholder("Search reference or supplier...").fill(reference);
+  await page.getByLabel("Search shipments", { exact: true }).fill(reference);
   await expect(page.getByText(reference).first()).toBeVisible();
 
   // A duplicate reference is rejected with the safe conflict message.

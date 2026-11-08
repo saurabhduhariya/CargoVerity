@@ -1,31 +1,23 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import {
-  AlertCircle,
-  AlertTriangle,
-  ArrowRight,
-  CheckCircle2,
-  ExternalLink,
-  FileText,
-  FileUp,
-  Layers,
-  LoaderCircle,
-  Play,
-  RefreshCw,
-  RotateCcw,
-  ShieldAlert,
-  Sparkles,
-} from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowRight, ChevronDown, ExternalLink, FileText, FileUp, LoaderCircle, Play, RefreshCw, RotateCcw, ShieldAlert } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { Typography } from "@/components/ui/typography";
 import { formatBytes } from "@/lib/utils";
+import { buildLoginPath } from "@/lib/auth-paths";
 import { ExtractionRequestError, runDocumentExtraction } from "@/lib/extraction/client-runner";
 import type { DocumentType } from "@/lib/ai/types";
+import { formatQueueDate } from "@/features/dashboard/queue-presentation";
 
 export type DocumentSlotItem = {
   id: string;
@@ -40,15 +32,7 @@ export type DocumentSlotItem = {
   isCurrent: boolean;
   typeMismatch?: boolean;
   detectedDocType?: string | null;
-  latestRun?: {
-    id: string;
-    status: string;
-    provider: string;
-    model: string;
-    errorCode: string | null;
-    errorMessage: string | null;
-    completedAt: string | Date | null;
-  } | null;
+  latestRun?: { id: string; status: string; provider: string; model: string; errorCode: string | null; errorMessage: string | null; completedAt: string | Date | null } | null;
   extractedFieldCount?: number;
   reviewRequiredCount?: number;
   lowConfidenceCount?: number;
@@ -56,93 +40,43 @@ export type DocumentSlotItem = {
   manualPagesCount?: number;
 };
 
-/** Per-document extraction state shown on the slot, derived from persisted server state. */
 export type SlotExtractionState = "NOT_EXTRACTED" | "EXTRACTING" | "EXTRACTED" | "NEEDS_REVIEW" | "MANUAL_ENTRY" | "FAILED";
-
-export function deriveSlotExtractionState(doc: Pick<DocumentSlotItem, "extractionStatus" | "latestRun">): SlotExtractionState {
+export function deriveSlotExtractionState(doc: Pick<DocumentSlotItem, "extractionStatus" | "latestRun" | "reviewRequiredCount">): SlotExtractionState {
   if (doc.latestRun?.status === "PROCESSING" || doc.extractionStatus === "PROCESSING") return "EXTRACTING";
   if (doc.latestRun?.provider === "manual") return "MANUAL_ENTRY";
   if (doc.extractionStatus === "FAILED" || doc.latestRun?.status === "FAILED") return "FAILED";
   if (doc.extractionStatus === "EXTRACTED") return "EXTRACTED";
-  if (doc.extractionStatus === "REVIEW_REQUIRED") return "NEEDS_REVIEW";
+  if (doc.extractionStatus === "REVIEW_REQUIRED") return doc.reviewRequiredCount === 0 ? "EXTRACTED" : "NEEDS_REVIEW";
   return "NOT_EXTRACTED";
 }
 
-const STATE_BADGES: Record<SlotExtractionState, { label: string; className: string }> = {
-  NOT_EXTRACTED: { label: "Not extracted", className: "bg-slate-100 text-slate-600 border border-slate-200" },
-  EXTRACTING: { label: "Extracting…", className: "bg-blue-50 text-blue-700 border border-blue-200 animate-pulse" },
-  EXTRACTED: { label: "Extracted", className: "bg-blue-100 text-blue-800 border border-blue-200" },
-  NEEDS_REVIEW: { label: "Extracted · review needed", className: "bg-amber-100 text-amber-800 border border-amber-300" },
-  MANUAL_ENTRY: { label: "Manual entry", className: "bg-violet-100 text-violet-800 border border-violet-200" },
-  FAILED: { label: "Extraction failed", className: "bg-red-100 text-red-800 border border-red-200" },
-};
+const STATE_BADGES = {
+  NOT_EXTRACTED: { label: "Not extracted", variant: "default" },
+  EXTRACTING: { label: "Extracting…", variant: "info" },
+  EXTRACTED: { label: "Extracted", variant: "info" },
+  NEEDS_REVIEW: { label: "Extracted · review needed", variant: "warning" },
+  MANUAL_ENTRY: { label: "Manual entry", variant: "default" },
+  FAILED: { label: "Extraction failed", variant: "error" },
+} as const;
 
-function ExtractionStateBadge({ state, testId }: { state: SlotExtractionState; testId?: string }) {
-  const badge = STATE_BADGES[state];
-  return (
-    <Badge data-testid={testId} className={`${badge.className} text-[10px]`}>
-      {badge.label}
-    </Badge>
-  );
-}
-
-export type UploadLimits = {
-  maxPdfBytes: number;
-  maxImageBytes: number;
-  maxPdfPages: number;
-};
-
-export const DEFAULT_UPLOAD_LIMITS: UploadLimits = {
-  maxPdfBytes: 10_485_760,
-  maxImageBytes: 7_000_000,
-  maxPdfPages: 50,
-};
-
+export type UploadLimits = { maxPdfBytes: number; maxImageBytes: number; maxPdfPages: number };
+export const DEFAULT_UPLOAD_LIMITS: UploadLimits = { maxPdfBytes: 10_485_760, maxImageBytes: 7_000_000, maxPdfPages: 50 };
 export type ShipmentDocumentSlotsProps = {
-  shipmentId: string;
-  shipmentReference: string;
-  initialRevision: number;
-  initialShipmentStatus?: string;
-  initialDocuments: DocumentSlotItem[];
-  /** Server-configured limits (MAX_PDF_BYTES, MAX_IMAGE_BYTES, MAX_PDF_PAGES). */
-  limits?: UploadLimits;
+  shipmentId: string; shipmentReference: string; initialRevision: number; initialShipmentStatus?: string;
+  initialDocuments: DocumentSlotItem[]; limits?: UploadLimits;
 };
 
-type SlotConfig = {
-  type: DocumentType;
-  title: string;
-  shortCode: string;
-  description: string;
-};
-
-const SLOT_CONFIGS: SlotConfig[] = [
-  {
-    type: "INVOICE",
-    title: "Commercial Invoice",
-    shortCode: "CI",
-    description: "Itemized billing document with unit prices, totals, currencies, and line items.",
-  },
-  {
-    type: "PACKING_LIST",
-    title: "Packing List",
-    shortCode: "PL",
-    description: "Detailed inventory breakdown with package counts, gross/net weights, and SKU quantities.",
-  },
-  {
-    type: "BILL_OF_LADING",
-    title: "Bill of Lading",
-    shortCode: "BL",
-    description: "Carrier transport receipt with vessel name, container numbers, ports, and carrier weights.",
-  },
-];
-
+const SLOT_CONFIGS = [
+  { type: "INVOICE", title: "Commercial Invoice", shortCode: "CI", description: "Prices, currency, totals, and invoice line items." },
+  { type: "PACKING_LIST", title: "Packing List", shortCode: "PL", description: "Packages, quantities, and gross / net weights." },
+  { type: "BILL_OF_LADING", title: "Bill of Lading", shortCode: "BL", description: "Carrier, ports, containers, and transport weights." },
+] as const;
 export const ACCEPTED_TYPES_DESCRIPTION = "PDF, PNG, JPEG";
-
 export function describeUploadLimits(limits: UploadLimits) {
   return `PDF up to ${formatBytes(limits.maxPdfBytes)} and ${limits.maxPdfPages} pages · PNG/JPEG up to ${formatBytes(limits.maxImageBytes)}`;
 }
 
-/** Maps a file the user picked to the MIME type the server will verify; null when unsupported. */
+/** A declaration only: the server verifies actual stored bytes, size, and PDF pages. */
 export function declaredMimeForFile(file: { name: string; type: string }) {
   const name = file.name.toLowerCase();
   if (file.type === "application/pdf" || name.endsWith(".pdf")) return "application/pdf" as const;
@@ -151,1183 +85,327 @@ export function declaredMimeForFile(file: { name: string; type: string }) {
   return null;
 }
 
-/**
- * PUTs the file to the signed Storage upload URL with real byte progress.
- * Storage enforces the bucket's size and MIME limits; the server re-validates the bytes afterwards.
- */
-export function uploadFileToSignedUrl(
-  signedUploadUrl: string,
-  file: Blob,
-  contentType: string,
-  onProgress: (percent: number) => void,
-): Promise<void> {
+/** Private signed upload, genuine byte progress, no upsert. Completion validates server-side. */
+export function uploadFileToSignedUrl(signedUploadUrl: string, file: Blob, contentType: string, onProgress: (percent: number) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", signedUploadUrl);
     xhr.setRequestHeader("content-type", contentType);
     xhr.setRequestHeader("x-upsert", "false");
     xhr.setRequestHeader("cache-control", "max-age=3600");
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
-    };
+    xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100)); };
     xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        onProgress(100);
-        resolve();
-      } else if (xhr.status === 413 || /maximum allowed size|too large/i.test(xhr.responseText)) {
-        reject(new Error(formatPlainLanguageError("FILE_OVERSIZED")));
-      } else if (xhr.status === 415 || /mime type/i.test(xhr.responseText)) {
-        reject(new Error(formatPlainLanguageError("INVALID_MIME")));
-      } else {
-        reject(new Error("The file could not be uploaded to private storage. Check your connection and try again."));
-      }
+      if (xhr.status >= 200 && xhr.status < 300) { onProgress(100); resolve(); }
+      else if (xhr.status === 413 || /maximum allowed size|too large/i.test(xhr.responseText)) reject(new Error(formatPlainLanguageError("FILE_OVERSIZED")));
+      else if (xhr.status === 415 || /mime type/i.test(xhr.responseText)) reject(new Error(formatPlainLanguageError("INVALID_MIME")));
+      else reject(new Error("The file could not be uploaded to private storage. Check your connection and try again."));
     };
-    xhr.onerror = () =>
-      reject(new Error("The file could not be uploaded to private storage. Check your connection and try again."));
+    xhr.onerror = () => reject(new Error("The file could not be uploaded to private storage. Check your connection and try again."));
     xhr.send(file);
   });
 }
 
 export function formatPlainLanguageError(code?: string, rawMessage?: string): string {
   switch (code) {
-    case "STALE_REVISION":
-      return "The shipment revision is out of date because it was modified elsewhere. Please refresh the page.";
-    case "DUPLICATE_CONTENT":
-      return "This exact document file has already been uploaded for this slot.";
-    case "DUPLICATE_COMPLETION":
-      return "This document upload has already been processed.";
-    case "REPLACEMENT_REQUIRED":
-      return "A document is already present in this slot. Please check 'Replace existing document' to confirm replacement.";
-    case "FILE_OVERSIZED":
-      return "The file is larger than the maximum allowed size for its type. See the limits shown on the slot.";
-    case "INVALID_STORAGE_KEY":
-      return "This upload could not be matched to the shipment. Please upload the file again.";
-    case "SHIPMENT_LOCKED":
-      return "This shipment has been exported, so its documents can no longer be changed.";
-    case "STORAGE_UNAVAILABLE":
-      return "Private storage is temporarily unavailable. Please try again shortly.";
-    case "AUTHENTICATION_REQUIRED":
-      return "Your session has expired. Please sign in again.";
+    case "STALE_REVISION": return "The shipment revision is out of date because it was modified elsewhere. Please refresh the page.";
+    case "DUPLICATE_CONTENT": return "This exact document file has already been uploaded for this slot.";
+    case "DUPLICATE_COMPLETION": return "This document upload has already been processed.";
+    case "REPLACEMENT_REQUIRED": return "A document is already present in this slot. Please check 'Replace existing document' to confirm replacement.";
+    case "FILE_OVERSIZED": return "The file is larger than the maximum allowed size for its type. See the limits shown on the slot.";
+    case "INVALID_STORAGE_KEY": return "This upload could not be matched to the shipment. Please upload the file again.";
+    case "SHIPMENT_LOCKED": return "This shipment has been exported, so its documents can no longer be changed.";
+    case "STORAGE_UNAVAILABLE": return "Private storage is temporarily unavailable. Please try again shortly.";
+    case "AUTHENTICATION_REQUIRED": return "Your session has expired. Please sign in again.";
     case "ACCOUNT_NOT_PROVISIONED":
-    case "FORBIDDEN":
-      return "Your account is not allowed to change this shipment.";
-    case "EMPTY_FILE":
-      return "The selected file is empty (0 bytes). Please choose a valid file.";
-    case "CORRUPTED_PDF":
-      return "The PDF file is corrupted or could not be parsed by the system.";
-    case "PAGE_LIMIT_EXCEEDED":
-      return "The PDF has more pages than the limit shown on the slot. Split it or upload the relevant pages.";
-    case "PASSWORD_PROTECTED_PDF":
-      return "Password-protected PDFs are not supported. Please remove the password and try again.";
-    case "INVALID_MAGIC_BYTES":
-      return "The file contents do not match its declared file type. Ensure it is a genuine PDF or image.";
-    case "INVALID_MIME":
-      return "Only PDF (.pdf), PNG (.png), and JPEG (.jpg, .jpeg) documents are accepted.";
-    case "OBJECT_NOT_FOUND":
-      return "The file was not found in private storage. Please try uploading again.";
-    case "UNAUTHORIZED":
-      return "You do not have permission to modify this shipment.";
+    case "FORBIDDEN": return "Your account is not allowed to change this shipment.";
+    case "EMPTY_FILE": return "The selected file is empty (0 bytes). Please choose a valid file.";
+    case "CORRUPTED_PDF": return "The PDF file is corrupted or could not be parsed by the system.";
+    case "PAGE_LIMIT_EXCEEDED": return "The PDF has more pages than the limit shown on the slot. Split it or upload the relevant pages.";
+    case "PASSWORD_PROTECTED_PDF": return "Password-protected PDFs are not supported. Please remove the password and try again.";
+    case "INVALID_MAGIC_BYTES": return "The file contents do not match its declared file type. Ensure it is a genuine PDF or image.";
+    case "INVALID_MIME": return "Only PDF (.pdf), PNG (.png), and JPEG (.jpg, .jpeg) documents are accepted.";
+    case "OBJECT_NOT_FOUND": return "The file was not found in private storage. Please try uploading again.";
+    case "UNAUTHORIZED": return "You do not have permission to modify this shipment.";
     case "PROVIDER_UNAVAILABLE":
-    case "UNAVAILABLE":
-      return "The AI extraction provider is temporarily unavailable. Retry shortly or enter the values manually.";
+    case "UNAVAILABLE": return "The AI extraction provider is temporarily unavailable. Retry shortly or enter the values manually.";
     case "RATE_LIMITED":
-    case "RATE_LIMIT":
-      return "Provider rate limit reached. Wait a moment before retrying, or enter the values manually.";
-    case "QUOTA_EXCEEDED":
-      return "The AI provider's quota or credit is used up. Enter the values manually, or retry after the quota resets.";
-    case "TIMEOUT":
-      return "Extraction request timed out before the model could finish. Please retry.";
-    case "INVALID_RESPONSE":
-      return "The AI returned output that failed validation, so nothing was saved from it. Retry, or enter the values manually.";
-    case "AUTHENTICATION":
-      return "The AI provider rejected the server's credentials. Ask an administrator to check the configuration.";
-    case "ABANDONED":
-      return "The previous extraction did not finish (the page may have been closed). Retry the extraction.";
-    case "EXTRACTION_LOCKED":
-      return "This shipment is submitted, approved or exported, so extraction cannot be re-run.";
-    case "EXTRACTION_IN_PROGRESS":
-      return "An extraction for this document is already running.";
-    case "RUN_CLOSED":
-      return "The last extraction run has ended. Use Retry extraction to start a new run.";
+    case "RATE_LIMIT": return "Provider rate limit reached. Wait a moment before retrying, or enter the values manually.";
+    case "QUOTA_EXCEEDED": return "The AI provider's quota or credit is used up. Enter the values manually, or retry after the quota resets.";
+    case "TIMEOUT": return "Extraction request timed out before the model could finish. Please retry.";
+    case "INVALID_RESPONSE": return "The AI returned output that failed validation, so nothing was saved from it. Retry, or enter the values manually.";
+    case "AUTHENTICATION": return "The AI provider rejected the server's credentials. Ask an administrator to check the configuration.";
+    case "ABANDONED": return "The previous extraction did not finish (the page may have been closed). Retry the extraction.";
+    case "EXTRACTION_LOCKED": return "This shipment is submitted, approved or exported, so extraction cannot be re-run.";
+    case "EXTRACTION_IN_PROGRESS": return "An extraction for this document is already running.";
+    case "RUN_CLOSED": return "The last extraction run has ended. Use Retry extraction to start a new run.";
     default:
-      // Never show machine output (for example a JSON validation dump) as the user-facing message.
       if (rawMessage && !/^\s*[[{]/.test(rawMessage)) return rawMessage;
       return "An unexpected error occurred during document upload.";
   }
 }
 
-export function ShipmentDocumentSlots({
-  shipmentId,
-  shipmentReference,
-  initialRevision,
-  initialShipmentStatus = "DRAFT",
-  initialDocuments,
-  limits = DEFAULT_UPLOAD_LIMITS,
-}: ShipmentDocumentSlotsProps) {
+type UploadProgress = { phase: "authorizing" | "uploading" | "validating"; percent: number | null };
+export function uploadProgressLabel(progress: UploadProgress) {
+  if (progress.phase === "authorizing") return "Authorizing private upload…";
+  if (progress.phase === "validating") return "Upload transferred. Validating file and saving revision…";
+  return `Uploading to private storage… ${progress.percent ?? 0}%`;
+}
+const emptySlots = <T,>(value: T): Record<DocumentType, T> => ({ INVOICE: value, PACKING_LIST: value, BILL_OF_LADING: value });
+const evidenceLink = "inline-flex min-h-11 items-center gap-2 rounded-control text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
+
+export function ShipmentDocumentSlots({ shipmentId, shipmentReference, initialRevision, initialShipmentStatus = "DRAFT", initialDocuments, limits = DEFAULT_UPLOAD_LIMITS }: ShipmentDocumentSlotsProps) {
   const router = useRouter();
-  const [documents, setDocuments] = useState<DocumentSlotItem[]>(initialDocuments);
+  const [documents, setDocuments] = useState(initialDocuments);
   const [currentRevision, setCurrentRevision] = useState(initialRevision);
-  const [shipmentStatus, setShipmentStatus] = useState<string>(initialShipmentStatus);
-
-  // Per-slot upload and error states
-  const [slotFiles, setSlotFiles] = useState<Record<DocumentType, File | null>>({
-    INVOICE: null,
-    PACKING_LIST: null,
-    BILL_OF_LADING: null,
-  });
-  const [slotUploading, setSlotUploading] = useState<Record<DocumentType, string | null>>({
-    INVOICE: null,
-    PACKING_LIST: null,
-    BILL_OF_LADING: null,
-  });
-  const [slotErrors, setSlotErrors] = useState<Record<DocumentType, string | null>>({
-    INVOICE: null,
-    PACKING_LIST: null,
-    BILL_OF_LADING: null,
-  });
-  const [slotReplacementModes, setSlotReplacementModes] = useState<Record<DocumentType, boolean>>({
-    INVOICE: false,
-    PACKING_LIST: false,
-    BILL_OF_LADING: false,
-  });
-  const [replacementConfirmed, setReplacementConfirmed] = useState<Record<DocumentType, boolean>>({
-    INVOICE: false,
-    PACKING_LIST: false,
-    BILL_OF_LADING: false,
-  });
-
-  // Extraction execution & polling states
+  const [shipmentStatus, setShipmentStatus] = useState(initialShipmentStatus);
+  const [serverSnapshot, setServerSnapshot] = useState(initialDocuments);
+  // Refresh can bring a replacement or review from another session. Never keep an obsolete slot.
+  if (serverSnapshot !== initialDocuments) {
+    setServerSnapshot(initialDocuments); setDocuments(initialDocuments);
+    setCurrentRevision(initialRevision); setShipmentStatus(initialShipmentStatus);
+  }
+  const [slotFiles, setSlotFiles] = useState(emptySlots<File | null>(null));
+  const [slotUploading, setSlotUploading] = useState(emptySlots<UploadProgress | null>(null));
+  const [slotErrors, setSlotErrors] = useState(emptySlots<string | null>(null));
+  const [slotMessages, setSlotMessages] = useState(emptySlots<string | null>(null));
+  const [slotReplacementModes, setSlotReplacementModes] = useState(emptySlots(false));
+  const [replacementConfirmed, setReplacementConfirmed] = useState(emptySlots(false));
   const [extractingAll, setExtractingAll] = useState(false);
-  const [slotExtracting, setSlotExtracting] = useState<Record<DocumentType, string | null>>({
-    INVOICE: null,
-    PACKING_LIST: null,
-    BILL_OF_LADING: null,
-  });
-  const [retryModalTarget, setRetryModalTarget] = useState<DocumentType | "ALL" | null>(null);
+  const [slotExtracting, setSlotExtracting] = useState(emptySlots<string | null>(null));
+  const [retryModalTarget, setRetryModalTarget] = useState<{ type: DocumentType | "ALL"; revision: number; documentIds: string[] } | null>(null);
   const [statusPolling, setStatusPolling] = useState(false);
-
-  // Preview loading states
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [previewingDocId, setPreviewingDocId] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
-
-  // Sample loader states
-  const [sampleScenario, setSampleScenario] = useState<string>("SHP-24811");
+  const [sampleScenario, setSampleScenario] = useState("SHP-24811");
   const [loadingSample, setLoadingSample] = useState(false);
   const [sampleMessage, setSampleMessage] = useState<string | null>(null);
   const [sampleError, setSampleError] = useState<string | null>(null);
+  const mutationRef = useRef(false);
+  const pollingRef = useRef(false);
 
-  // Find active document for a given slot type
-  function getActiveDoc(type: DocumentType): DocumentSlotItem | undefined {
-    return documents.find((doc) => doc.docType === type && doc.isCurrent);
-  }
+  const getActiveDoc = (type: DocumentType) => documents.find((doc) => doc.docType === type && doc.isCurrent);
+  const currentDocs = documents.filter((doc) => doc.isCurrent);
+  const totalUploaded = SLOT_CONFIGS.filter((slot) => getActiveDoc(slot.type)).length;
+  const allThreeUploaded = totalUploaded === 3;
+  const completedCount = currentDocs.filter((doc) => ["EXTRACTED", "NEEDS_REVIEW", "MANUAL_ENTRY"].includes(deriveSlotExtractionState(doc))).length;
+  const failedCount = currentDocs.filter((doc) => deriveSlotExtractionState(doc) === "FAILED").length;
+  const processingCount = currentDocs.filter((doc) => deriveSlotExtractionState(doc) === "EXTRACTING" || Boolean(slotExtracting[doc.docType])).length;
+  const anyUploading = Object.values(slotUploading).some(Boolean);
+  const busy = anyUploading || extractingAll || processingCount > 0 || loadingSample;
+  const uploadLocked = shipmentStatus === "EXPORTED";
+  const extractionLocked = ["READY_FOR_APPROVAL", "APPROVED", "EXPORTED"].includes(shipmentStatus);
+  const reviewFlags = currentDocs.reduce((count, doc) => count + (doc.reviewRequiredCount ?? 0) + (doc.unreadablePageCount ?? 0), 0);
 
-  const ciDoc = getActiveDoc("INVOICE");
-  const plDoc = getActiveDoc("PACKING_LIST");
-  const blDoc = getActiveDoc("BILL_OF_LADING");
-  const allThreeUploaded = Boolean(ciDoc && plDoc && blDoc);
+  const redirectOnAuthFailure = useCallback((response: Response, data: { code?: string }) => {
+    if (response.status === 401) router.replace(buildLoginPath({ reason: "session-expired" }));
+    else if (response.status === 403 && data.code === "ACCOUNT_NOT_PROVISIONED") router.replace(buildLoginPath({ reason: "not-provisioned" }));
+  }, [router]);
 
-  // Extraction status aggregations
-  const currentDocs = documents.filter((d) => d.isCurrent);
-  const completedCount = currentDocs.filter((d) =>
-    ["EXTRACTED", "NEEDS_REVIEW", "MANUAL_ENTRY"].includes(deriveSlotExtractionState(d)),
-  ).length;
-  const failedCount = currentDocs.filter((d) => deriveSlotExtractionState(d) === "FAILED").length;
-  const processingCount = currentDocs.filter(
-    (d) => deriveSlotExtractionState(d) === "EXTRACTING" || slotExtracting[d.docType] !== null,
-  ).length;
-  const totalUploaded = [ciDoc, plDoc, blDoc].filter(Boolean).length;
-  const hasTypeMismatch = documents.some((d) => d.isCurrent && d.typeMismatch);
-
-  // Poll status from server
   const pollStatus = useCallback(async () => {
+    if (pollingRef.current) return;
+    pollingRef.current = true; setStatusPolling(true);
     try {
-      setStatusPolling(true);
-      const res = await fetch(`/api/shipments/${shipmentId}/extract`, {
-        headers: { "Cache-Control": "no-store" },
-      });
-      if (!res.ok) return;
-      const data = await res.json();
+      const response = await fetch(`/api/shipments/${shipmentId}/extract`, { cache: "no-store" });
+      const data = await response.json();
+      redirectOnAuthFailure(response, data);
+      if (!response.ok) throw new Error(formatPlainLanguageError(data.code, data.error));
+      setStatusError(null);
       if (data.shipmentStatus) setShipmentStatus(data.shipmentStatus);
       if (data.shipmentRevision) setCurrentRevision(data.shipmentRevision);
-      if (Array.isArray(data.documents)) {
-        setDocuments((prev) =>
-          prev.map((item) => {
-            const found = data.documents.find((d: { documentId: string }) => d.documentId === item.id);
-            if (!found) return item;
-            return {
-              ...item,
-              extractionStatus: found.extractionStatus,
-              typeMismatch: found.typeMismatch,
-              detectedDocType: found.detectedDocType,
-              latestRun: found.latestRun,
-              extractedFieldCount: found.extractedFieldCount,
-              reviewRequiredCount: found.reviewRequiredCount,
-              lowConfidenceCount: found.lowConfidenceCount,
-              unreadablePageCount: found.unreadablePageCount,
-              manualPagesCount: found.manualPagesCount,
-            };
-          }),
-        );
-      }
-    } catch {
-      // background poll silently ignored
-    } finally {
-      setStatusPolling(false);
-    }
-  }, [shipmentId]);
+      if (Array.isArray(data.documents)) setDocuments((previous) => previous.map((doc) => {
+        const found = data.documents.find((item: { documentId: string }) => item.documentId === doc.id);
+        return found ? { ...doc, extractionStatus: found.extractionStatus, typeMismatch: found.typeMismatch, detectedDocType: found.detectedDocType, latestRun: found.latestRun, extractedFieldCount: found.extractedFieldCount, reviewRequiredCount: found.reviewRequiredCount, lowConfidenceCount: found.lowConfidenceCount, unreadablePageCount: found.unreadablePageCount, manualPagesCount: found.manualPagesCount } : doc;
+      }));
+    } catch (err) { setStatusError(err instanceof Error ? err.message : "Could not refresh extraction status. Try again."); }
+    finally { pollingRef.current = false; setStatusPolling(false); }
+  }, [shipmentId, redirectOnAuthFailure]);
 
-  // Active polling while any document extraction is running
   useEffect(() => {
-    const isAnyExtracting =
-      documents.some((d) => d.isCurrent && deriveSlotExtractionState(d) === "EXTRACTING") ||
-      extractingAll ||
-      Object.values(slotExtracting).some(Boolean);
-
-    if (!isAnyExtracting) return;
-
-    const timer = setInterval(() => {
-      pollStatus();
-    }, 2500);
-
+    if (!processingCount && !extractingAll) return;
+    const timer = setInterval(() => void pollStatus(), 2500);
     return () => clearInterval(timer);
-  }, [documents, extractingAll, slotExtracting, pollStatus]);
+  }, [processingCount, extractingAll, pollStatus]);
 
-  // Execute extraction across all uploaded documents
-  function extractionErrorMessage(err: unknown) {
-    if (err instanceof ExtractionRequestError) return formatPlainLanguageError(err.code, err.message);
-    return err instanceof Error ? err.message : "Extraction failed.";
-  }
-
-  // Runs one slot; failures stay on that slot so the other documents still extract (partial completion).
   async function extractSlot(type: DocumentType, retry: boolean) {
     const doc = getActiveDoc(type);
     if (!doc) return;
-    setSlotErrors((prev) => ({ ...prev, [type]: null }));
-    setSlotExtracting((prev) => ({ ...prev, [type]: "Starting extraction…" }));
+    setSlotErrors((previous) => ({ ...previous, [type]: null }));
+    setSlotExtracting((previous) => ({ ...previous, [type]: "Starting extraction…" }));
     try {
-      await runDocumentExtraction({
-        documentId: doc.id,
-        documentType: type,
-        mimeType: doc.mimeType,
-        retry,
-        onProgress: (step) => setSlotExtracting((prev) => ({ ...prev, [type]: step })),
-      });
+      await runDocumentExtraction({ documentId: doc.id, documentType: type, mimeType: doc.mimeType, retry, onProgress: (step) => setSlotExtracting((previous) => ({ ...previous, [type]: step })) });
     } catch (err) {
-      setSlotErrors((prev) => ({ ...prev, [type]: extractionErrorMessage(err) }));
-    } finally {
-      setSlotExtracting((prev) => ({ ...prev, [type]: null }));
-    }
+      if (err instanceof ExtractionRequestError && err.code === "AUTHENTICATION_REQUIRED") router.replace(buildLoginPath({ reason: "session-expired" }));
+      const message = err instanceof ExtractionRequestError ? formatPlainLanguageError(err.code, err.message) : err instanceof Error ? err.message : "Extraction failed. Retry or enter values manually.";
+      setSlotErrors((previous) => ({ ...previous, [type]: message }));
+    } finally { setSlotExtracting((previous) => ({ ...previous, [type]: null })); }
   }
 
-  // Extract every current document. `retry` re-runs completed or failed documents as new runs.
-  async function handleRunAllExtraction(retry = false) {
-    if (!allThreeUploaded || extractingAll) return;
-    setExtractingAll(true);
+  async function handleExtraction(type: DocumentType | "ALL", retry = false) {
+    if (mutationRef.current || busy || extractionLocked || (type === "ALL" && !allThreeUploaded)) return;
+    mutationRef.current = true;
+    if (type === "ALL") setExtractingAll(true);
     try {
-      for (const slotType of ["INVOICE", "PACKING_LIST", "BILL_OF_LADING"] as DocumentType[]) {
-        const doc = getActiveDoc(slotType);
+      for (const slot of SLOT_CONFIGS) {
+        if (type !== "ALL" && type !== slot.type) continue;
+        const doc = getActiveDoc(slot.type);
         if (!doc) continue;
         const state = deriveSlotExtractionState(doc);
-        // Without retry, documents that already have a finished run are left as they are.
         if (!retry && state !== "NOT_EXTRACTED" && state !== "EXTRACTING") continue;
-        await extractSlot(slotType, retry);
+        await extractSlot(slot.type, retry);
       }
-    } finally {
-      await pollStatus();
-      router.refresh();
-      setExtractingAll(false);
+    } finally { await pollStatus(); router.refresh(); setExtractingAll(false); mutationRef.current = false; }
+  }
+
+  function openRetry(type: DocumentType | "ALL") {
+    setRetryModalTarget({ type, revision: currentRevision, documentIds: currentDocs.filter((doc) => type === "ALL" || doc.docType === type).map((doc) => doc.id) });
+  }
+  function confirmRetry() {
+    const target = retryModalTarget;
+    setRetryModalTarget(null);
+    if (!target) return;
+    const ids = currentDocs.filter((doc) => target.type === "ALL" || doc.docType === target.type).map((doc) => doc.id);
+    if (target.revision !== currentRevision || target.documentIds.length !== ids.length || target.documentIds.some((id) => !ids.includes(id)) || busy || extractionLocked) {
+      setStatusError("The shipment changed since this retry was opened. Refresh and review the current documents before retrying.");
+      return;
     }
+    void handleExtraction(target.type, true);
   }
 
-  // Execute extraction for a single slot (with retry support)
-  async function handleSingleSlotExtraction(type: DocumentType, isRetry = false) {
-    await extractSlot(type, isRetry);
-    await pollStatus();
-    router.refresh();
-  }
-
-  // Handle preview generation using authorized signed URL (TTL 300s)
   async function handlePreview(documentId: string) {
-    setPreviewingDocId(documentId);
-    setPreviewError(null);
+    setPreviewingDocId(documentId); setPreviewError(null);
     try {
-      const response = await fetch(`/api/documents/${documentId}`, {
-        headers: { "Cache-Control": "no-store" },
-      });
+      const response = await fetch(`/api/documents/${documentId}`, { cache: "no-store" });
       const data = await response.json();
-      if (!response.ok || !data.signedUrl) {
-        throw new Error(data.error ?? "Failed to generate secure preview URL.");
-      }
+      redirectOnAuthFailure(response, data);
+      if (!response.ok || !data.signedUrl) throw new Error(data.error ?? "Could not generate a secure preview. Try again.");
       window.open(data.signedUrl, "_blank", "noopener,noreferrer");
-    } catch (err) {
-      setPreviewError(
-        err instanceof Error ? err.message : "Failed to generate authorized preview URL.",
-      );
-    } finally {
-      setPreviewingDocId(null);
-    }
-  }
-
-  // Upload handler exercising the two-step private storage capability
-  async function handleUpload(type: DocumentType) {
-    const file = slotFiles[type];
-    if (!file) {
-      setSlotErrors((prev) => ({ ...prev, [type]: "Please select a file to upload." }));
-      return;
-    }
-
-    const isReplacing = slotReplacementModes[type];
-    if (isReplacing && !replacementConfirmed[type]) {
-      setSlotErrors((prev) => ({
-        ...prev,
-        [type]: "Please check the confirmation box to authorize replacing the active document.",
-      }));
-      return;
-    }
-
-    setSlotErrors((prev) => ({ ...prev, [type]: null }));
-
-    const declaredMimeType = declaredMimeForFile(file);
-    if (!declaredMimeType) {
-      setSlotErrors((prev) => ({ ...prev, [type]: formatPlainLanguageError("INVALID_MIME") }));
-      return;
-    }
-
-    // Client checks are only a fast path; the server re-validates the stored bytes.
-    const maxBytes = declaredMimeType === "application/pdf" ? limits.maxPdfBytes : limits.maxImageBytes;
-
-    if (file.size === 0) {
-      setSlotErrors((prev) => ({
-        ...prev,
-        [type]: "The selected file is empty (0 bytes). Please choose a valid file.",
-      }));
-      return;
-    }
-
-    if (file.size > maxBytes) {
-      setSlotErrors((prev) => ({
-        ...prev,
-        [type]: `The file exceeds the maximum allowed size of ${formatBytes(maxBytes)}.`,
-      }));
-      return;
-    }
-
-    try {
-      setSlotUploading((prev) => ({ ...prev, [type]: "Requesting secure upload authorization…" }));
-
-      const uploadUrlRes = await fetch(`/api/shipments/${shipmentId}/documents/upload-url`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fileName: file.name,
-          fileSizeBytes: file.size,
-          documentType: type,
-          declaredMimeType,
-          expectedRevision: currentRevision,
-        }),
-      });
-
-      const uploadUrlData = await uploadUrlRes.json();
-      if (!uploadUrlRes.ok) {
-        throw new Error(formatPlainLanguageError(uploadUrlData.code, uploadUrlData.error));
-      }
-
-      setSlotUploading((prev) => ({ ...prev, [type]: "Uploading to private storage… 0%" }));
-      await uploadFileToSignedUrl(uploadUrlData.signedUploadUrl, file, declaredMimeType, (percent) => {
-        setSlotUploading((prev) => ({ ...prev, [type]: `Uploading to private storage… ${percent}%` }));
-      });
-
-      setSlotUploading((prev) => ({
-        ...prev,
-        [type]: "Validating magic bytes, pages, and recording revision…",
-      }));
-
-      const completeRes = await fetch(`/api/shipments/${shipmentId}/documents/complete`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          documentId: uploadUrlData.documentId,
-          storageKey: uploadUrlData.storageKey,
-          originalFileName: file.name,
-          declaredMimeType,
-          documentType: type,
-          expectedRevision: currentRevision,
-          allowReplacement: isReplacing,
-        }),
-      });
-
-      const completeData = await completeRes.json();
-      if (!completeRes.ok) {
-        throw new Error(formatPlainLanguageError(completeData.code, completeData.error));
-      }
-
-      const newDoc: DocumentSlotItem = {
-        id: completeData.document.id,
-        docType: type,
-        documentVersion: completeData.document.documentVersion,
-        originalFileName: completeData.document.originalFileName,
-        mimeType: completeData.document.mimeType,
-        sizeBytes: completeData.document.sizeBytes,
-        pageCount: completeData.document.pageCount ?? null,
-        extractionStatus: completeData.document.extractionStatus,
-        createdAt: completeData.document.createdAt,
-        isCurrent: true,
-      };
-
-      setDocuments((prev) => [
-        ...prev.map((d) => (d.docType === type ? { ...d, isCurrent: false } : d)),
-        newDoc,
-      ]);
-      if (completeData.shipmentRevision) {
-        setCurrentRevision(completeData.shipmentRevision);
-      }
-      resetSlotUI(type);
-      router.refresh();
-    } catch (err) {
-      setSlotErrors((prev) => ({
-        ...prev,
-        [type]: err instanceof Error ? err.message : "Upload failed.",
-      }));
-    } finally {
-      setSlotUploading((prev) => ({ ...prev, [type]: null }));
-    }
+    } catch (err) { setPreviewError(err instanceof Error ? err.message : "Could not open the authorized preview."); }
+    finally { setPreviewingDocId(null); }
   }
 
   function resetSlotUI(type: DocumentType) {
-    setSlotFiles((prev) => ({ ...prev, [type]: null }));
-    setSlotReplacementModes((prev) => ({ ...prev, [type]: false }));
-    setReplacementConfirmed((prev) => ({ ...prev, [type]: false }));
-    setSlotErrors((prev) => ({ ...prev, [type]: null }));
+    setSlotFiles((previous) => ({ ...previous, [type]: null }));
+    setSlotReplacementModes((previous) => ({ ...previous, [type]: false }));
+    setReplacementConfirmed((previous) => ({ ...previous, [type]: false }));
+    setSlotErrors((previous) => ({ ...previous, [type]: null }));
   }
-
-  // Sample loader handler: calls /api/shipments/[id]/load-sample
-  async function handleLoadSample() {
-    setLoadingSample(true);
-    setSampleError(null);
-    setSampleMessage(null);
-
+  async function handleUpload(type: DocumentType) {
+    if (mutationRef.current || busy || uploadLocked) return;
+    const file = slotFiles[type];
+    const isReplacing = slotReplacementModes[type];
+    const fail = (message: string) => setSlotErrors((previous) => ({ ...previous, [type]: message }));
+    if (!file) { fail("Please select a file to upload."); return; }
+    if (isReplacing && !replacementConfirmed[type]) { fail("Please check the confirmation box to authorize replacing the active document."); return; }
+    const declaredMimeType = declaredMimeForFile(file);
+    if (!declaredMimeType) { fail(formatPlainLanguageError("INVALID_MIME")); return; }
+    const maxBytes = declaredMimeType === "application/pdf" ? limits.maxPdfBytes : limits.maxImageBytes;
+    if (file.size === 0) { fail(formatPlainLanguageError("EMPTY_FILE")); return; }
+    if (file.size > maxBytes) { fail(`The file exceeds the maximum allowed size of ${formatBytes(maxBytes)}.`); return; }
+    mutationRef.current = true;
+    setSlotErrors((previous) => ({ ...previous, [type]: null }));
+    setSlotMessages((previous) => ({ ...previous, [type]: null }));
+    const progress = (value: UploadProgress | null) => setSlotUploading((previous) => ({ ...previous, [type]: value }));
     try {
-      const response = await fetch(`/api/shipments/${shipmentId}/load-sample`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scenario: sampleScenario, expectedRevision: currentRevision }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(
-          data.code === "DUPLICATE_CONTENT"
-            ? "These synthetic documents are already loaded for this shipment."
-            : formatPlainLanguageError(data.code, data.error ?? "Failed to load synthetic sample documents."),
-        );
-      }
-
-      if (Array.isArray(data.documents)) {
-        const loaded: DocumentSlotItem[] = (data.documents as Array<Record<string, unknown>>).map((d) => ({
-          id: String(d.id),
-          docType: d.docType as DocumentType,
-          documentVersion: Number(d.documentVersion),
-          originalFileName: String(d.originalFileName),
-          mimeType: String(d.mimeType),
-          sizeBytes: Number(d.sizeBytes),
-          pageCount: typeof d.pageCount === "number" ? d.pageCount : null,
-          extractionStatus: String(d.extractionStatus),
-          createdAt: String(d.createdAt),
-          isCurrent: true,
-        }));
-
-        setDocuments((prev) => {
-          const loadedTypes = new Set(loaded.map((l) => l.docType));
-          const untouched = prev.filter((p) => !loadedTypes.has(p.docType));
-          return [...untouched, ...loaded];
-        });
-      }
-
-      if (data.shipment?.currentRevision) {
-        setCurrentRevision(data.shipment.currentRevision);
-      }
-      if (data.shipment?.status) {
-        setShipmentStatus(data.shipment.status);
-      }
-
-      setSampleMessage(
-        `Successfully loaded synthetic demo documents for ${sampleScenario}. All documents verified and stored in private storage. Ready for AI extraction.`,
-      );
-      router.refresh();
-    } catch (err) {
-      setSampleError(
-        err instanceof Error ? err.message : "Failed to load synthetic documents.",
-      );
-    } finally {
-      setLoadingSample(false);
-    }
+      progress({ phase: "authorizing", percent: null });
+      const authorization = await fetch(`/api/shipments/${shipmentId}/documents/upload-url`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fileName: file.name, fileSizeBytes: file.size, documentType: type, declaredMimeType, expectedRevision: currentRevision }) });
+      const upload = await authorization.json();
+      redirectOnAuthFailure(authorization, upload);
+      if (!authorization.ok) throw new Error(formatPlainLanguageError(upload.code, upload.error));
+      progress({ phase: "uploading", percent: 0 });
+      await uploadFileToSignedUrl(upload.signedUploadUrl, file, declaredMimeType, (percent) => progress({ phase: "uploading", percent }));
+      progress({ phase: "validating", percent: null });
+      const completion = await fetch(`/api/shipments/${shipmentId}/documents/complete`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ documentId: upload.documentId, storageKey: upload.storageKey, originalFileName: file.name, declaredMimeType, documentType: type, expectedRevision: currentRevision, allowReplacement: isReplacing }) });
+      const data = await completion.json();
+      redirectOnAuthFailure(completion, data);
+      if (!completion.ok) throw new Error(formatPlainLanguageError(data.code, data.error));
+      const newDoc: DocumentSlotItem = { id: data.document.id, docType: type, documentVersion: data.document.documentVersion, originalFileName: data.document.originalFileName, mimeType: data.document.mimeType, sizeBytes: data.document.sizeBytes, pageCount: data.document.pageCount ?? null, extractionStatus: data.document.extractionStatus, createdAt: data.document.createdAt, isCurrent: true };
+      setDocuments((previous) => [...previous.map((doc) => doc.docType === type ? { ...doc, isCurrent: false } : doc), newDoc]);
+      if (data.shipmentRevision) setCurrentRevision(data.shipmentRevision);
+      resetSlotUI(type);
+      setSlotMessages((previous) => ({ ...previous, [type]: `File validated and saved as v${newDoc.documentVersion}. Extraction has not started.` }));
+      await pollStatus(); router.refresh();
+    } catch (err) { fail(err instanceof Error ? err.message : "Upload failed. Select the file and try again."); }
+    finally { progress(null); mutationRef.current = false; }
   }
 
-  return (
-    <div className="space-y-6">
-      {/* Cost-Sensitive Confirmation Dialog */}
-      {retryModalTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4">
-            <div className="flex items-center gap-2.5 text-amber-900">
-              <AlertTriangle className="size-5 text-amber-600" />
-              <h3 className="text-base font-semibold">Confirm AI Extraction Retry</h3>
-            </div>
-            <p className="text-xs leading-relaxed text-slate-600">
-              Retrying extraction invokes the AI model and consumes provider API usage/quota. Prior extraction history will be preserved as a previous revision.
-            </p>
-            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-800">
-              <strong>Cost notice:</strong> Each document extraction call processes 1–3 image pages through the configured vision model.
-            </div>
-            <div className="flex justify-end gap-2 pt-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setRetryModalTarget(null)}
-                className="text-xs"
-              >
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => {
-                  const target = retryModalTarget;
-                  setRetryModalTarget(null);
-                  if (target === "ALL") {
-                    handleRunAllExtraction(true);
-                  } else {
-                    handleSingleSlotExtraction(target, true);
-                  }
-                }}
-                className="bg-amber-700 text-xs text-white hover:bg-amber-800"
-              >
-                Confirm &amp; Run Retry
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+  async function handleLoadSample() {
+    if (mutationRef.current || busy || uploadLocked) return;
+    mutationRef.current = true; setLoadingSample(true); setSampleError(null); setSampleMessage(null);
+    try {
+      const response = await fetch(`/api/shipments/${shipmentId}/load-sample`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scenario: sampleScenario, expectedRevision: currentRevision }) });
+      const data = await response.json();
+      redirectOnAuthFailure(response, data);
+      if (!response.ok) throw new Error(data.code === "DUPLICATE_CONTENT" ? "These synthetic documents are already loaded for this shipment." : formatPlainLanguageError(data.code, data.error));
+      if (Array.isArray(data.documents)) {
+        const loaded: DocumentSlotItem[] = data.documents.map((doc: DocumentSlotItem) => ({ ...doc, isCurrent: true }));
+        setDocuments((previous) => [...previous.filter((doc) => !loaded.some((item) => item.docType === doc.docType)), ...loaded]);
+      }
+      if (data.shipment?.currentRevision) setCurrentRevision(data.shipment.currentRevision);
+      if (data.shipment?.status) setShipmentStatus(data.shipment.status);
+      setSampleMessage(`Successfully loaded synthetic demo documents for ${sampleScenario}. Files validated and stored privately. Extraction has not started.`);
+      router.refresh();
+    } catch (err) { setSampleError(err instanceof Error ? err.message : "Could not load synthetic documents. Try again."); }
+    finally { setLoadingSample(false); mutationRef.current = false; }
+  }
 
-      {/* Extraction Flow Control & Overall Status Bar (Week 3 Step 6) */}
-      <Card className="border-blue-200 bg-blue-50/40">
-        <CardHeader className="pb-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <Layers className="size-5 text-blue-700" />
-              <CardTitle className="text-base text-blue-950">AI Extraction Pipeline</CardTitle>
-            </div>
-            <div className="flex items-center gap-2">
-              <Badge
-                className={
-                  shipmentStatus === "EXTRACTING"
-                    ? "bg-blue-100 text-blue-800 border border-blue-300 animate-pulse"
-                    : shipmentStatus === "NEEDS_REVIEW"
-                      ? "bg-amber-100 text-amber-800 border border-amber-300"
-                      : "bg-slate-100 text-slate-700 border border-slate-300"
-                }
-              >
-                {shipmentStatus === "EXTRACTING" ? (
-                  <span className="flex items-center gap-1">
-                    <LoaderCircle className="size-3 animate-spin text-blue-700" />
-                    EXTRACTING
-                  </span>
-                ) : (
-                  shipmentStatus.replace("_", " ")
-                )}
-              </Badge>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={pollStatus}
-                disabled={statusPolling}
-                className="h-7 text-xs text-blue-800 border-blue-200 hover:bg-blue-100/60"
-              >
-                <RotateCcw className={`mr-1 size-3 ${statusPolling ? "animate-spin" : ""}`} />
-                Refresh
-              </Button>
-            </div>
-          </div>
-          <p className="text-xs text-blue-900/80">
-            Extract verified customs fields across Commercial Invoice, Packing List, and Bill of Lading.
-            Execution state is kept server-side in <strong>{shipmentStatus}</strong> until all document verifications settle.
-          </p>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-blue-200/80 bg-white p-3">
-            <div className="space-y-0.5">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-slate-900">
-                  {completedCount === 3
-                    ? "Extraction Completed (3 of 3 documents)"
-                    : processingCount > 0
-                      ? `Extraction in Progress: ${completedCount} completed · ${processingCount} processing`
-                      : totalUploaded === 3
-                        ? "All 3 documents uploaded · Ready for extraction"
-                        : `${totalUploaded} of 3 mandatory documents uploaded`}
-                </span>
-                {hasTypeMismatch ? (
-                  <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
-                    <AlertTriangle className="size-3" /> Type Mismatch
-                  </span>
-                ) : null}
-              </div>
-              <p className="text-[11px] text-slate-500">
-                {totalUploaded < 3
-                  ? `Missing ${!ciDoc ? "Commercial Invoice, " : ""}${!plDoc ? "Packing List, " : ""}${!blDoc ? "Bill of Lading" : ""}`.replace(/,\s*$/, "")
-                  : failedCount > 0
-                    ? `${failedCount} document extraction(s) encountered provider failures. Retry with safe backoff.`
-                    : "Deterministic validation will verify fields, line items, and cross-document integrity."}
-              </p>
-            </div>
+  return <div className="space-y-6">
+    <ConfirmDialog open={Boolean(retryModalTarget)} onClose={() => setRetryModalTarget(null)} onConfirm={confirmRetry} title="Confirm AI extraction retry" confirmLabel="Confirm & run retry" description="Retrying uses the configured provider's API quota and may incur costs. Earlier extraction runs and review history are preserved. Re-running can change review flags and shipment readiness.">
+      <p className="text-sm text-foreground-secondary">{retryModalTarget?.type === "ALL" ? "All three current documents will be re-extracted." : "Only the selected current document will be re-extracted."} Review the new output before submitting.</p>
+    </ConfirmDialog>
 
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                onClick={
-                  completedCount === 3
-                    ? () => setRetryModalTarget("ALL")
-                    : () => handleRunAllExtraction(false)
-                }
-                disabled={!allThreeUploaded || extractingAll || processingCount > 0}
-                className="h-9 bg-blue-700 text-xs text-white hover:bg-blue-800 disabled:opacity-50"
-              >
-                {extractingAll || processingCount > 0 ? (
-                  <>
-                    <LoaderCircle className="mr-1.5 size-3.5 animate-spin" />
-                    Extracting documents…
-                  </>
-                ) : completedCount === 3 ? (
-                  <>
-                    <RotateCcw className="mr-1.5 size-3.5" />
-                    Re-run Extraction
-                  </>
-                ) : (
-                  <>
-                    <Play className="mr-1.5 size-3.5 fill-current" />
-                    Run Extraction (3 documents)
-                  </>
-                )}
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Synthetic Demo Loader Section */}
-      <Card className="border-amber-200 bg-amber-50/40">
-        <CardHeader className="pb-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <Sparkles className="size-5 text-amber-700" />
-              <CardTitle className="text-base text-amber-950">
-                Synthetic Demo Document Loader
-              </CardTitle>
-            </div>
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-300 bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900">
-              Synthetic demo
-            </span>
-          </div>
-          <p className="text-xs text-amber-800">
-            Load certified synthetic customs documents for demonstration. Every fixture is written to private storage and verified through the real byte and page validation pipeline.
-          </p>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="min-w-64 flex-1 space-y-1">
-              <label htmlFor="sample-scenario-select" className="text-xs font-medium text-amber-900">
-                Select Synthetic Scenario
-              </label>
-              <select
-                id="sample-scenario-select"
-                aria-label="Select Synthetic Scenario"
-                value={sampleScenario}
-                onChange={(e) => setSampleScenario(e.target.value)}
-                disabled={loadingSample || extractingAll}
-                className="h-9 w-full rounded-md border border-amber-300 bg-white px-3 text-xs text-slate-800 shadow-sm focus:border-amber-500 focus:outline-none"
-              >
-                <option value="SHP-24811">SHP-24811 — LED Panels (45 kg CI vs PL Discrepancy)</option>
-                <option value="SHP-24812">SHP-24812 — Sweden Ball Valves (Consistent Shipment)</option>
-                <option value="SHP-24813">SHP-24813 — Synthetic Standard Shipment</option>
-                <option value="SHP-24814">SHP-24814 — Low-Confidence Scenario</option>
-                <option value="SHP-24815">SHP-24815 — Unreadable Scan Scenario</option>
-              </select>
-            </div>
-            <Button
-              type="button"
-              onClick={handleLoadSample}
-              disabled={loadingSample || extractingAll}
-              className="h-9 bg-amber-700 text-xs text-white hover:bg-amber-800"
-            >
-              {loadingSample ? (
-                <>
-                  <LoaderCircle className="mr-1.5 size-3.5 animate-spin" />
-                  Loading fixtures into storage…
-                </>
-              ) : (
-                <>
-                  <FileUp className="mr-1.5 size-3.5" />
-                  Load synthetic documents
-                </>
-              )}
-            </Button>
-          </div>
-
-          {sampleMessage ? (
-            <div className="flex items-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50 p-2.5 text-xs text-emerald-800">
-              <CheckCircle2 className="size-4 shrink-0 text-emerald-600" />
-              <span>{sampleMessage}</span>
-            </div>
-          ) : null}
-
-          {sampleError ? (
-            <div className="flex items-center gap-2 rounded-lg border border-red-300 bg-red-50 p-2.5 text-xs text-red-800">
-              <AlertCircle className="size-4 shrink-0 text-red-600" />
-              <span>{sampleError}</span>
-            </div>
-          ) : null}
-        </CardContent>
-      </Card>
-
-      {/* Global Preview Error Banner */}
-      {previewError ? (
-        <div className="flex items-center justify-between rounded-lg border border-red-300 bg-red-50 p-3 text-xs text-red-800">
-          <div className="flex items-center gap-2">
-            <AlertCircle className="size-4 text-red-600" />
-            <span>{previewError}</span>
-          </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => setPreviewError(null)}
-            className="h-6 text-xs text-red-700 hover:text-red-900"
-          >
-            Dismiss
-          </Button>
-        </div>
-      ) : null}
-
-      {/* Document Slots Section */}
-      <div className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 className="text-base font-semibold text-slate-900">Customs Document Slots</h2>
-            <p className="text-xs text-slate-500">
-              Upload the three mandatory documents for customs verification of{" "}
-              <strong className="text-slate-700">{shipmentReference}</strong>. All documents are stored in private storage with encrypted access.
-            </p>
-          </div>
-          <span className="text-xs font-medium text-slate-500">
-            Shipment Revision: <strong className="text-slate-900">rev {currentRevision}</strong>
-          </span>
-        </div>
-
-        <div className="grid gap-4 lg:grid-cols-3">
-          {SLOT_CONFIGS.map((slot) => {
-            const activeDoc = getActiveDoc(slot.type);
-            const isReplacing = slotReplacementModes[slot.type];
-            const isUploading = slotUploading[slot.type];
-            const slotError = slotErrors[slot.type];
-            const selectedFile = slotFiles[slot.type];
-            const extractingStep = slotExtracting[slot.type];
-
-            return (
-              <Card
-                key={slot.type}
-                data-testid={`slot-${slot.type}`}
-                className={`flex flex-col justify-between transition-colors ${
-                  activeDoc ? "border-slate-300 bg-white" : "border-dashed border-slate-300 bg-slate-50/60"
-                }`}
-              >
-                <div>
-                  <CardHeader className="pb-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className="flex size-7 items-center justify-center rounded-md bg-slate-100 text-xs font-bold text-slate-700">
-                          {slot.shortCode}
-                        </span>
-                        <div>
-                          <CardTitle className="text-sm font-semibold text-slate-900">
-                            {slot.title}
-                          </CardTitle>
-                          <span className="text-[11px] text-slate-500">
-                            {ACCEPTED_TYPES_DESCRIPTION}
-                          </span>
-                        </div>
-                      </div>
-
-                      {activeDoc && !isReplacing ? (
-                        <div className="flex flex-col items-end gap-1">
-                          <Badge className="bg-emerald-100 text-emerald-800 border border-emerald-300">
-                            v{activeDoc.documentVersion} Active
-                          </Badge>
-                          <ExtractionStateBadge
-                            state={extractingStep ? "EXTRACTING" : deriveSlotExtractionState(activeDoc)}
-                            testId={`extraction-state-${slot.type}`}
-                          />
-                        </div>
-                      ) : (
-                        <Badge className="bg-slate-100 text-slate-500 border border-slate-200">
-                          {isReplacing ? "Replacing" : "Empty slot"}
-                        </Badge>
-                      )}
-                    </div>
-
-                    <p className="text-xs text-slate-500">{slot.description}</p>
-                    <div
-                      data-testid={`upload-limits-${slot.type}`}
-                      className="rounded border border-slate-200/80 bg-slate-100/60 px-2 py-1 text-[11px] text-slate-500"
-                    >
-                      {describeUploadLimits(limits)}
-                    </div>
-                  </CardHeader>
-
-                  <CardContent className="space-y-3">
-                    {/* Active Document Details */}
-                    {activeDoc && !isReplacing ? (
-                      <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50/80 p-3">
-                        <div className="flex items-start gap-2.5">
-                          <FileText className="size-4 shrink-0 text-blue-600 mt-0.5" />
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-xs font-semibold text-slate-900">
-                              {activeDoc.originalFileName}
-                            </p>
-                            <p className="text-[11px] text-slate-500">
-                              {formatBytes(activeDoc.sizeBytes)} ·{" "}
-                              {activeDoc.pageCount
-                                ? `${activeDoc.pageCount} ${activeDoc.pageCount === 1 ? "page" : "pages"}`
-                                : activeDoc.mimeType}
-                            </p>
-                            <p className="text-[10px] text-slate-400">
-                              Uploaded {new Date(activeDoc.createdAt).toLocaleDateString()}
-                            </p>
-                          </div>
-                        </div>
-
-                        {/* Extraction In-Progress Step Indicator */}
-                        {extractingStep ? (
-                          <div className="flex items-center gap-2 rounded bg-blue-100/70 p-2 text-xs text-blue-900">
-                            <LoaderCircle className="size-3.5 animate-spin text-blue-700 shrink-0" />
-                            <span className="truncate">{extractingStep}</span>
-                          </div>
-                        ) : null}
-
-                        {/* Document Type Mismatch Banner (Week 3 Step 6) */}
-                        {activeDoc.typeMismatch ? (
-                          <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-900">
-                            <div className="flex items-start gap-2">
-                              <AlertTriangle className="size-4 shrink-0 text-amber-600 mt-0.5" />
-                              <div className="space-y-0.5">
-                                <p className="font-semibold text-amber-950">Document Type Mismatch</p>
-                                <p className="text-[11px] text-amber-800">
-                                  Expected <strong>{slot.title}</strong>, but model detected{" "}
-                                  <strong>{activeDoc.detectedDocType ?? "Unknown"}</strong> (model estimate).
-                                </p>
-                              </div>
-                            </div>
-                            <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-amber-200">
-                              <Button
-                                type="button"
-                                size="sm"
-                                onClick={() => {
-                                  setSlotReplacementModes((prev) => ({ ...prev, [slot.type]: true }));
-                                  setSlotErrors((prev) => ({ ...prev, [slot.type]: null }));
-                                }}
-                                className="h-6 text-xs bg-amber-700 text-white hover:bg-amber-800"
-                              >
-                                <RefreshCw className="mr-1 size-3" />
-                                Re-upload document
-                              </Button>
-                              <Link
-                                href={`/review/${activeDoc.id}`}
-                                className="inline-flex items-center gap-1 text-xs font-semibold text-amber-900 hover:text-amber-950 underline underline-offset-2"
-                              >
-                                Inspect evidence →
-                              </Link>
-                            </div>
-                          </div>
-                        ) : null}
-
-                        {/* Unreadable Pages Banner */}
-                        {(activeDoc.unreadablePageCount ?? 0) > 0 ? (
-                          <div className="flex items-center justify-between rounded-md border border-amber-200 bg-amber-50/80 p-2 text-xs text-amber-900">
-                            <div className="flex items-center gap-1.5">
-                              <AlertTriangle className="size-3.5 text-amber-600 shrink-0" />
-                              <span>{activeDoc.unreadablePageCount} unreadable page(s) flagged</span>
-                            </div>
-                            <Link
-                              href={`/review/${activeDoc.id}`}
-                              className="text-xs font-semibold text-amber-800 hover:underline"
-                            >
-                              Manual entry →
-                            </Link>
-                          </div>
-                        ) : null}
-
-                        {/* Extracted Fields Count & Review Required Count (Week 3 Step 6) */}
-                        {["EXTRACTED", "NEEDS_REVIEW", "MANUAL_ENTRY"].includes(deriveSlotExtractionState(activeDoc)) ||
-                        (activeDoc.extractedFieldCount ?? 0) > 0 ? (
-                          <div className="space-y-1.5 rounded-md border border-slate-200 bg-white p-2.5 text-xs">
-                            <div className="flex items-center justify-between">
-                              <span className="font-semibold text-slate-800" data-testid={`field-count-${slot.type}`}>
-                                {activeDoc.extractedFieldCount ?? 0} fields extracted
-                              </span>
-                              {(activeDoc.reviewRequiredCount ?? 0) > 0 ? (
-                                <Badge className="bg-amber-100 text-amber-800 border border-amber-300 text-[10px]">
-                                  {activeDoc.reviewRequiredCount} require review
-                                </Badge>
-                              ) : (
-                                <Badge className="bg-emerald-100 text-emerald-800 border border-emerald-300 text-[10px]">
-                                  No review flags
-                                </Badge>
-                              )}
-                            </div>
-                            {(activeDoc.lowConfidenceCount ?? 0) > 0 ? (
-                              <p className="text-[11px] text-amber-800" data-testid={`low-confidence-${slot.type}`}>
-                                {activeDoc.lowConfidenceCount} low-confidence value(s) — confidence is a model estimate.
-                              </p>
-                            ) : null}
-                            <Link
-                              href={`/review/${activeDoc.id}`}
-                              className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700 hover:text-blue-800 pt-1"
-                            >
-                              Inspect evidence &amp; review fields <ArrowRight className="size-3" />
-                            </Link>
-                          </div>
-                        ) : null}
-
-                        {/* Extraction Failure Notice */}
-                        {deriveSlotExtractionState(activeDoc) === "FAILED" && !extractingStep ? (
-                          <div className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800 space-y-1">
-                            <p className="font-semibold">Extraction failed ({activeDoc.latestRun?.errorCode ?? "ERROR"})</p>
-                            <p className="text-[11px] text-red-700">
-                              {formatPlainLanguageError(activeDoc.latestRun?.errorCode ?? undefined, activeDoc.latestRun?.errorMessage ?? undefined)}
-                            </p>
-                            <Link
-                              href={`/review/${activeDoc.id}`}
-                              className="inline-flex text-[11px] font-semibold text-red-900 underline underline-offset-2"
-                            >
-                              Enter values manually →
-                            </Link>
-                          </div>
-                        ) : null}
-
-                        {slotError && !extractingStep ? (
-                          <p role="alert" data-testid={`slot-error-${slot.type}`} className="rounded-md border border-red-200 bg-red-50 p-2 text-[11px] text-red-800">
-                            {slotError}
-                          </p>
-                        ) : null}
-
-                        {/* Action Buttons for Active Document */}
-                        <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-200">
-                          {/* Run/Retry extraction action with cost warning */}
-                          {deriveSlotExtractionState(activeDoc) !== "NOT_EXTRACTED" && deriveSlotExtractionState(activeDoc) !== "EXTRACTING" ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              disabled={Boolean(extractingStep) || extractingAll}
-                              onClick={() => setRetryModalTarget(slot.type)}
-                              className="h-7 text-xs text-amber-800 border-amber-300 hover:bg-amber-50"
-                            >
-                              <RotateCcw className="mr-1 size-3" />
-                              Retry extraction
-                            </Button>
-                          ) : (
-                            <Button
-                              type="button"
-                              size="sm"
-                              disabled={Boolean(extractingStep) || extractingAll}
-                              onClick={() => handleSingleSlotExtraction(slot.type, false)}
-                              className="h-7 text-xs bg-blue-700 text-white hover:bg-blue-800"
-                            >
-                              {extractingStep ? (
-                                <LoaderCircle className="mr-1 size-3 animate-spin" />
-                              ) : (
-                                <Play className="mr-1 size-3 fill-current" />
-                              )}
-                              Run extraction
-                            </Button>
-                          )}
-
-                          {/* Authorized preview link button */}
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            disabled={previewingDocId === activeDoc.id}
-                            onClick={() => handlePreview(activeDoc.id)}
-                            className="h-7 text-xs text-slate-700"
-                          >
-                            {previewingDocId === activeDoc.id ? (
-                              <LoaderCircle className="mr-1.5 size-3 animate-spin text-blue-600" />
-                            ) : (
-                              <ExternalLink className="mr-1.5 size-3 text-slate-500" />
-                            )}
-                            Preview
-                          </Button>
-
-                          {/* Replacement action */}
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => {
-                              setSlotReplacementModes((prev) => ({ ...prev, [slot.type]: true }));
-                              setSlotErrors((prev) => ({ ...prev, [slot.type]: null }));
-                            }}
-                            className="h-7 text-xs text-blue-700 hover:text-blue-800"
-                          >
-                            <RefreshCw className="mr-1.5 size-3" />
-                            Replace
-                          </Button>
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {/* Replacement Mode Warning Alert */}
-                    {isReplacing ? (
-                      <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-900">
-                        <div className="flex items-start gap-1.5">
-                          <ShieldAlert className="size-4 shrink-0 text-amber-700 mt-0.5" />
-                          <div>
-                            <p className="font-semibold text-amber-950">Replacing Document Version</p>
-                            <p className="text-[11px] text-amber-800">
-                              Uploading a replacement will create v{(activeDoc?.documentVersion ?? 0) + 1}, increment the shipment revision to rev {currentRevision + 1}, and invalidate prior manager approvals.
-                            </p>
-                          </div>
-                        </div>
-
-                        <label className="flex items-center gap-2 pt-1 text-[11px] font-medium text-amber-950">
-                          <input
-                            type="checkbox"
-                            checked={replacementConfirmed[slot.type]}
-                            onChange={(e) =>
-                              setReplacementConfirmed((prev) => ({
-                                ...prev,
-                                [slot.type]: e.target.checked,
-                              }))
-                            }
-                            className="size-3.5 rounded border-amber-400 text-amber-700 focus:ring-amber-500"
-                          />
-                          Confirm document replacement
-                        </label>
-                      </div>
-                    ) : null}
-
-                    {/* File Picker and Upload Controls (when slot is empty or in replacement mode) */}
-                    {(!activeDoc || isReplacing) && (
-                      <div className="space-y-2.5">
-                        <div className="space-y-1">
-                          <label
-                            htmlFor={`file-input-${slot.type}`}
-                            className="text-xs font-medium text-slate-700"
-                          >
-                            {isReplacing ? "Select replacement file" : "Upload document"}
-                          </label>
-                          <input
-                            id={`file-input-${slot.type}`}
-                            type="file"
-                            accept="application/pdf,image/png,image/jpeg"
-                            disabled={Boolean(isUploading)}
-                            onChange={(e) => {
-                              const f = e.target.files?.[0] ?? null;
-                              setSlotFiles((prev) => ({ ...prev, [slot.type]: f }));
-                              setSlotErrors((prev) => ({ ...prev, [slot.type]: null }));
-                            }}
-                            className="block w-full text-xs text-slate-600 file:mr-2 file:rounded-md file:border-0 file:bg-slate-100 file:px-2.5 file:py-1 file:text-xs file:font-medium file:text-slate-800 hover:file:bg-slate-200"
-                          />
-                        </div>
-
-                        {selectedFile ? (
-                          <div className="flex items-center justify-between rounded bg-slate-100 px-2 py-1 text-[11px] text-slate-700">
-                            <span className="truncate">{selectedFile.name}</span>
-                            <span className="shrink-0 text-slate-500">
-                              {formatBytes(selectedFile.size)}
-                            </span>
-                          </div>
-                        ) : null}
-
-                        {/* Upload Status / Progress Indicator */}
-                        {isUploading ? (
-                          <div className="flex items-center gap-2 rounded-md bg-blue-50 p-2 text-xs text-blue-800">
-                            <LoaderCircle className="size-3.5 animate-spin text-blue-700" />
-                            <span>{isUploading}</span>
-                          </div>
-                        ) : null}
-
-                        {/* Plain Language Error Message */}
-                        {slotError ? (
-                          <div className="rounded-md border border-red-200 bg-red-50 p-2.5 text-xs text-red-800">
-                            <div className="flex items-start gap-1.5">
-                              <AlertCircle className="size-4 shrink-0 text-red-600 mt-0.5" />
-                              <div className="space-y-1">
-                                <p className="font-semibold text-red-900">Upload Issue</p>
-                                <p>{slotError}</p>
-                              </div>
-                            </div>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => {
-                                setSlotErrors((prev) => ({ ...prev, [slot.type]: null }));
-                              }}
-                              className="mt-2 h-6 text-xs text-red-700 hover:text-red-900"
-                            >
-                              <RotateCcw className="mr-1 size-3" />
-                              Try again
-                            </Button>
-                          </div>
-                        ) : null}
-
-                        {/* Upload & Action Buttons */}
-                        <div className="flex flex-wrap items-center gap-2 pt-1">
-                          <Button
-                            type="button"
-                            size="sm"
-                            disabled={!selectedFile || Boolean(isUploading)}
-                            onClick={() => handleUpload(slot.type)}
-                            className="h-8 text-xs bg-slate-900 text-white hover:bg-slate-800"
-                          >
-                            {isUploading ? (
-                              <>
-                                <LoaderCircle className="mr-1.5 size-3.5 animate-spin" />
-                                Uploading…
-                              </>
-                            ) : (
-                              <>
-                                <FileUp className="mr-1.5 size-3.5" />
-                                {isReplacing ? "Upload Replacement" : "Upload Document"}
-                              </>
-                            )}
-                          </Button>
-
-                          {isReplacing ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              disabled={Boolean(isUploading)}
-                              onClick={() => resetSlotUI(slot.type)}
-                              className="h-8 text-xs text-slate-700"
-                            >
-                              Cancel
-                            </Button>
-                          ) : null}
-                        </div>
-                      </div>
-                    )}
-                  </CardContent>
-                </div>
-              </Card>
-            );
-          })}
-        </div>
+    <section aria-label={`Documents for ${shipmentReference}`} className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3"><Typography id="documents-heading" variant="section-title">Shipment documents</Typography><div className="flex items-center gap-2"><StatusBadge status={shipmentStatus} /><span className="font-mono text-xs text-muted-foreground">rev {currentRevision}</span></div></div>
+      <div className="flex flex-wrap items-center justify-between gap-4 rounded-panel border border-border bg-surface px-4 py-4 sm:px-5">
+        <div className="space-y-1"><p className="text-sm font-medium">{totalUploaded}/3 uploaded <span className="px-2 text-muted-foreground">·</span> {completedCount}/3 extracted{processingCount > 0 ? ` · ${processingCount} processing` : ""}</p><p className="text-sm text-foreground-secondary">{uploadLocked ? "Exported shipment. Documents are read-only." : extractionLocked ? "Extraction is locked for the submitted or approved revision." : totalUploaded < 3 ? `Missing: ${SLOT_CONFIGS.filter((slot) => !getActiveDoc(slot.type)).map((slot) => slot.title).join(", ")}.` : failedCount > 0 ? `${failedCount} extraction${failedCount === 1 ? "" : "s"} failed. Retry or enter values manually.` : processingCount > 0 ? "Extraction is running. Provider progress appears on each document." : completedCount === 3 ? `${reviewFlags} review flags. Open the workspace to inspect fields and checks.` : "Files are uploaded. Run extraction to prepare the review workspace."}</p></div>
+        <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" aria-label="Refresh status" loading={statusPolling} onClick={() => { void pollStatus(); router.refresh(); }}><RefreshCw aria-hidden="true" className="size-4" /><span className="sm:hidden">Refresh</span><span className="hidden sm:inline">Refresh status</span></Button><Button type="button" disabled={!allThreeUploaded || busy || extractionLocked} onClick={() => completedCount === 3 || failedCount > 0 ? openRetry("ALL") : void handleExtraction("ALL")}><Play aria-hidden="true" className="size-4" />{processingCount > 0 || extractingAll ? "Extracting documents…" : completedCount === 3 ? "Re-run extraction" : failedCount > 0 ? "Retry extraction" : "Run extraction (3 documents)"}</Button></div>
       </div>
-    </div>
-  );
+      {statusError ? <div role="alert" className="rounded-panel border border-danger-border bg-danger-surface p-4 text-sm text-danger">{statusError}<Button type="button" variant="link" onClick={() => { void pollStatus(); router.refresh(); }}>Refresh and retry</Button></div> : null}
+      {previewError ? <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-panel border border-danger-border bg-danger-surface p-4 text-sm text-danger"><p>{previewError}</p><Button type="button" variant="ghost" onClick={() => setPreviewError(null)}>Dismiss</Button></div> : null}
+
+      <div className="grid items-stretch gap-4 lg:grid-cols-3">
+        {SLOT_CONFIGS.map((slot) => {
+          const activeDoc = getActiveDoc(slot.type);
+          const isReplacing = slotReplacementModes[slot.type];
+          const upload = slotUploading[slot.type];
+          const selectedFile = slotFiles[slot.type];
+          const extractingStep = slotExtracting[slot.type];
+          const state = activeDoc ? deriveSlotExtractionState(activeDoc) : "NOT_EXTRACTED";
+          const badge = STATE_BADGES[extractingStep ? "EXTRACTING" : state];
+          const error = slotErrors[slot.type];
+          const reviewHref = activeDoc ? `/review/${activeDoc.id}` : `/review/${shipmentId}`;
+          return <section key={slot.type} data-testid={`slot-${slot.type}`} aria-labelledby={`slot-title-${slot.type}`} aria-busy={Boolean(upload || extractingStep) || undefined} className="flex min-w-0 flex-col rounded-panel border border-border bg-surface">
+            <div className="space-y-3 border-b border-border p-4 sm:p-5"><div className="flex items-center gap-2"><FileText aria-hidden="true" className="size-4 text-muted-foreground" /><Typography as="h3" id={`slot-title-${slot.type}`} className="font-semibold">{slot.title}</Typography><span className="ml-auto font-mono text-xs text-muted-foreground">{slot.shortCode}</span></div><p className="hidden text-sm text-foreground-secondary sm:block">{slot.description}</p><div className="flex flex-wrap items-center gap-2">{activeDoc && !isReplacing ? <><Badge>v{activeDoc.documentVersion} Active</Badge><Badge data-testid={`extraction-state-${slot.type}`} variant={badge.variant}>{badge.label}</Badge></> : <Badge variant="outline">{isReplacing ? "Replacing" : "Empty slot"}</Badge>}</div></div>
+            <div className="flex flex-1 flex-col gap-4 p-4 sm:p-5">
+              {activeDoc && !isReplacing ? <>
+                <div className="space-y-1"><p className="break-all text-sm font-medium">{activeDoc.originalFileName}</p><p className="font-mono text-xs text-muted-foreground">{formatBytes(activeDoc.sizeBytes)} · {activeDoc.pageCount ? `${activeDoc.pageCount} ${activeDoc.pageCount === 1 ? "page" : "pages"}` : activeDoc.mimeType}</p><p className="text-xs text-muted-foreground">Uploaded {formatQueueDate(activeDoc.createdAt)} (UTC)</p></div>
+                {extractingStep || state === "EXTRACTING" ? <div role="status" className="flex items-start gap-2 rounded-control bg-info-surface p-3 text-sm text-info"><LoaderCircle aria-hidden="true" className="mt-0.5 size-4 shrink-0 motion-safe:animate-spin" /><p>{extractingStep ?? "Extraction in progress. Waiting for the provider's saved result…"}</p></div> : null}
+                {activeDoc.typeMismatch ? <div className="space-y-2 rounded-control border border-warning-border bg-warning-surface p-3 text-sm text-warning"><p className="flex items-start gap-2 font-medium"><AlertTriangle aria-hidden="true" className="size-4 shrink-0" />Document type mismatch</p><p>Expected {slot.title}; the model detected {activeDoc.detectedDocType ?? "an unknown type"}. This is a model estimate.</p><Link href={reviewHref} className={evidenceLink}>Inspect evidence<ArrowRight aria-hidden="true" className="size-4" /></Link><Button type="button" variant="outline" disabled={busy || uploadLocked} onClick={() => { setSlotReplacementModes((previous) => ({ ...previous, [slot.type]: true })); setSlotErrors((previous) => ({ ...previous, [slot.type]: null })); }}>Re-upload document</Button></div> : null}
+                {(activeDoc.unreadablePageCount ?? 0) > 0 ? <div className="rounded-control border border-warning-border bg-warning-surface p-3 text-sm text-warning"><p>{activeDoc.unreadablePageCount} unreadable page(s) flagged.</p><Link href={reviewHref} className={evidenceLink}>Inspect & enter manually<ArrowRight aria-hidden="true" className="size-4" /></Link></div> : null}
+                {["EXTRACTED", "NEEDS_REVIEW", "MANUAL_ENTRY"].includes(state) || (activeDoc.extractedFieldCount ?? 0) > 0 ? <div className="space-y-2 border-y border-border py-3"><p data-testid={`field-count-${slot.type}`} className="text-sm font-medium">{activeDoc.extractedFieldCount ?? 0} {state === "MANUAL_ENTRY" ? "fields available" : "fields extracted"}</p><p className={`text-sm ${(activeDoc.reviewRequiredCount ?? 0) > 0 ? "text-warning" : "text-foreground-secondary"}`}>{activeDoc.reviewRequiredCount ?? 0} fields require review</p>{(activeDoc.lowConfidenceCount ?? 0) > 0 ? <p data-testid={`low-confidence-${slot.type}`} className="text-sm text-foreground-secondary">{activeDoc.lowConfidenceCount} low-confidence model estimate(s); saved review decisions take precedence.</p> : null}<Link href={reviewHref} className={evidenceLink}>Inspect evidence & review fields<ArrowRight aria-hidden="true" className="size-4" /></Link></div> : null}
+                {state === "FAILED" && !extractingStep ? <div role="alert" className="space-y-2 rounded-control border border-danger-border bg-danger-surface p-3 text-sm text-danger"><p className="font-medium">Extraction failed ({activeDoc.latestRun?.errorCode ?? "ERROR"})</p><p>{formatPlainLanguageError(activeDoc.latestRun?.errorCode ?? undefined, activeDoc.latestRun?.errorMessage ?? undefined)}</p><Link href={reviewHref} className={evidenceLink}>Enter values manually<ArrowRight aria-hidden="true" className="size-4" /></Link></div> : null}
+                <div className="order-first flex flex-wrap gap-2 lg:order-none lg:mt-auto"><Button type="button" variant={state === "NOT_EXTRACTED" ? "default" : "outline"} size="sm" disabled={busy || extractionLocked} onClick={() => state === "NOT_EXTRACTED" ? void handleExtraction(slot.type) : openRetry(slot.type)}>{state === "NOT_EXTRACTED" ? <Play aria-hidden="true" className="size-4" /> : <RotateCcw aria-hidden="true" className="size-4" />}{state === "NOT_EXTRACTED" ? "Run extraction" : "Retry extraction"}</Button><Button type="button" variant="outline" size="sm" loading={previewingDocId === activeDoc.id} onClick={() => void handlePreview(activeDoc.id)}><ExternalLink aria-hidden="true" className="size-4" />Preview</Button><Button type="button" variant="ghost" size="sm" disabled={busy || uploadLocked} onClick={() => { setSlotReplacementModes((previous) => ({ ...previous, [slot.type]: true })); setSlotErrors((previous) => ({ ...previous, [slot.type]: null })); setSlotMessages((previous) => ({ ...previous, [slot.type]: null })); }}>Replace</Button></div>
+              </> : <>
+                {!isReplacing ? <p className="text-sm text-foreground-secondary">No document uploaded. Choose a file for this slot.</p> : <div className="space-y-3 rounded-control border border-warning-border bg-warning-surface p-3 text-sm text-warning"><p className="flex items-start gap-2 font-medium"><ShieldAlert aria-hidden="true" className="size-4 shrink-0" />Replacing document version</p><p>The new file creates v{(activeDoc?.documentVersion ?? 0) + 1} and rev {currentRevision + 1}. Prior approvals are invalidated; the earlier document stays in history.</p><label className="flex min-h-11 items-center gap-2"><input type="checkbox" checked={replacementConfirmed[slot.type]} disabled={busy || uploadLocked} onChange={(event) => setReplacementConfirmed((previous) => ({ ...previous, [slot.type]: event.target.checked }))} className="size-4 shrink-0" />Confirm document replacement</label></div>}
+                <div className="space-y-2"><Label htmlFor={`file-input-${slot.type}`}>{isReplacing ? "Select replacement file" : "Upload document"}</Label><Input id={`file-input-${slot.type}`} type="file" accept="application/pdf,image/png,image/jpeg" disabled={busy || uploadLocked} aria-invalid={Boolean(error) || undefined} aria-describedby={`upload-limits-${slot.type}${error ? ` slot-error-${slot.type}` : ""}`} onChange={(event) => { setSlotFiles((previous) => ({ ...previous, [slot.type]: event.target.files?.[0] ?? null })); setSlotErrors((previous) => ({ ...previous, [slot.type]: null })); }} className="h-auto min-h-11 px-2 py-2 text-sm file:mr-2 file:rounded-small file:border-0 file:bg-surface-subtle file:px-2 file:py-1 file:text-sm file:text-foreground" /></div>
+                {selectedFile ? <p className="break-all text-sm text-foreground-secondary">{selectedFile.name} <span className="font-mono text-xs">({formatBytes(selectedFile.size)})</span></p> : null}
+                {upload ? <div className="space-y-2 rounded-control bg-info-surface p-3"><p role="status" className="text-sm text-info">{uploadProgressLabel(upload)}</p><progress aria-label={`${slot.title} upload progress`} max={100} value={upload.phase === "uploading" ? upload.percent ?? 0 : undefined} className="h-2 w-full accent-primary" /><p className="text-xs text-info">{upload.phase === "validating" ? "A completed transfer is not yet a saved document." : "The file is sent directly to private storage."}</p></div> : null}
+                <div className="mt-auto flex flex-wrap gap-2"><Button type="button" size="sm" loading={Boolean(upload)} disabled={!selectedFile || (busy && !upload) || uploadLocked} onClick={() => void handleUpload(slot.type)}><FileUp aria-hidden="true" className="size-4" />{isReplacing ? "Upload Replacement" : "Upload Document"}</Button>{isReplacing ? <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => resetSlotUI(slot.type)}>Cancel</Button> : null}</div>
+              </>}
+              {error && (state !== "FAILED" || error !== formatPlainLanguageError(activeDoc?.latestRun?.errorCode ?? undefined, activeDoc?.latestRun?.errorMessage ?? undefined)) ? <p id={`slot-error-${slot.type}`} role="alert" data-testid={`slot-error-${slot.type}`} className="flex items-start gap-2 rounded-control border border-danger-border bg-danger-surface p-3 text-sm text-danger"><AlertCircle aria-hidden="true" className="mt-0.5 size-4 shrink-0" /><span>{error}</span></p> : null}
+              {slotMessages[slot.type] && !isReplacing ? <p role="status" className="text-sm text-success">{slotMessages[slot.type]}</p> : null}
+              <p id={`upload-limits-${slot.type}`} data-testid={`upload-limits-${slot.type}`} className="border-t border-border pt-3 text-xs text-muted-foreground">{ACCEPTED_TYPES_DESCRIPTION} · {describeUploadLimits(limits)}</p>
+            </div>
+          </section>;
+        })}
+      </div>
+      <p className="text-sm text-foreground-secondary">Private storage and server-side file validation. Extraction is model output, not verified accuracy; review fields and source evidence before submission.</p>
+      <Link href={`/review/${shipmentId}`} className={evidenceLink}>Open review workspace<ArrowRight aria-hidden="true" className="size-4" /></Link>
+    </section>
+
+    <details className="group rounded-panel border border-border bg-surface">
+      <summary className="flex min-h-11 cursor-pointer flex-wrap items-center justify-between gap-2 rounded-control px-4 py-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span>Load synthetic sample documents</span><span className="flex items-center gap-2"><Badge>Synthetic demo</Badge><ChevronDown aria-hidden="true" className="size-4 group-open:rotate-180" /></span></summary>
+      <div className="space-y-4 border-t border-border p-4 sm:p-5"><p className="max-w-[70ch] text-sm text-foreground-secondary">For demonstration only. Synthetic files use the same private storage and byte/page validation pipeline. They are not client evidence and must not be filed with customs.</p><div className="flex flex-wrap items-end gap-3"><div className="min-w-0 flex-1 space-y-2"><Label htmlFor="sample-scenario-select">Select Synthetic Scenario</Label><Select id="sample-scenario-select" value={sampleScenario} disabled={busy || uploadLocked} onChange={(event) => setSampleScenario(event.target.value)}><option value="SHP-24811">SHP-24811 — LED Panels (45 kg discrepancy)</option><option value="SHP-24812">SHP-24812 — Sweden Ball Valves (consistent)</option><option value="SHP-24813">SHP-24813 — Standard shipment</option><option value="SHP-24814">SHP-24814 — Low-confidence scenario</option><option value="SHP-24815">SHP-24815 — Unreadable scan scenario</option></Select></div><Button type="button" variant="outline" loading={loadingSample} disabled={busy || uploadLocked} onClick={() => void handleLoadSample()}><FileUp aria-hidden="true" className="size-4" />Load synthetic documents</Button></div>{sampleMessage ? <p role="status" className="text-sm text-success">{sampleMessage}</p> : null}{sampleError ? <p role="alert" className="text-sm text-danger">{sampleError}</p> : null}</div>
+    </details>
+  </div>;
 }
