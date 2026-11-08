@@ -2,9 +2,7 @@
 .github
 .next
 node_modules
-.env
-.env.*
-!.env.example
+.env*
 coverage
 playwright-report
 test-results
