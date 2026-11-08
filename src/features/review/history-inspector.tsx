@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FOCUS_RING_STYLES } from "@/components/ui/control-styles";
 import { FeedbackState } from "@/components/ui/feedback-state";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { cn } from "@/lib/utils";
 import { CheckEvidence } from "./check-evidence";
@@ -49,6 +51,18 @@ export function auditEventDetails(metadata: Record<string, unknown> | null | und
     typeof meta.comment === "string" && meta.comment ? `Comment: ${meta.comment}` : null,
     typeof meta.revision === "number" ? `Revision ${meta.revision}` : null,
   ].filter((value): value is string => value !== null);
+}
+
+export function filterAuditEvents(events: ReviewWorkspaceInitialData["auditHistory"], query: string) {
+  const search = query.trim().toLowerCase();
+  return (events ?? []).filter((event) => `${formatFieldLabel(event.action)} ${event.actorEmail ?? "System"} ${event.actorRole ?? ""} ${event.id} ${JSON.stringify(event.metadata ?? {})}`.toLowerCase().includes(search));
+}
+
+function jumpToHistory(id: string) {
+  const target = document.getElementById(id);
+  if (target?.parentElement instanceof HTMLDetailsElement) target.parentElement.open = true;
+  target?.scrollIntoView({ block: "start" });
+  target?.focus({ preventScroll: true });
 }
 
 type CheckRunHistoryProps = Omit<HistoryInspectorProps, "active" | "onRefresh"> & {
@@ -111,6 +125,7 @@ export function CheckRunHistory({
 export function HistoryInspector(props: HistoryInspectorProps) {
   const { data, active, disabled, onRefresh, onEvidence } = props;
   const [attempt, setAttempt] = useState(0);
+  const [auditSearch, setAuditSearch] = useState("");
   const key = `${data.shipment.id}|${data.shipment.currentRevision}|${data.latestCheckRun?.id ?? "none"}|${data.auditHistory?.[0]?.id ?? "none"}|${attempt}`;
   const [loaded, setLoaded] = useState<{
     key: string;
@@ -141,6 +156,7 @@ export function HistoryInspector(props: HistoryInspectorProps) {
     .filter((field) => field.currentValue !== field.modelValue || ["CORRECTED", "MANUAL_ENTRY"].includes(field.reviewStatus))
     .map((field) => ({ ...field, doc })));
   const audit = data.auditHistory ?? [];
+  const filteredAudit = filterAuditEvents(audit, auditSearch);
   const serverChanged = Boolean(history && !history.error && (
     history.revision !== data.shipment.currentRevision ||
     history.runId !== (data.latestCheckRun?.id ?? null)
@@ -152,16 +168,17 @@ export function HistoryInspector(props: HistoryInspectorProps) {
         <div><h3 id="review-history-heading" tabIndex={-1} className="text-base font-semibold">Review history</h3><p className="mt-1 text-xs text-muted-foreground">Corrections, immutable check runs and audit events</p></div>
         <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={() => { setAttempt((value) => value + 1); onRefresh(); }}><RefreshCw className="size-4" aria-hidden="true" />Refresh history</Button>
       </div>
+      <nav aria-label="History sections" className="flex shrink-0 flex-wrap gap-1 border-b border-border px-3 py-2"><Button type="button" variant="ghost" size="sm" onClick={() => jumpToHistory("history-values-heading")}>Values ({modified.length})</Button><Button type="button" variant="ghost" size="sm" onClick={() => jumpToHistory("history-runs-heading")}>Check runs</Button><Button type="button" variant="ghost" size="sm" onClick={() => jumpToHistory("history-audit-heading")}>Audit ({audit.length})</Button></nav>
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-testid="history-scroll">
         {serverChanged ? <div role="alert" className="space-y-2 border-b border-warning-border bg-warning-surface p-4 text-sm text-warning"><p>The shipment or its latest check run changed. Refresh the workspace before recording a resolution.</p><Button type="button" variant="outline" size="sm" onClick={onRefresh}>Refresh latest shipment</Button></div> : null}
 
         <section className="space-y-3 border-b border-border p-4" aria-label="Current document versions">
           <h4 className="text-sm font-semibold">Current documents</h4>
-          {data.documents.map((doc) => <div key={doc.id} className="flex flex-wrap items-center justify-between gap-2"><Button type="button" variant="link" size="sm" className="px-0" onClick={() => onEvidence({ documentId: doc.id, page: 1, label: `${DOCUMENT_LABELS[doc.docType]} v${doc.documentVersion}` }, "review-history-heading")}>{DOCUMENT_LABELS[doc.docType]} · v{doc.documentVersion}</Button><StatusBadge status={doc.extractionStatus} /></div>)}
+          {data.documents.length === 0 ? <p className="text-sm text-foreground-secondary">No current documents are recorded.</p> : data.documents.map((doc) => <div key={doc.id} className="flex flex-wrap items-center justify-between gap-2"><Button type="button" variant="link" size="sm" className="px-0" onClick={() => onEvidence({ documentId: doc.id, page: 1, label: `${DOCUMENT_LABELS[doc.docType]} v${doc.documentVersion}` }, "review-history-heading")}>{DOCUMENT_LABELS[doc.docType]} · v{doc.documentVersion}</Button><StatusBadge status={doc.extractionStatus === "REVIEW_REQUIRED" && !doc.fields.some((field) => field.reviewStatus === "REQUIRES_REVIEW") && doc.fields.length > 0 ? "EXTRACTED" : doc.extractionStatus} /></div>)}
         </section>
 
         <details open={modified.length > 0} className="border-b border-border px-4 py-3">
-          <summary className={cn("cursor-pointer py-2 text-sm font-semibold", FOCUS_RING_STYLES)}>Model to reviewed values ({modified.length})</summary>
+          <summary id="history-values-heading" tabIndex={-1} className={cn("cursor-pointer py-2 text-sm font-semibold", FOCUS_RING_STYLES)}>Model to reviewed values ({modified.length})</summary>
           <div className="space-y-4 py-3">
             {modified.length === 0 ? <p className="text-sm text-foreground-secondary">No corrected or manually entered values. Saved values still match the model proposals.</p> : modified.map((field) => (
               <div key={field.id} className="space-y-2 border-t border-border pt-3">
@@ -177,16 +194,17 @@ export function HistoryInspector(props: HistoryInspectorProps) {
         </details>
 
         <section className="space-y-3 border-b border-border p-4" aria-label="Cross-check run history">
-          <h4 className="text-base font-semibold">Check runs</h4>
+          <h4 id="history-runs-heading" tabIndex={-1} className={cn("text-base font-semibold", FOCUS_RING_STYLES)}>Check runs</h4>
           <p className="text-sm text-foreground-secondary">Historical results preserve the original evidence. They do not grant current submission, approval or export clearance.</p>
           {!history ? <FeedbackState kind="loading" title="Loading check history" className="py-4" /> : history.error ? <FeedbackState kind="error" title="Check history unavailable" description={history.error} className="py-4" action={<Button type="button" variant="outline" onClick={() => setAttempt((value) => value + 1)}>Retry history</Button>} /> : !history.runs.length ? <p className="text-sm text-muted-foreground">No check runs have been recorded.</p> : history.runs.map((run) => <CheckRunHistory key={run.id} {...props} run={run} serverChanged={serverChanged} />)}
         </section>
 
         <section className="space-y-4 p-4" aria-label="Shipment audit trail">
-          <h4 className="text-base font-semibold">Audit trail <span className="font-normal text-muted-foreground">({audit.length})</span></h4>
+          <h4 id="history-audit-heading" tabIndex={-1} className={cn("text-base font-semibold", FOCUS_RING_STYLES)}>Audit trail <span className="font-normal text-muted-foreground">({audit.length})</span></h4>
+          <div className="space-y-2"><Label htmlFor="audit-search">Search events, actors or evidence</Label><Input id="audit-search" value={auditSearch} onChange={(event) => setAuditSearch(event.target.value)} placeholder="Action, reviewer, reason or reference" /><div className="flex flex-wrap items-center justify-between gap-2"><p role="status" className="text-sm text-foreground-secondary">{filteredAudit.length} of {audit.length} loaded events · newest first · UTC</p>{auditSearch ? <Button type="button" size="sm" variant="link" onClick={() => setAuditSearch("")}>Clear audit search</Button> : null}</div></div>
           {audit.length === 200 ? <p className="text-sm text-foreground-secondary">Showing the most recent 200 events.</p> : null}
           {!audit.length ? <p className="text-sm text-muted-foreground">No audit events have been recorded.</p> : (
-            <ol className="space-y-4">{audit.map((event) => (
+            !filteredAudit.length ? <FeedbackState kind="empty" title="No matching audit events" description="Change or clear the search. The recorded events have not been removed." /> : <ol className="space-y-4">{filteredAudit.map((event) => (
               <li key={event.id} className="space-y-2 border-t border-border pt-3">
                 <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm font-semibold">{formatFieldLabel(event.action)}</span><time dateTime={event.createdAt instanceof Date ? event.createdAt.toISOString() : event.createdAt} className="text-xs text-muted-foreground">{displayDate(event.createdAt)}</time></div>
                 <p className="break-words text-xs text-muted-foreground">{event.actorEmail ?? "System"}{event.actorRole ? ` · ${formatFieldLabel(event.actorRole)}` : ""}</p>

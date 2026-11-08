@@ -43,7 +43,7 @@ export function ConfirmDialog({
 
     if (open && !dialog.open) {
       dialog.showModal();
-      cancelRef.current?.focus();
+      cancelRef.current?.focus({ preventScroll: true });
     } else if (!open && dialog.open) {
       dialog.close();
     }
@@ -72,22 +72,24 @@ export function ConfirmDialog({
         if (open && !event.currentTarget.open) onClose();
       }}
       className={cn(
-        "fixed inset-0 m-auto max-h-[calc(100dvh_-_2rem)] w-[calc(100vw_-_2rem)] max-w-lg overflow-y-auto rounded-dialog border-0 bg-surface p-0 text-foreground shadow-overlay backdrop:bg-foreground/35",
+        "fixed inset-0 m-auto w-[calc(100vw_-_2rem)] max-w-lg overflow-hidden rounded-dialog border-0 bg-surface p-0 text-foreground shadow-overlay backdrop:bg-foreground/35",
         className,
       )}
     >
-      <div className="space-y-3 p-6">
+      <div className="flex max-h-[calc(100dvh_-_2rem)] min-h-0 flex-col">
+      <header className="shrink-0 space-y-3 p-6">
         <h2 id={`${id}-title`} className="text-lg font-semibold">{title}</h2>
         {description ? <p id={`${id}-description`} className="text-sm text-foreground-secondary">{description}</p> : null}
-        {children}
-      </div>
-      <div className="flex flex-wrap justify-end gap-3 border-t border-border px-6 py-4">
+      </header>
+      {children ? <div data-slot="confirm-dialog-content" className="min-h-0 overflow-y-auto overscroll-contain px-6 pb-6">{children}</div> : null}
+      <footer className="flex shrink-0 flex-wrap justify-end gap-3 border-t border-border px-6 py-4">
         <Button ref={cancelRef} type="button" variant="outline" disabled={busy} onClick={onClose}>
           {cancelLabel}
         </Button>
         <Button type="button" variant={variant} loading={busy} onClick={onConfirm}>
           {confirmLabel}
         </Button>
+      </footer>
       </div>
     </dialog>
   );

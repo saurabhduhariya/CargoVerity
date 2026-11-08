@@ -328,9 +328,9 @@ export function ExportPreviewDialog({
           {checksumCopy?.error ? <p role="alert" className="break-words text-sm text-danger">{checksumCopy.error}</p> : null}
 
           {preview ? <>
-            <section className="space-y-2 rounded-control border border-info-border bg-info-surface p-3 text-info" aria-label="Export profile assumption">
-              <Badge variant="info">{preview.profileId} · v{preview.profileVersion}</Badge>
-              <p className="text-sm leading-6">{preview.assumptionLabel}</p>
+            <section className={`space-y-2 rounded-control border p-3 ${preview.ready && preview.allowed && preview.blockers.length === 0 ? "border-neutral-border bg-neutral-surface text-neutral" : "border-warning-border bg-warning-surface text-warning"}`} aria-label="Export readiness">
+              <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-base font-semibold">{preview.ready && preview.allowed && preview.blockers.length === 0 ? "Server preflight allows export" : "Export is blocked"}</h3><Badge variant="outline">{preview.profileId} · v{preview.profileVersion}</Badge></div>
+              <p className="text-sm">{preview.ready && preview.allowed && preview.blockers.length === 0 ? `Approved revision ${preview.approvedRevision}. Download rechecks all guards and verifies the CSV bytes against this preview.` : `${preview.blockers.length} recorded blocker${preview.blockers.length === 1 ? "" : "s"}. Review the approval and blocking reasons below.`}</p>
             </section>
 
             <section className="space-y-3" aria-label="Approval and revision">
@@ -343,7 +343,7 @@ export function ExportPreviewDialog({
               </dl>
             </section>
 
-            {!preview.ready ? <section className="space-y-3 border-t border-border pt-4" aria-label="Export blockers">
+            {!preview.ready || !preview.allowed || preview.blockers.length > 0 ? <section className="space-y-3 border-t border-border pt-4" aria-label="Export blockers">
               <h3 className="text-base font-semibold text-danger">Export blocked · {preview.blockers.length} issue{preview.blockers.length === 1 ? "" : "s"}</h3>
               <ul className="space-y-3">{preview.blockers.map((code, index) => {
                 const blocker = formatExportBlocker(code);
@@ -355,10 +355,12 @@ export function ExportPreviewDialog({
                   <p className="break-words font-mono text-xs text-muted-foreground">{code}</p>
                 </li>;
               })}</ul>
-            </section> : <p className="rounded-control border border-success-border bg-success-surface p-3 text-sm leading-6 text-success">Server preflight allows export of approved revision {preview.approvedRevision}. The download rechecks these guards. Accepted exceptions remain human decisions, not machine passes or customs clearance.</p>}
+            </section> : null}
+
+            <section className="space-y-2 border-t border-border pt-4" aria-label="Export profile assumption"><h3 className="text-base font-semibold">Profile scope</h3><p className="text-sm leading-6 text-foreground-secondary">{preview.assumptionLabel}</p><p className="text-sm leading-6 text-foreground-secondary">Accepted exceptions remain human decisions, not machine passes or customs clearance.</p></section>
 
             {preview.headers ? <section className="space-y-3 border-t border-border pt-4" aria-label="CSV preview">
-              <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-base font-semibold">CSV preview</h3><p className="text-sm text-foreground-secondary">{preview.rowCount ?? 0} rows · {preview.headers.length} columns{(preview.rowCount ?? 0) > (preview.rows?.length ?? 0) ? ` · showing first ${preview.rows?.length ?? 0}` : ""}</p></div>
+              <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-base font-semibold">CSV preview</h3><p className="text-sm text-foreground-secondary">{preview.rowCount === undefined ? "Total row count not recorded" : `${preview.rowCount} rows`} · {preview.headers.length} columns{preview.rowCount !== undefined && preview.rows && preview.rowCount > preview.rows.length ? ` · showing first ${preview.rows.length}` : ""}</p></div>
               <Table containerLabel="Scrollable CSV preview" containerClassName="max-h-72" className="w-max min-w-full font-mono">
                 <TableHeader><TableRow>{preview.headers.map((header, index) => <TableHead key={`${header}-${index}`} className="whitespace-nowrap">{header}</TableHead>)}</TableRow></TableHeader>
                 <TableBody>{preview.rows?.length ? preview.rows.map((row, rowIndex) => <TableRow key={rowIndex}>{row.map((cell, columnIndex) => <TableCell key={columnIndex} className="max-w-80 break-words">{cell || <span className="font-sans text-muted-foreground">Empty</span>}</TableCell>)}</TableRow>) : <TableRow><TableCell colSpan={preview.headers.length}>No export rows were returned.</TableCell></TableRow>}</TableBody>

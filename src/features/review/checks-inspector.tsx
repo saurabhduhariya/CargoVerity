@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { History, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -7,6 +8,7 @@ import { FOCUS_RING_STYLES } from "@/components/ui/control-styles";
 import { FeedbackState } from "@/components/ui/feedback-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -23,9 +25,9 @@ export function ResolutionEditor({ type, draft, disabled, error, onChange, onCan
     <form aria-label={exception ? "Accepted exception" : "Historical resolution link"} className="space-y-3 border-t border-border pt-4" onSubmit={(event) => { event.preventDefault(); onSave(); }}>
       <h4 className="text-base font-semibold">{exception ? "Record an accepted exception" : type === "SOURCE_CORRECTED" ? "Link to a saved correction" : "Link to a document replacement"}</h4>
       <p className="text-sm text-foreground-secondary">{exception ? "An exception does not change the machine result. Executive exceptions require manager sign-off before approval and export." : "This only links a historical failure to a real saved fix. The server verifies that the same rule no longer fails and that a correction or replacement was recorded after this run."}</p>
-      <label className="flex items-start gap-3 text-sm text-foreground"><input type="checkbox" checked={draft.valuesConfirmed} disabled={disabled} onChange={(event) => onChange({ ...draft, valuesConfirmed: event.target.checked })} className="mt-1 size-4 shrink-0 accent-primary" required /><span>I reviewed the compared values and inspected the source documents.</span></label>
       <div className="space-y-1"><Label htmlFor="resolution-reason">Resolution reason (at least 5 characters)</Label><Textarea id="resolution-reason" value={draft.reason} minLength={5} maxLength={500} rows={3} disabled={disabled} required onChange={(event) => onChange({ ...draft, reason: event.target.value })} /></div>
-      <div className="space-y-1"><Label htmlFor="resolution-evidence">{exception ? "External evidence / query reference (required)" : "Evidence reference (optional)"}</Label><Input id="resolution-evidence" value={draft.evidence} required={exception} minLength={exception ? 3 : undefined} maxLength={500} disabled={disabled} placeholder="Supplier email, query or ticket reference" onChange={(event) => onChange({ ...draft, evidence: event.target.value })} /></div>
+      <div className="space-y-1"><Label htmlFor="resolution-evidence">{exception ? "External evidence / query reference (required)" : "Evidence reference (optional)"}</Label><Input id="resolution-evidence" value={draft.evidence} required={exception} minLength={exception ? 3 : undefined} maxLength={500} disabled={disabled} placeholder="Supplier email, query or ticket reference" onChange={(event) => onChange({ ...draft, evidence: event.target.value })} /><p className="text-sm text-foreground-secondary">{exception ? "Use a traceable reference, not an unsupported statement that the difference is acceptable." : "The saved fix and its current check run must exist before this historical link can be recorded."}</p></div>
+      <label className="flex min-h-11 cursor-pointer items-start gap-3 py-2 text-sm text-foreground"><input type="checkbox" checked={draft.valuesConfirmed} disabled={disabled} onChange={(event) => onChange({ ...draft, valuesConfirmed: event.target.checked })} className="mt-1 size-4 shrink-0 accent-primary" required /><span>I reviewed the compared values and inspected the source documents.</span></label>
       {error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
       <div className="flex flex-wrap gap-2"><Button type="submit" size="sm" disabled={disabled || !draft.valuesConfirmed || draft.reason.trim().length < 5 || (exception && draft.evidence.trim().length < 3)}>Record {exception ? "exception" : "link"}</Button><Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={onCancel}>Close (keep draft)</Button></div>
     </form>
@@ -66,7 +68,9 @@ type ChecksInspectorProps = {
 
 export function ChecksInspector(props: ChecksInspectorProps) {
   const { checks, documents, mappings, run, revision, stale, disabled, canResolve, canRecheck, mappingSelections, mappingReason, resolution, resolutionError, onRecheck, onHistory, onEvidence, onStartResolution, onResolutionChange, onResolutionClose, onResolve, onMappingSelect, onMappingReason, onMap, onRemoveMapping } = props;
-  const ordered = [...checks].sort((a, b) => Number(["MISMATCH", "INCOMPLETE"].includes(b.status)) - Number(["MISMATCH", "INCOMPLETE"].includes(a.status)));
+  const [filter, setFilter] = useState("all");
+  const rank = (check: ReviewWorkspaceCrossCheck) => ["MISMATCH", "INCOMPLETE"].includes(checkDisplayStatus(check)) ? 0 : checkDisplayStatus(check) === "PENDING_MANAGER_APPROVAL" ? 1 : checkDisplayStatus(check) === "HUMAN_CLEARED" ? 2 : 3;
+  const ordered = [...checks].filter((check) => filter === "all" || (filter === "unresolved" ? rank(check) === 0 : filter === "exceptions" ? rank(check) === 1 || rank(check) === 2 : check.status === "PASS" || check.status === "NOT_APPLICABLE")).sort((a, b) => rank(a) - rank(b));
   const passed = checks.filter((check) => check.status === "PASS").length;
   const exceptions = checks.filter((check) => ["HUMAN_CLEARED", "PENDING_MANAGER_APPROVAL"].includes(checkDisplayStatus(check))).length;
   const unresolved = checks.filter((check) => ["MISMATCH", "INCOMPLETE"].includes(checkDisplayStatus(check))).length;
@@ -78,7 +82,8 @@ export function ChecksInspector(props: ChecksInspectorProps) {
         {props.submissionBlockers?.length ? <section role="alert" className="space-y-3 border-b border-danger-border bg-danger-surface p-4 text-sm text-danger"><h4 className="font-semibold">Submission blocked · {props.submissionBlockers.length} issues</h4><ul className="list-disc space-y-2 pl-5">{props.submissionBlockers.map((reason, index) => <li key={index}>{reason}</li>)}</ul></section> : null}
         {stale ? <div role="alert" className="space-y-2 border-b border-warning-border bg-warning-surface p-4 text-sm text-warning"><p className="font-semibold">Checks are not current.</p><p>Review changes were saved, but checks for this revision are unavailable. Re-run them before submission or approval. Previous runs remain in History.</p></div> : null}
         {checks.length === 0 ? <FeedbackState kind="empty" title="No checks for this revision" description="Save any drafts, then run checks on the saved document values." className="px-4" /> : <>
-          <div className="flex flex-wrap gap-2 border-b border-border p-4"><Badge variant="success">{passed} passed</Badge><Badge variant={unresolved ? "warning" : "outline"}>{unresolved} unresolved</Badge>{exceptions ? <Badge variant="outline">{exceptions} exception{exceptions === 1 ? "" : "s"}</Badge> : null}</div>
+          <div className="space-y-3 border-b border-border p-4"><div className="flex flex-wrap gap-2"><Badge variant="success">{passed} machine passed</Badge><Badge variant={unresolved ? "warning" : "outline"}>{unresolved} unresolved</Badge>{exceptions ? <Badge variant="outline">{exceptions} human exception{exceptions === 1 ? "" : "s"}</Badge> : null}</div><p className="text-sm text-foreground-secondary">Exceptions are human decisions. They do not turn mismatches into machine passes.{stale ? " These results belong to an earlier revision." : ""}</p><div className="space-y-1"><Label htmlFor="check-filter">Show checks</Label><Select id="check-filter" value={filter} onChange={(event) => setFilter(event.target.value)}><option value="all">All checks ({checks.length})</option><option value="unresolved">Unresolved ({unresolved})</option><option value="exceptions">Human exceptions ({exceptions})</option><option value="passed">Passed / not applicable</option></Select></div></div>
+          {!ordered.length ? <FeedbackState kind="empty" title="No checks in this view" description="Choose All checks to inspect the saved results. An empty filter is not proof of clearance." className="p-4" action={<Button type="button" variant="outline" size="sm" onClick={() => setFilter("all")}>Show all checks</Button>} /> : null}
           {ordered.map((check) => {
             const failing = check.status === "MISMATCH" || check.status === "INCOMPLETE";
             const displayStatus = checkDisplayStatus(check);
@@ -89,6 +94,7 @@ export function ChecksInspector(props: ChecksInspectorProps) {
                 <summary className={cn("cursor-pointer space-y-2 px-4 py-4", FOCUS_RING_STYLES)}><span className="ml-1 text-sm font-semibold">{checkLabel(check)}</span><span className="mt-2 flex flex-wrap items-center gap-2"><StatusBadge status={displayStatus} /><Badge variant={check.severity === "WARNING" ? "warning" : "outline"}>{check.severity === "WARNING" ? "Warning" : "Blocking rule"}</Badge></span></summary>
                 <div className="space-y-4 px-4 pb-4">
                   <p className="text-sm leading-6 text-foreground-secondary">{check.details.message ?? check.details.note ?? "Inspect the computed evidence for this result."}</p>
+                  <p className="break-words text-xs text-muted-foreground">Revision {run?.revision ?? "unavailable"} · <span className="font-mono">{check.runId ?? run?.id ?? "Run ID unavailable"}</span></p>
                   {displayStatus !== check.status ? <p className="text-sm text-foreground-secondary">Original machine result: <strong>{check.status === "MISMATCH" ? "Mismatch" : "Incomplete"}</strong>. {check.clearedForSubmission === true ? "Exception accepted for submission." : ""} {check.clearedForApproval === true ? "Manager sign-off recorded." : displayStatus === "PENDING_MANAGER_APPROVAL" ? "Manager sign-off is still required." : ""}</p> : null}
                   {check.ruleCode ? <p className="break-words font-mono text-xs text-muted-foreground">{check.ruleCode}</p> : null}
                   <CheckEvidence check={check} documents={documents} onEvidence={onEvidence} returnId={id} />

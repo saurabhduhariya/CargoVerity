@@ -22,10 +22,11 @@ import { DocumentViewer } from "./document-viewer";
 import { ExportPreviewDialog } from "./export-preview-dialog";
 import { FieldsInspector } from "./fields-inspector";
 import { HistoryInspector } from "./history-inspector";
+import { ManagerDecisionSummary } from "./manager-decision-summary";
 import { mappingSelectionIssue } from "./line-mapping-panel";
 import { nextUncertainFieldId } from "./next-uncertain";
 import { isReviewActionCurrent, manualDraftConflict, manualFieldBase, type ReviewActionBase } from "./review-drafts";
-import { blockingAcceptedExceptions, calculateNextRotation, calculateNextZoom, canEnterManualField, checkDisplayStatus, checkLabel, DOCUMENT_LABELS, DOCUMENT_TYPES, formatFieldLabel, isFieldUncertain, validateManagerDecision } from "./review-presentation";
+import { blockingAcceptedExceptions, calculateNextRotation, calculateNextZoom, canEnterManualField, checkLabel, DOCUMENT_LABELS, DOCUMENT_TYPES, formatFieldLabel, isFieldUncertain, validateManagerDecision } from "./review-presentation";
 import { useReviewController } from "./use-review-controller";
 import type { CrossCheckResolutionData, EvidenceTarget, FieldCategory, InspectorTab, ManualFieldDraft, ManualFieldEntry, ResolutionDraft, ReviewWorkspaceCrossCheck, ReviewWorkspaceDocument, ReviewWorkspaceInitialData } from "./review-types";
 
@@ -131,11 +132,8 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
   const checksStale = Boolean(snapshot.crossChecksStale || !snapshot.latestCheckRun || snapshot.latestCheckRun.revision !== shipment.currentRevision);
   const canResolve = ["DRAFT", "IN_REVIEW", "NEEDS_REVIEW"].includes(shipment.status) && !hasFieldDrafts && !checksStale;
   const acceptedExceptions = blockingAcceptedExceptions(crossChecks);
-  const pendingExceptions = acceptedExceptions.filter((check) => checkDisplayStatus(check) === "PENDING_MANAGER_APPROVAL");
-  const approvedExceptions = acceptedExceptions.filter((check) => checkDisplayStatus(check) === "HUMAN_CLEARED").length;
   const managerCommentRequired = managerDecision === "REJECT" || acceptedExceptions.length > 0;
   const uncertainTotal = documents.reduce((count, doc) => count + doc.fields.filter(isFieldUncertain).length, 0);
-  const modifiedCount = documents.reduce((count, doc) => count + doc.fields.filter((field) => field.modelValue !== field.currentValue || ["CORRECTED", "MANUAL_ENTRY"].includes(field.reviewStatus)).length, 0);
 
   useEffect(() => {
     if (!hasDrafts && !managerComment) return;
@@ -556,15 +554,14 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
       <ConfirmDialog open={Boolean(manualPageTarget)} onClose={() => setManualPageTarget(null)} onConfirm={markManualPage} title={`Enable manual entry for page ${manualPageTarget?.page ?? page}?`} description="This records a human manual-entry flag and bumps the shipment revision. It does not change the model's readability evidence. Any existing submission is withdrawn and checks must be recomputed." confirmLabel="Mark for manual entry" busy={Boolean(busy || isRefreshing)}>
         <div className="space-y-2"><Label htmlFor="page-manual-note">Why does this page need manual entry?</Label><Textarea id="page-manual-note" value={pageNote} maxLength={500} rows={3} disabled={Boolean(busy || isRefreshing)} aria-invalid={Boolean(dialogError)} onChange={(event) => { setPageNote(event.target.value); setDialogError(null); }} />{dialogError || feedback?.kind === "error" || feedback?.kind === "warning" ? <p role="alert" className="text-sm text-danger">{dialogError ?? feedback?.message}</p> : null}</div>
       </ConfirmDialog>
-      <ConfirmDialog open={Boolean(managerTarget)} onClose={() => setManagerTarget(null)} onConfirm={confirmManagerDecision} title={`Manager decision · revision ${managerTarget?.revision ?? shipment.currentRevision}`} description="Decide on this exact saved revision after reviewing fields, checks and audit history. Server approval and revision guards are re-evaluated before recording the decision." confirmLabel={managerDecision === "APPROVE" ? "Approve shipment" : "Return to review"} variant={managerDecision === "REJECT" ? "destructive" : "default"} busy={Boolean(busy || isRefreshing)}>
+      <ConfirmDialog open={Boolean(managerTarget)} onClose={() => setManagerTarget(null)} onConfirm={confirmManagerDecision} title={`Manager decision · revision ${managerTarget?.revision ?? shipment.currentRevision}`} description="Decide on this exact saved revision after reviewing fields, checks and audit history. Server approval and revision guards are re-evaluated before recording the decision." confirmLabel={managerDecision === "APPROVE" ? "Approve shipment" : "Return to review"} variant={managerDecision === "REJECT" ? "destructive" : "default"} busy={Boolean(busy || isRefreshing)} className="max-w-2xl">
         <div className="space-y-3">
-          <p className="text-sm text-foreground-secondary">{documents.length} current documents · {modifiedCount} corrected or manually entered fields · {pendingExceptions.length} exceptions awaiting sign-off · {approvedExceptions} exceptions already approved</p>
-          {acceptedExceptions.length ? <p className="text-sm text-warning">Approval requires a meaningful comment for all accepted blocking exceptions, including earlier manager sign-offs. It does not change the original machine results.</p> : null}
-          <Label htmlFor="manager-decision">Decision</Label>
-          <Select id="manager-decision" value={managerDecision} disabled={Boolean(busy || isRefreshing)} onChange={(event) => { setManagerDecision(event.target.value as "APPROVE" | "REJECT"); setDialogError(null); }}><option value="APPROVE">Approve this revision</option><option value="REJECT">Return to review</option></Select>
-          <Label htmlFor="manager-decision-comment">Decision comment {managerCommentRequired ? "(required, at least 5 characters)" : "(optional)"}</Label>
-          <Textarea id="manager-decision-comment" value={managerComment} required={managerCommentRequired} minLength={managerCommentRequired ? 5 : undefined} maxLength={500} rows={3} disabled={Boolean(busy || isRefreshing)} aria-invalid={Boolean(dialogError)} onChange={(event) => { setManagerComment(event.target.value); setDialogError(null); }} />
-          {dialogError || feedback?.kind === "error" || feedback?.kind === "warning" ? <p role="alert" className="text-sm text-danger">{dialogError ?? feedback?.message}</p> : null}
+          <ManagerDecisionSummary data={snapshot} checksStale={checksStale} onInspect={(tab) => { setManagerTarget(null); setInspectorTab(tab); setMobilePane("review"); focusReviewElement(`review-${tab}-heading`); }} />
+          <div className="space-y-1"><Label htmlFor="manager-decision">Decision</Label>
+          <Select id="manager-decision" value={managerDecision} disabled={Boolean(busy || isRefreshing)} onChange={(event) => { setManagerDecision(event.target.value as "APPROVE" | "REJECT"); setDialogError(null); }}><option value="APPROVE">Approve this revision</option><option value="REJECT">Return to review</option></Select></div>
+          <div className="space-y-1"><Label htmlFor="manager-decision-comment">Decision comment {managerCommentRequired ? "(required, at least 5 characters)" : "(optional)"}</Label>
+          <Textarea id="manager-decision-comment" value={managerComment} required={managerCommentRequired} minLength={managerCommentRequired ? 5 : undefined} maxLength={500} rows={3} disabled={Boolean(busy || isRefreshing)} aria-invalid={Boolean(dialogError)} aria-describedby={dialogError ? "manager-decision-error" : undefined} onChange={(event) => { setManagerComment(event.target.value); setDialogError(null); }} /></div>
+          {dialogError || feedback?.kind === "error" || feedback?.kind === "warning" ? <p id="manager-decision-error" role="alert" className="text-sm text-danger">{dialogError ?? feedback?.message}</p> : null}
         </div>
       </ConfirmDialog>
       <ConfirmDialog open={Boolean(leaveHref)} onClose={() => setLeaveHref(null)} onConfirm={() => { if (leaveHref) router.push(leaveHref); }} title="Leave this review?" description="Unsaved values and reasons will be lost when leaving this workspace. Stay here to save or discard them deliberately." confirmLabel="Leave without saving" variant="destructive" />
