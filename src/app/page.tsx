@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowRight, FileCheck2, FileText, GitCompareArrows, ListChecks, LockKeyhole, ShieldCheck, Upload } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 
 import { FOCUS_RING_STYLES } from "@/components/ui/control-styles";
 import { LandingNavigation } from "@/features/landing/landing-navigation";
@@ -8,10 +8,24 @@ import { cn } from "@/lib/utils";
 
 const ctaStyles = "inline-flex min-h-11 max-w-full items-center justify-center gap-2 whitespace-normal rounded-control border px-5 py-3 text-center text-sm font-medium transition-colors duration-[var(--motion-fast)] sm:whitespace-nowrap motion-reduce:transition-none";
 
-const workflow = [
-  { icon: Upload, title: "Bring your documents together", description: "Upload an invoice, packing list and bill of lading into one shipment workspace." },
-  { icon: GitCompareArrows, title: "Review against the source", description: "Inspect extracted fields, compare documents and resolve discrepancies with supporting evidence." },
-  { icon: ShieldCheck, title: "Approve the current revision", description: "Submit for manager review. CSV export stays locked until the current revision is approved." },
+const extracted = ["Parties", "Invoice number and date", "Currency", "Incoterm", "Line items with HSN", "Packages", "Weights", "Containers"];
+
+const steps = [
+  { title: "Upload", screen: "Shipment", description: "Drop the invoice, packing list and bill of lading into one shipment. Scans and photos are accepted." },
+  { title: "Review", screen: "Review", description: "The document sits beside its fields. Uncertain values are marked amber. Confirm with Enter, correct with a reason." },
+  { title: "Approve and export", screen: "Export", description: "The manager approves the checked revision. The CSV follows your filing software's import layout." },
+];
+
+const ledger = [
+  { label: "Data entry", working: "1,100 shipments × 45 min × 12 months", result: "9,900 h", amount: "₹34.65 lakh" },
+  { label: "Amended Bills of Entry", working: "13,200 shipments × 3% × ₹9,000", result: "396 cases", amount: "₹35.64 lakh" },
+];
+
+const guards = [
+  { title: "Uncertain fields need a person", description: "Low-confidence values and fields in a failed check must be confirmed or corrected. Open source pages and quotes where available." },
+  { title: "Mismatches stay on record", description: "Totals, packages and weights are compared across all three documents. An accepted difference needs evidence and manager sign-off." },
+  { title: "Unreadable pages go to manual entry", description: "Skewed or bilingual scans the model cannot read are marked for manual entry, never guessed." },
+  { title: "Every correction is counted", description: "Original values, edits and decisions stay in history, with accuracy reported by field and by supplier." },
 ];
 
 export default function Home() {
@@ -21,65 +35,86 @@ export default function Home() {
       <LandingNavigation />
 
       <main id="main-content" tabIndex={-1} className="outline-none">
-        <section id="workbench" aria-labelledby="hero-title" className="mx-auto grid max-w-7xl gap-10 px-5 pb-14 pt-12 sm:px-8 sm:pb-16 sm:pt-16 lg:grid-cols-[0.9fr_1.1fr] lg:items-center lg:gap-12 lg:py-16">
+        <section id="workbench" aria-labelledby="hero-title" className="mx-auto grid max-w-7xl gap-12 px-5 pb-16 pt-12 sm:px-8 sm:pt-16 lg:grid-cols-[0.95fr_1.05fr] lg:items-center lg:gap-16 lg:pb-24 lg:pt-20">
           <div className="min-w-0">
-            <p className="mb-6 inline-flex items-center gap-2 text-sm font-medium text-primary"><FileCheck2 className="size-4" aria-hidden="true" />Human-controlled document review</p>
-            <h1 id="hero-title" className="max-w-xl text-5xl font-semibold leading-[1.08] tracking-[-0.045em] [overflow-wrap:anywhere] sm:text-6xl xl:text-7xl">
-              Every detail.{" "}<span className="block text-primary">Verified.</span>
+            <h1 id="hero-title" className="max-w-xl text-[2.75rem] font-semibold leading-[1.04] tracking-[-0.03em] text-balance [overflow-wrap:anywhere] sm:text-6xl">
+              Stop retyping what the PDF already says.
             </h1>
-            <p className="mt-6 max-w-md text-lg leading-8 text-foreground-secondary">
-              Verify invoices, packing lists and bills of lading with source evidence, cross-checks and human approval.
+            <p className="mt-6 max-w-lg text-lg leading-8 text-foreground-secondary">
+              Drop in a shipment&rsquo;s documents. CargoVerity extracts the fields, marks the ones it is unsure of, and checks totals, packages and weights across all three before anything reaches your filing software.
             </p>
-            <div className="mt-8 flex flex-wrap items-center gap-3">
+            <div className="mt-9 flex flex-wrap items-center gap-3">
               <Link href="/login" className={cn(ctaStyles, "border-transparent bg-primary text-primary-foreground hover:bg-primary-hover active:bg-primary-active", FOCUS_RING_STYLES)}>Open workbench <ArrowRight aria-hidden="true" className="size-4" /></Link>
-              <a href="#workflow" className={cn(ctaStyles, "border-transparent text-foreground-secondary hover:bg-surface-subtle hover:text-foreground active:bg-neutral-surface", FOCUS_RING_STYLES)}>See how it works <ArrowRight className="size-4" aria-hidden="true" /></a>
+              <a href="#workflow" className={cn(ctaStyles, "border-transparent text-foreground-secondary hover:bg-surface-subtle hover:text-foreground active:bg-neutral-surface", FOCUS_RING_STYLES)}>See how it works</a>
             </div>
           </div>
           <LandingReviewPreview />
         </section>
 
         <div className="border-y border-border bg-background">
-          <div className="mx-auto flex max-w-7xl flex-col gap-5 px-5 py-6 sm:flex-row sm:items-center sm:justify-between sm:gap-8 sm:px-8">
-            <p className="text-sm font-medium text-foreground-secondary">Three documents. One clear view.</p>
-            <ul className="flex flex-wrap gap-x-7 gap-y-4 text-sm text-foreground-secondary">
-              {["Commercial invoice", "Packing list", "Bill of lading"].map((label) => <li key={label} className="inline-flex items-center gap-2"><FileText className="size-4 text-muted-foreground" aria-hidden="true" />{label}</li>)}
+          <div className="mx-auto flex max-w-7xl flex-col gap-4 px-5 py-5 sm:px-8 lg:flex-row lg:items-baseline lg:gap-10">
+            <p className="shrink-0 text-sm font-medium">Extracted with a confidence score</p>
+            <ul aria-label="Extracted fields" className="flex flex-wrap gap-x-5 gap-y-2 text-sm text-foreground-secondary">
+              {extracted.map((label) => <li key={label}>{label}</li>)}
             </ul>
           </div>
         </div>
 
-        <section id="workflow" aria-labelledby="workflow-title" className="mx-auto max-w-7xl scroll-mt-8 px-5 py-16 sm:px-8 sm:py-24">
-          <h2 id="workflow-title" className="text-3xl font-semibold tracking-tight sm:text-4xl">From document to decision.</h2>
-          <p className="mt-4 max-w-xl text-base leading-7 text-foreground-secondary">A focused review flow that keeps the source, the discrepancy and the next action connected.</p>
-          <ol className="mt-10 grid gap-8 sm:mt-12 md:grid-cols-3 md:gap-10">
-            {workflow.map(({ icon: Icon, title, description }, index) => (
-              <li key={title} className="min-w-0">
-                <div className="mb-5 flex items-center gap-4"><span className="flex size-11 shrink-0 items-center justify-center rounded-panel bg-selected text-primary"><Icon className="size-5" aria-hidden="true" /></span>{index < workflow.length - 1 ? <span className="hidden h-px flex-1 bg-border md:block" aria-hidden="true" /> : null}</div>
-                <h3 className="text-lg font-semibold leading-7">{title}</h3>
+        <section id="workflow" aria-labelledby="workflow-title" className="mx-auto max-w-7xl scroll-mt-8 px-5 py-20 sm:px-8 sm:py-28">
+          <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr] lg:items-end">
+            <h2 id="workflow-title" className="max-w-md text-3xl font-semibold leading-tight tracking-[-0.02em] sm:text-4xl">Three documents in. One checked file out.</h2>
+            <p className="max-w-lg text-base leading-7 text-foreground-secondary lg:justify-self-end">Your filing software stays as it is. CargoVerity replaces the Excel checklist and the WhatsApp doubts in between.</p>
+          </div>
+          <ol className="mt-14 grid gap-10 md:grid-cols-3 md:gap-8">
+            {steps.map(({ title, screen, description }) => (
+              <li key={title} className="min-w-0 border-t border-foreground pt-5">
+                <div className="flex items-baseline justify-between gap-3"><h3 className="text-lg font-semibold">{title}</h3><span className="font-mono text-xs text-muted-foreground">{screen}</span></div>
                 <p className="mt-3 max-w-sm text-sm leading-6 text-foreground-secondary">{description}</p>
               </li>
             ))}
           </ol>
         </section>
 
-        <section id="human-control" aria-labelledby="control-title" className="scroll-mt-8 border-y border-border bg-background">
-          <div className="mx-auto grid max-w-7xl gap-10 px-5 py-16 sm:px-8 sm:py-20 lg:grid-cols-[1fr_1fr] lg:gap-24">
+        <section id="cost" aria-labelledby="cost-title" className="scroll-mt-8 border-y border-border bg-background">
+          <div className="mx-auto grid max-w-7xl gap-12 px-5 py-20 sm:px-8 sm:py-24 lg:grid-cols-[0.8fr_1.2fr] lg:gap-20">
             <div>
-              <ShieldCheck className="mb-6 size-8 text-primary" aria-hidden="true" />
-              <h2 id="control-title" className="max-w-md text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">AI assists.<br />People decide.</h2>
-              <p className="mt-5 max-w-md text-base leading-7 text-foreground-secondary">Automation helps you find what needs attention. Reviewers own the corrections. Managers own the approval.</p>
+              <h2 id="cost-title" className="max-w-sm text-3xl font-semibold leading-tight tracking-[-0.02em] sm:text-4xl">What retyping costs a year</h2>
+              <p className="mt-5 max-w-sm text-base leading-7 text-foreground-secondary">Company A&rsquo;s own figures for its 14-person documentation team at Nhava Sheva, at ₹350 per staff hour.</p>
             </div>
-            <dl className="space-y-7 lg:pt-2">
-              <div><dt className="flex items-start gap-4 text-base font-semibold"><FileCheck2 className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />Evidence, not assumptions</dt><dd className="ml-9 mt-2 text-sm leading-6 text-foreground-secondary">Inspect source quotes and page references where available. Uncertain fields keep their review reasons visible.</dd></div>
-              <div><dt className="flex items-start gap-4 text-base font-semibold"><ListChecks className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />A traceable review history</dt><dd className="ml-9 mt-2 text-sm leading-6 text-foreground-secondary">Keep original results, corrections and human exception decisions distinct, with revision-aware audit history.</dd></div>
-              <div><dt className="flex items-start gap-4 text-base font-semibold"><LockKeyhole className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />Approval before export</dt><dd className="ml-9 mt-2 text-sm leading-6 text-foreground-secondary">AI never approves or exports a shipment. Export requires manager approval of the current revision.</dd></div>
-            </dl>
+            <div className="min-w-0">
+              <table className="w-full text-left text-sm">
+                <caption className="sr-only">Annual cost of manual document entry</caption>
+                <thead><tr className="border-b border-foreground text-xs text-muted-foreground"><th scope="col" className="pb-3 font-medium">Cost</th><th scope="col" className="hidden pb-3 font-medium sm:table-cell">Working</th><th scope="col" className="pb-3 text-right font-medium">Per year</th></tr></thead>
+                <tbody>
+                  {ledger.map((row) => <tr key={row.label} className="border-b border-border align-baseline">
+                    <th scope="row" className="py-4 pr-4 font-medium">{row.label}<span className="mt-1 block font-mono text-xs font-normal text-muted-foreground sm:hidden">{row.working}</span></th>
+                    <td className="hidden py-4 pr-4 font-mono text-xs text-foreground-secondary sm:table-cell">{row.working} <span className="text-muted-foreground">= {row.result}</span></td>
+                    <td className="whitespace-nowrap py-4 text-right font-mono tabular-nums">{row.amount}</td>
+                  </tr>)}
+                </tbody>
+                <tfoot><tr><th scope="row" className="pt-5 text-base font-semibold">Total</th><td className="hidden sm:table-cell" /><td className="whitespace-nowrap pt-5 text-right font-mono text-2xl font-semibold tabular-nums">₹70.29 lakh</td></tr></tfoot>
+              </table>
+              <dl className="mt-12 grid gap-6 sm:grid-cols-3">
+                {[["Entry time per shipment", "45 → under 15 min"], ["Field accuracy, 200 past shipments", "95%"], ["Amended Bills of Entry", "Halved in 3 months"]].map(([label, value]) => <div key={label} className="border-l border-border-strong pl-4"><dt className="text-xs text-muted-foreground">Target · {label}</dt><dd className="mt-2 text-base font-semibold">{value}</dd></div>)}
+              </dl>
+            </div>
           </div>
+        </section>
+
+        <section id="human-control" aria-labelledby="control-title" className="mx-auto max-w-7xl scroll-mt-8 px-5 py-20 sm:px-8 sm:py-28">
+          <h2 id="control-title" className="max-w-2xl text-3xl font-semibold leading-tight tracking-[-0.02em] sm:text-4xl">Nothing exports until a person has cleared it.</h2>
+          <p className="mt-5 max-w-xl text-base leading-7 text-foreground-secondary">AI never approves or exports a shipment. Executives confirm the data, the documentation manager approves it.</p>
+          <dl className="mt-14 grid gap-x-12 gap-y-10 sm:grid-cols-2">
+            {guards.map(({ title, description }) => <div key={title} className="min-w-0"><dt className="text-base font-semibold">{title}</dt><dd className="mt-2 max-w-md text-sm leading-6 text-foreground-secondary">{description}</dd></div>)}
+          </dl>
         </section>
       </main>
 
-      <footer className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-5 py-8 sm:flex-row sm:items-center sm:justify-between sm:px-8">
-        <div><p className="font-semibold tracking-tight">CargoVerity</p><p className="mt-2 text-xs leading-5 text-muted-foreground">Synthetic-data demo. Not customs clearance or a filing service.</p></div>
-        <Link href="/dashboard" className={cn("inline-flex min-h-11 w-fit items-center gap-2 rounded-control px-3 text-sm font-medium text-foreground-secondary hover:bg-surface-subtle hover:text-primary", FOCUS_RING_STYLES)}>View dashboard <ArrowRight className="size-4" aria-hidden="true" /></Link>
+      <footer className="border-t border-border">
+        <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-5 py-8 sm:flex-row sm:items-center sm:justify-between sm:px-8">
+          <p className="text-xs leading-5 text-muted-foreground"><span className="font-semibold text-foreground">CargoVerity</span> · Synthetic-data demo. Not customs clearance or a filing service.</p>
+          <Link href="/dashboard" className={cn("inline-flex min-h-11 w-fit items-center gap-2 rounded-control px-3 text-sm font-medium text-foreground-secondary hover:bg-surface-subtle hover:text-foreground", FOCUS_RING_STYLES)}>Go to shipments <ArrowRight className="size-4" aria-hidden="true" /></Link>
+        </div>
       </footer>
     </div>
   );

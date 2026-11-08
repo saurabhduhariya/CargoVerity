@@ -19,7 +19,7 @@ export async function login(page: Page, email: string, password: string) {
   for (let attempt = 1; ; attempt += 1) {
     await waitForLoginForm(page);
     await page.getByLabel("Email").fill(email);
-    await page.getByLabel("Password").fill(password);
+    await page.getByLabel("Password", { exact: true }).fill(password);
     await page.getByRole("button", { name: "Sign in" }).click();
     try {
       await expect(page).toHaveURL(/\/dashboard$/, { timeout: 20_000 });

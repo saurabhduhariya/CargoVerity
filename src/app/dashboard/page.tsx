@@ -21,11 +21,10 @@ export default async function DashboardPage() {
 
 function SetupRequired() {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-50 px-6">
-      <div className="max-w-lg rounded-2xl border border-amber-200 bg-white p-8 shadow-sm">
-        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-700">Setup required</p>
-        <h1 className="mt-4 text-2xl font-semibold text-slate-950">Configure Supabase before signing in</h1>
-        <p className="mt-3 text-slate-600">Copy <code>.env.example</code> to <code>.env</code> and add the browser-safe Supabase URL and anon/publishable key. The service-role key remains server-only.</p>
+    <main className="flex min-h-screen items-center justify-center bg-background px-6">
+      <div className="max-w-lg rounded-panel border border-border bg-surface p-8">
+        <h1 className="text-2xl font-semibold text-foreground">Connect your workspace</h1>
+        <p className="mt-3 text-sm leading-6 text-foreground-secondary">Copy <code>.env.example</code> to <code>.env</code> and add the Supabase URL and publishable key to enable sign-in.</p>
       </div>
     </main>
   );

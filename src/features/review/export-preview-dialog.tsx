@@ -329,14 +329,14 @@ export function ExportPreviewDialog({
 
           {preview ? <>
             <section className={`space-y-2 rounded-control border p-3 ${preview.ready && preview.allowed && preview.blockers.length === 0 ? "border-neutral-border bg-neutral-surface text-neutral" : "border-warning-border bg-warning-surface text-warning"}`} aria-label="Export readiness">
-              <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-base font-semibold">{preview.ready && preview.allowed && preview.blockers.length === 0 ? "Server preflight allows export" : "Export is blocked"}</h3><Badge variant="outline">{preview.profileId} · v{preview.profileVersion}</Badge></div>
-              <p className="text-sm">{preview.ready && preview.allowed && preview.blockers.length === 0 ? `Approved revision ${preview.approvedRevision}. Download rechecks all guards and verifies the CSV bytes against this preview.` : `${preview.blockers.length} recorded blocker${preview.blockers.length === 1 ? "" : "s"}. Review the approval and blocking reasons below.`}</p>
+              <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-base font-semibold">{preview.ready && preview.allowed && preview.blockers.length === 0 ? "Ready to export" : "Export is blocked"}</h3><Badge variant="outline">{preview.profileId} · v{preview.profileVersion}</Badge></div>
+              <p className="text-sm">{preview.ready && preview.allowed && preview.blockers.length === 0 ? `Revision ${preview.approvedRevision} is approved. The download is verified against this preview.` : `Resolve ${preview.blockers.length} issue${preview.blockers.length === 1 ? "" : "s"} below before downloading.`}</p>
             </section>
 
             <section className="space-y-3" aria-label="Approval and revision">
               <h3 className="text-base font-semibold">Approval and revision</h3>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                <div><dt className="text-foreground-secondary">Server workflow</dt><dd className="mt-1"><StatusBadge status={preview.shipmentStatus} /></dd></div>
+                <div><dt className="text-foreground-secondary">Shipment status</dt><dd className="mt-1"><StatusBadge status={preview.shipmentStatus} /></dd></div>
                 <div><dt className="text-foreground-secondary">Approved revision</dt><dd className="mt-1 font-mono">{preview.approvedRevision === null ? "Not approved" : preview.approvedRevision}</dd></div>
                 <div><dt className="text-foreground-secondary">Approved at</dt><dd className="mt-1">{preview.approvedAt ? displayDate(preview.approvedAt) : "Not approved"}</dd></div>
                 <div><dt className="text-foreground-secondary">Approved by</dt><dd className="mt-1 break-words">{preview.approvedBy ?? "No manager approval"}</dd></div>
@@ -357,7 +357,7 @@ export function ExportPreviewDialog({
               })}</ul>
             </section> : null}
 
-            <section className="space-y-2 border-t border-border pt-4" aria-label="Export profile assumption"><h3 className="text-base font-semibold">Profile scope</h3><p className="text-sm leading-6 text-foreground-secondary">{preview.assumptionLabel}</p><p className="text-sm leading-6 text-foreground-secondary">Accepted exceptions remain human decisions, not machine passes or customs clearance.</p></section>
+            <section className="space-y-2 border-t border-border pt-4" aria-label="Export profile assumption"><h3 className="text-base font-semibold">Import layout</h3><p className="text-sm leading-6 text-foreground-secondary">{preview.assumptionLabel}</p></section>
 
             {preview.headers ? <section className="space-y-3 border-t border-border pt-4" aria-label="CSV preview">
               <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-base font-semibold">CSV preview</h3><p className="text-sm text-foreground-secondary">{preview.rowCount === undefined ? "Total row count not recorded" : `${preview.rowCount} rows`} · {preview.headers.length} columns{preview.rowCount !== undefined && preview.rows && preview.rowCount > preview.rows.length ? ` · showing first ${preview.rows.length}` : ""}</p></div>
@@ -384,7 +384,7 @@ export function ExportPreviewDialog({
 
         <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border p-4 sm:px-6">
           <Button type="button" variant="outline" size="sm" disabled={loading || downloading} onClick={refreshPreflight}><RefreshCw className="size-4" aria-hidden="true" />Refresh preflight</Button>
-          <Button type="button" size="sm" disabled={!canDownload} loading={downloading} onClick={() => void downloadCsv()}><Download className="size-4" aria-hidden="true" />{shipmentStatus === "EXPORTED" ? "Re-download CSV" : "Download guarded CSV"}</Button>
+          <Button type="button" size="sm" disabled={!canDownload} loading={downloading} onClick={() => void downloadCsv()}><Download className="size-4" aria-hidden="true" />{shipmentStatus === "EXPORTED" ? "Re-download CSV" : "Download CSV"}</Button>
         </footer>
       </div>
     </dialog>

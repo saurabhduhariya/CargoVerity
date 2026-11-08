@@ -13,5 +13,5 @@ export default async function ReportsPage() {
 
   const report = await getAccuracyReport(prisma, appUser);
 
-  return <AccuracyReportView initialReport={report} />;
+  return <AccuracyReportView initialReport={report} email={appUser.email} role={appUser.role} />;
 }

@@ -2,17 +2,17 @@
 
 ## Scope and identity
 
-This records the approved shared UI foundation and its document-review integration.
-Other application screens are outside this migration's scope.
+This records the shared UI foundation and its use across the public page, sign-in,
+shipment queue, document intake, review workspace, and accuracy reports.
 CargoVerity is a synthetic-demo customs-document verification workbench. Its interface
-must support fast, accurate human review: precise typography, neutral surfaces, one blue
-interaction accent, and explicit evidence and workflow states. No decorative gradients,
+must support fast, accurate human review: precise typography, warm paper neutrals, ink
+actions, and colour reserved for state. Amber means "a person must look at this" and is the
+loudest colour on screen; red marks failing checks; blue appears only as the focus ring. No decorative gradients,
 3D effects, animated status pulses, or invented accuracy/clearance claims.
 
 Existing API contracts, authentication, role checks, audit history, revisions, submission
 guards, and export guards remain authoritative. The desktop review workspace stays side
-by side. Feature-specific style overrides remain supported; migrating other screens is a
-separate task. Review-specific behavior is recorded in
+by side. Feature-specific style overrides remain supported. Review-specific behavior is recorded in
 `.impeccable/surfaces/src-app-review-id-page-tsx.md`.
 
 ## Tokens
@@ -22,33 +22,35 @@ through `@theme inline`; use these instead of adding new literal colors to compo
 
 | Role | CSS token | Value / utility |
 |---|---|---|
-| Canvas | `--background` | `#F8FAFC` / `bg-background` |
+| Canvas | `--background` | `#F6F6F3` / `bg-background` |
 | Content | `--surface` | `#FFFFFF` / `bg-surface` |
-| Secondary surface | `--surface-subtle` | `#F1F5F9` / `bg-surface-subtle` |
-| Evidence backdrop | `--viewer-background` | `#E8EDF2` / `bg-viewer-background` |
-| Primary text | `--foreground` | `#0F172A` / `text-foreground` |
-| Secondary text | `--foreground-secondary` | `#475569` / `text-foreground-secondary` |
-| Supporting text / placeholders | `--muted-foreground` | `#64748B` / `text-muted-foreground` |
-| Divider | `--border` | `#E2E8F0` / `border-border` |
-| Strong divider | `--border-strong` | `#CBD5E1` / `border-border-strong` |
-| Control boundary | `--control-border` | `#7A889C` / `border-control-border` |
-| Primary / focus | `--primary`, `--ring` | `#2563EB` / `bg-primary`, `ring-ring` |
-| Primary hover / active | `--primary-hover`, `--primary-active` | `#1D4ED8`, `#1E40AF` |
-| Selected surface | `--selected` | `#EFF6FF` / `bg-selected` |
-| Disabled | `--disabled`, `--disabled-foreground` | `#F1F5F9`, `#64748B` |
+| Secondary surface | `--surface-subtle` | `#F1F1ED` / `bg-surface-subtle` |
+| Evidence backdrop | `--viewer-background` | `#E7E6E1` / `bg-viewer-background` |
+| Primary text | `--foreground` | `#15171C` / `text-foreground` |
+| Secondary text | `--foreground-secondary` | `#4A4F58` / `text-foreground-secondary` |
+| Supporting text / placeholders | `--muted-foreground` | `#696E77` / `text-muted-foreground` |
+| Divider | `--border` | `#E5E4DF` / `border-border` |
+| Strong divider | `--border-strong` | `#D2D1CB` / `border-border-strong` |
+| Control boundary | `--control-border` | `#8A8E96` / `border-control-border` |
+| Primary action (ink) | `--primary` | `#15171C` / `bg-primary` |
+| Primary hover / active | `--primary-hover`, `--primary-active` | `#2C2F37`, `#000000` |
+| Focus ring | `--ring` | `#3159D4` / `ring-ring` |
+| Selected surface | `--selected` | `#EFEEE9` / `bg-selected` |
+| Disabled | `--disabled`, `--disabled-foreground` | `#F1F1ED`, `#696E77` |
+| Attention marker (non-text) | `--warning-strong` | `#D98A0B` / `bg-warning-strong` |
 
 | Semantic tone | Foreground | Surface | Border |
 |---|---|---|---|
-| Neutral | `#334155` | `#F1F5F9` | `#CBD5E1` |
-| Success | `#166534` | `#F0FDF4` | `#BBF7D0` |
-| Review / warning | `#92400E` | `#FFFBEB` | `#FDE68A` |
-| Error / danger | `#991B1B` | `#FEF2F2` | `#FECACA` |
-| Information | `#1E40AF` | `#EFF6FF` | `#BFDBFE` |
+| Neutral | `#3D4149` | `#F1F1ED` | `#D8D7D1` |
+| Success | `#1E6A46` | `#EEF6F1` | `#C6E2D1` |
+| Review / warning | `#8A4A00` | `#FFF4DC` | `#F1CF8B` |
+| Error / danger | `#A11D1D` | `#FDF0EF` | `#F1C6C2` |
+| Information | `#2B4A8B` | `#EFF3FB` | `#CAD6EF` |
 
 Semantic utilities follow `text-warning`, `bg-warning-surface`, `border-warning-border`,
 and the equivalent `neutral`, `success`, `danger`, and `info` names. Destructive buttons
-use danger foreground as their solid background, white text, `#7F1D1D` hover, and
-`#450A0A` active. Light semantic borders are dividers, not the sole indicator of a state.
+use danger foreground as their solid background, white text, `#821616` hover, and
+`#4F0B0B` active. Light semantic borders are dividers, not the sole indicator of a state.
 
 ### Typography
 
@@ -78,13 +80,13 @@ Use `Label` for actual form labels; the typography label variant is display-only
 - Radii: small 4px, controls 6px, panels 8px, dialogs 12px.
   Use `rounded-small`, `rounded-control`, `rounded-panel`, `rounded-dialog`.
 - Panels use a 1px divider and no shadow. Overlay only:
-  `0 12px 40px rgb(15 23 42 / 14%)` (`shadow-overlay`).
+  `0 12px 40px rgb(21 23 28 / 14%)` (`shadow-overlay`).
 - Control heights: 40px default, 36px compact, 44px large. Default and compact
   controls become 44px below 640px or with a coarse pointer.
   Buttons wrap long action labels and grow when their intrinsic content needs more height.
   Explicit existing height and wrapping class overrides remain supported.
 - Table header: 44px; body rows: minimum 52px, expanding for wrapped content.
-- Focus: 2px blue ring with 2px offset. Disabled controls use explicit colors, not opacity.
+- Focus: 2px blue ring with 2px offset; it is the only blue in the interface. Disabled controls use explicit colors, not opacity.
 - State transitions: 150ms, with a 200ms secondary token. Reduced motion removes
   transitions and spinner motion while keeping loading text and busy semantics.
 - Native scrollbars, caret, accent colors, and text selection use the palette without
@@ -92,7 +94,7 @@ Use `Label` for actual form labels; the typography label variant is display-only
 
 ## Components
 
-All components live in `src/components/ui/`. Existing exports and native form props
+Shared primitives live in `src/components/ui/`. Existing exports and native form props
 remain compatible; class overrides are merged with the existing `cn` helper.
 
 | Component | Contract |
@@ -107,6 +109,26 @@ remain compatible; class overrides are merged with the existing `cn` helper.
 | `Tabs` family | Controlled or default-value state, linked tabs/panels, roving focus, arrows/Home/End, disabled-tab skipping, horizontal/vertical and RTL support. Manual activation uses native Enter/Space. Panels stay mounted to retain drafts. |
 | `ConfirmDialog` | Native modal dialog, labelled title/description, safe initial Cancel focus, native focus containment/restoration. Controlled open state; caller owns mutation and success/error handling. Busy blocks duplicate confirmation and dismissal. |
 | `FeedbackState`, `Skeleton` | Caller-provided text/actions. Errors use alert semantics; loading/success use status semantics. Skeletons are static, constrained to the container width, and hidden from assistive technology. |
+
+### Application composition
+
+- `src/components/brand.tsx` owns the wordmark and an authored SVG mark: three ruled lines
+  (three documents that agree) with a check.
+- `src/components/app-header.tsx` supplies Shipments/Accuracy navigation, current-page state,
+  a skip link, and a native account disclosure with keyboard dismissal and sign-out feedback.
+  The review workspace uses the mark with shipment-specific navigation and actions.
+- Queue counts and filters stay compact. Mobile secondary filters are expandable; desktop
+  rows and mobile entries retain status, document availability, review state, and next action.
+- `DocumentDropzone` keeps a labelled native file input with drag-and-drop selection.
+  One file belongs to each slot. Selection, private transfer, validation, and saved state
+  remain distinct; replacement still requires explicit confirmation.
+- Field confirmation sits beside the value. Units are inline; uncertainty reasons and source
+  actions remain visible. Saved review notes and calculation identifiers use disclosures.
+- Secondary metadata yields to operational content. Copy names the task and necessary
+  consequence without repeating the same workflow explanation in every section.
+- The public SHP-24811 example is local synthetic state: USD 16,320 invoice amount,
+  3,120 kg invoice source, and 3,165 kg supporting documents. Correcting the deliberately
+  transposed 3,210 kg extraction leaves the separate 45 kg cross-document difference visible.
 
 ### State semantics
 
@@ -220,3 +242,39 @@ remaining QA; no existing shipments were reseeded. Browser verification used emu
 viewports in headless Chromium, not physical devices, other engines, or screen readers.
 It does not certify production deployment, AI accuracy, or customs compliance. Unsaved drafts
 are workspace-memory state; retention across full reload or route departure is not promised.
+
+### Whole-site consistency pass — 2026-11-08
+
+Shared branding/navigation, concise workflow copy, compact queue and field controls,
+native-file-input dropzones, password visibility, and report scope disclosure now follow
+the same neutral/blue foundation. No new dependencies or raster assets were introduced.
+
+The final production build and lint passed; the unit suite passed **901 tests across
+56 files**. The 18 targeted browser tests passed across the initial run and two targeted
+retries: the initial run found a 200%-text heading overflow (fixed) and a cold navigation
+timeout (passed on retry). Final authenticated confirmation at 1440, 1280, 1024, and
+390px passed source-return navigation, account/report controls, and export preflight with
+zero page errors or application mutations. Detailed current-task verification is recorded in
+`docs/ui-consistency-qa.md`; earlier results above remain historical.
+
+### Ink-and-amber redesign — 2026-11-08
+
+The blue/slate look was replaced with warm paper neutrals, ink primary actions and an amber
+attention colour, so uncertain fields are the most visible thing on any screen. Tabs use an
+ink underline. Link buttons are ink with a quiet underline.
+
+- Landing page leads with the client's problem, shows Company A's own ₹70.29 lakh cost model
+  as a ledger (labelled as their figures) and the brief's targets (labelled as targets).
+- Queue: one-line count summary replaces the stat cards; priority is an amber dot on the next
+  action; document slots are CI/PL/BL chips (dashed when missing, amber or red by state).
+- Review: single-row header with shipment reference, status and a cleared-fields meter;
+  segmented document switcher with amber counts; viewer controls in one toolbar with `<kbd>`
+  shortcut hints; denser field rows with an amber dot, tinted row and amber input border for
+  uncertain fields, a confidence bar beside the model estimate, and a primary Confirm button
+  on uncertain rows. Check rows collapse to one line with a chevron.
+- Shipment, reports and sign-in screens follow the same scale; repeated limits and
+  disclaimers now appear once.
+
+Verification: lint, typecheck, `npm run build` passed; unit suite **901/901** across 56 files;
+mechanical design scan `[]`; authenticated Chromium captures at 1440×900 and 390×844 of every
+screen were inspected once and fixed in one batch. E2E suites were not rerun in this pass.

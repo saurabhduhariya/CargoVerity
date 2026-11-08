@@ -29,9 +29,9 @@ async function ensureShipmentWithDocuments(page: Page) {
   shipmentId = page.url().split("/").pop()!;
 
   await page.getByText("Load synthetic sample documents", { exact: true }).click();
-  await page.getByLabel("Select Synthetic Scenario").selectOption("SHP-24811");
+  await page.getByLabel("Sample scenario").selectOption("SHP-24811");
   await page.getByRole("button", { name: "Load synthetic documents" }).click();
-  await expect(page.getByText(/Successfully loaded synthetic demo documents for SHP-24811/)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(/SHP-24811 sample documents loaded/)).toBeVisible({ timeout: 60_000 });
   return shipmentId;
 }
 
@@ -68,12 +68,12 @@ test("renders the PDF on a non-blank canvas without an iframe; zoom and rotate r
   expect(initial.height).toBeGreaterThan(0);
   expect(initial.drawn).toBe(true);
 
-  await page.getByTitle("Zoom in").click();
+  await page.getByRole("button", { name: "Zoom in", exact: true }).click();
   await waitForRender(page);
   const zoomed = await canvasState(page);
   expect(zoomed.width).toBeGreaterThan(initial.width);
 
-  await page.getByTitle("Rotate 90 degrees").click();
+  await page.getByRole("button", { name: "Rotate document 90 degrees", exact: true }).click();
   await waitForRender(page);
   const rotated = await canvasState(page);
   // A portrait page rotated 90 degrees becomes landscape.
@@ -92,11 +92,11 @@ test("a failed document URL shows an error state and Retry fetches a fresh link"
   });
 
   await page.goto(`/review/${id}`);
-  await expect(page.getByRole("alert").filter({ hasText: "could not be displayed" })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("alert").filter({ hasText: "Private document unavailable" })).toBeVisible({ timeout: 60_000 });
 
   blocked = false;
   const fresh = page.waitForResponse((response) => /\/api\/documents\/[0-9a-f-]+$/.test(response.url()));
-  await page.getByRole("button", { name: "Retry" }).click();
+  await page.getByRole("button", { name: "Retry secure document", exact: true }).click();
   expect((await fresh).status()).toBe(200);
   await waitForRender(page);
   expect((await canvasState(page)).drawn).toBe(true);
@@ -108,14 +108,16 @@ test("Document / Fields / Checks tabs work on a phone-sized viewport", async ({ 
   await page.goto(`/review/${id}`);
 
   const viewerSection = page.getByRole("region", { name: "Document evidence viewer" });
-  await page.getByRole("button", { name: /^Document$/ }).click();
+  await expect(page.getByTestId("review-workspace")).toHaveAttribute("data-layout", "mobile");
+  await page.getByRole("tab", { name: "Document", exact: true }).click();
   await expect(viewerSection).toBeVisible();
   await waitForRender(page);
 
-  await page.getByRole("button", { name: /^Checks/ }).click();
+  await page.getByRole("tab", { name: /^Review/ }).click();
+  await page.getByRole("tab", { name: /^Checks/ }).click();
   await expect(viewerSection).toBeHidden();
-  await expect(page.getByText(/Deterministic Cross-Checks/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Cross-checks", exact: true })).toBeVisible();
 
-  await page.getByRole("button", { name: /^Fields/ }).click();
-  await expect(page.getByText(/Deterministic Cross-Checks/)).toBeHidden();
+  await page.getByRole("tab", { name: /^Fields/ }).click();
+  await expect(page.getByRole("heading", { name: "Cross-checks", exact: true })).toBeHidden();
 });

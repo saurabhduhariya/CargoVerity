@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, Check, Eye, Plus, Save, X } from "lucide-react";
+import { Check, Eye, Plus, Save, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FOCUS_RING_STYLES } from "@/components/ui/control-styles";
@@ -38,54 +38,65 @@ export function FieldEditor({ doc, field, draft, readOnly, disabled, focused, on
   const canConfirm = !readOnly && !disabled && !draft && !reviewed && Boolean(field.currentValue?.trim());
   const cardId = `field-card-${field.id}`;
   const reasonId = `field-reason-${field.id}`;
+  const confidence = confidencePercent(field.modelConfidence);
 
   return (
-    <article id={cardId} tabIndex={-1} aria-label={`${label}${uncertain ? " (needs review)" : ""}`} data-uncertain={uncertain ? "true" : "false"} data-focused-uncertain={focused ? "true" : undefined} className={cn("min-w-0 space-y-3 border-b border-border px-4 py-4 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", uncertain && "border-warning-border bg-warning-surface", focused && "ring-2 ring-inset ring-ring")}>
+    <article id={cardId} tabIndex={-1} aria-label={`${label}${uncertain ? " (needs review)" : ""}`} data-uncertain={uncertain ? "true" : "false"} data-focused-uncertain={focused ? "true" : undefined} className={cn("relative min-w-0 space-y-2 border-b border-border px-4 py-3 outline-none transition-colors duration-[var(--motion-fast)] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring motion-reduce:transition-none", uncertain && "bg-warning-surface", focused && "ring-2 ring-inset ring-ring")}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <Label htmlFor={`field-input-${field.id}`} className="font-semibold text-foreground">{label}</Label>
-        <div className="flex flex-wrap items-center gap-2">
+        <Label htmlFor={`field-input-${field.id}`} className="flex min-w-0 items-center gap-2 font-medium text-foreground">{uncertain ? <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-warning-strong" /> : null}<span className="min-w-0 break-words">{label}</span></Label>
+        <div className="flex flex-wrap items-center gap-1.5">
           {draft ? <Badge variant="info">Unsaved draft</Badge> : null}
-          <StatusBadge status={field.reviewStatus}>{field.reviewStatus === "PENDING" ? "Awaiting confirmation" : undefined}</StatusBadge>
+          {field.reviewStatus === "PENDING" ? <span className="text-xs text-muted-foreground">Not confirmed</span> : <StatusBadge status={field.reviewStatus} />}
         </div>
       </div>
-      {reason ? <p className={cn("text-sm leading-5", uncertain ? "text-warning" : "text-foreground-secondary")}><span className="font-medium">{uncertain ? "Review reason: " : reviewed ? "Saved reason: " : ""}</span>{reason}</p> : null}
-      <Input id={`field-input-${field.id}`} value={draft?.value ?? field.currentValue ?? ""} readOnly={readOnly} disabled={disabled} maxLength={500} className={categorizeFieldKey(field.fieldKey) === "parties" ? "" : "font-mono tabular-nums"} aria-invalid={Boolean(draft?.error)} aria-describedby={draft?.error ? `field-error-${field.id}` : undefined} placeholder={field.currentValue === null ? "No extracted value" : undefined} onChange={(event) => onDraft({ value: event.target.value })} onKeyDown={(event) => {
+      {reason && !reviewed ? <p className={cn("text-sm leading-5", uncertain ? "text-warning" : "text-foreground-secondary")}><span className="sr-only">Review reason: </span>{reason}</p> : null}
+      <div className="flex items-start gap-2">
+      <div className="relative min-w-0 flex-1"><Input id={`field-input-${field.id}`} value={draft?.value ?? field.currentValue ?? ""} readOnly={readOnly} disabled={disabled} maxLength={500} className={cn(categorizeFieldKey(field.fieldKey) !== "parties" && "font-mono tabular-nums", field.unit && "pr-14", uncertain && !readOnly && "border-warning-strong", readOnly && "border-border bg-surface-subtle")} aria-invalid={Boolean(draft?.error)} aria-describedby={draft?.error ? `field-error-${field.id}` : undefined} placeholder={field.currentValue === null ? "No extracted value" : undefined} onChange={(event) => onDraft({ value: event.target.value })} onKeyDown={(event) => {
         if (event.key !== "Enter") return;
         event.preventDefault();
         if (canConfirm) onSave("CONFIRMED");
         else document.getElementById(reasonId)?.focus();
-      }} />
-      {field.unit ? <p className="text-xs text-muted-foreground">Unit: <span className="font-mono">{field.unit}</span></p> : null}
+      }} />{field.unit ? <span className="pointer-events-none absolute inset-y-0 right-3 flex max-w-10 items-center truncate font-mono text-xs text-muted-foreground" title={`Unit: ${field.unit}`}>{field.unit}</span> : null}</div>
+      {!readOnly && !reviewed && !draft ? <Button type="button" variant={uncertain ? "default" : "outline"} title="Confirm (Enter)" disabled={!canConfirm} onClick={() => onSave("CONFIRMED")}><Check className="size-4" aria-hidden="true" />Confirm</Button> : null}
+      </div>
       {draft?.conflict === "changed" ? (
         <div role="alert" className="space-y-2 rounded-control border border-warning-border bg-warning-surface p-3 text-sm text-warning">
           <p className="font-semibold">The saved value or review state changed.</p>
-          <p>Latest saved value: <span className="break-words font-mono">{field.currentValue ?? "Empty"}</span>. Your draft and reason are retained. Compare them before saving again.</p>
+          <p>Latest saved value: <span className="break-words font-mono">{field.currentValue ?? "Empty"}</span>. Your draft and reason are kept. Compare them before saving again.</p>
           <div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="outline" disabled={disabled || readOnly} onClick={onAcknowledge}>Keep my draft</Button><Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={onDiscard}>Use saved value</Button></div>
         </div>
       ) : null}
       {draft && !readOnly ? (
-        <div className="space-y-2">
-          <Label htmlFor={reasonId}>Correction reason <span className="font-normal">(at least 3 characters)</span></Label>
-          <Textarea id={reasonId} rows={2} maxLength={500} value={draft.reason} disabled={disabled} onChange={(event) => onDraft({ reason: event.target.value })} placeholder="Explain what you read on the source document." onKeyDown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && changed && draft.reason.trim().length >= 3 && !draft.conflict && !disabled) { event.preventDefault(); onSave("CORRECTED"); } }} />
+        <div className="space-y-1.5">
+          <Label htmlFor={reasonId}>Correction reason</Label>
+          <Textarea id={reasonId} rows={2} maxLength={500} value={draft.reason} disabled={disabled} onChange={(event) => onDraft({ reason: event.target.value })} placeholder="What does the source document show?" onKeyDown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && changed && draft.reason.trim().length >= 3 && !draft.conflict && !disabled) { event.preventDefault(); onSave("CORRECTED"); } }} />
         </div>
       ) : null}
       {draft?.error ? <p id={`field-error-${field.id}`} role="alert" className="text-sm text-danger">{draft.error}</p> : null}
-      {!readOnly ? (
+      {!readOnly && draft ? (
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" size="sm" variant="outline" disabled={!canConfirm} onClick={() => onSave("CONFIRMED")}><Check className="size-4" aria-hidden="true" />Confirm</Button>
-          {draft ? <><Button type="button" size="sm" disabled={disabled || !changed || draft.reason.trim().length < 3 || Boolean(draft.conflict)} onClick={() => onSave("CORRECTED")}><Save className="size-4" aria-hidden="true" />Save correction</Button><Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={onDiscard}>Discard draft</Button></> : <span className="text-xs text-muted-foreground">Edit the value to correct it.</span>}
+          <Button type="button" size="sm" title="Save correction (Ctrl+Enter)" disabled={disabled || !changed || draft.reason.trim().length < 3 || Boolean(draft.conflict)} onClick={() => onSave("CORRECTED")}><Save className="size-4" aria-hidden="true" />Save correction</Button><Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={onDiscard}>Discard draft</Button>
+          <span className="text-xs text-muted-foreground">Reason of 3+ characters required</span>
         </div>
       ) : draft ? <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={onDiscard}>Discard unsaved draft</Button> : null}
-      {field.modelValue !== field.currentValue ? <p className="text-sm text-foreground-secondary">Original model value: <span className="break-words font-mono">{field.modelValue ?? "Not found"}</span></p> : null}
-      <div className="space-y-2 border-t border-border pt-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground">{modelEstimate(field.modelConfidence)}</span>
-          {field.pageNumber && field.pageNumber <= (doc.pageCount ?? Infinity) ? <Button type="button" size="sm" variant="link" className="px-0" onClick={() => onEvidence({ documentId: doc.id, page: field.pageNumber!, fieldId: field.id, label }, cardId)}><Eye className="size-4" aria-hidden="true" />Source · page {field.pageNumber}</Button> : <span className="text-xs text-muted-foreground">Source page unavailable</span>}
-        </div>
-        {field.sourceQuote ? <blockquote className="break-words text-sm leading-5 text-foreground-secondary">“{field.sourceQuote}”</blockquote> : <p className="text-sm text-foreground-secondary">No source quote was provided. Inspect the document directly.</p>}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        <span className="inline-flex items-center gap-1.5" title="Model confidence is an estimate, not measured accuracy.">
+          {confidence !== null ? <span aria-hidden="true" className="h-1 w-8 overflow-hidden rounded-full bg-border-strong"><span className={cn("block h-full rounded-full", uncertain ? "bg-warning-strong" : "bg-foreground-secondary")} style={{ width: `${confidence}%` }} /></span> : null}
+          {modelEstimate(field.modelConfidence)}
+        </span>
+        {field.modelValue !== field.currentValue ? <span>Original model value: <span className="break-words font-mono text-foreground-secondary">{field.modelValue ?? "Not found"}</span></span> : null}
+        <span className="ml-auto">{field.pageNumber && field.pageNumber <= (doc.pageCount ?? Infinity) ? <Button type="button" size="sm" variant="link" className="h-7 px-0 text-xs pointer-coarse:h-11" onClick={() => onEvidence({ documentId: doc.id, page: field.pageNumber!, fieldId: field.id, label }, cardId)}><Eye className="size-3.5" aria-hidden="true" />Source · page {field.pageNumber}</Button> : "Source page unavailable"}</span>
       </div>
+      {field.sourceQuote ? <blockquote className="break-words border-l border-border-strong pl-2.5 font-mono text-xs leading-5 text-foreground-secondary">{field.sourceQuote}</blockquote> : uncertain ? <p className="text-xs text-warning">No source quote. Check the document.</p> : null}
+      {reviewed && reason ? <details className="text-xs text-muted-foreground"><summary className="min-h-11 cursor-pointer rounded-small py-1 sm:min-h-7">Review note</summary><p className="pb-1 leading-5">{reason}</p></details> : null}
     </article>
   );
+}
+
+function confidencePercent(value: ReviewWorkspaceField["modelConfidence"]): number | null {
+  if (value === null || value === "") return null;
+  const confidence = Number(value);
+  return Number.isFinite(confidence) && confidence >= 0 && confidence <= 1 ? Math.round(confidence * 100) : null;
 }
 
 type FieldsInspectorProps = {
@@ -128,14 +139,16 @@ export function FieldsInspector(props: FieldsInspectorProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div id="review-fields-heading" tabIndex={-1} className={cn("shrink-0 space-y-3 border-b border-border px-4 py-3", FOCUS_RING_STYLES)}>
+      <div id="review-fields-heading" tabIndex={-1} className={cn("shrink-0 space-y-2.5 border-b border-border px-4 py-2.5", FOCUS_RING_STYLES)}>
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-sm text-foreground-secondary"><span className={uncertainCount ? "font-medium text-warning" : ""}>{uncertainCount} require review</span><span className="text-muted-foreground"> · {pendingCount} pending</span></p>
-          <Button type="button" size="sm" variant="outline" disabled={!doc || uncertainCount === 0} onClick={onNext}>Next uncertain<ArrowRight className="size-4" aria-hidden="true" /></Button>
+          <p className="text-sm text-foreground-secondary">{uncertainCount ? <span className="font-medium text-warning">{uncertainCount} require review</span> : <span className="font-medium text-foreground">0 require review</span>}<span className="text-muted-foreground"> · {pendingCount} pending</span></p>
+          <Button type="button" size="sm" variant={uncertainCount ? "default" : "outline"} title="Next uncertain field (N)" aria-keyshortcuts="N" disabled={!doc || uncertainCount === 0} onClick={onNext}>Next uncertain<kbd aria-hidden="true" className="ml-0.5 border-transparent bg-transparent text-current opacity-70">N</kbd></Button>
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div><Label htmlFor="field-category" className="sr-only">Field category</Label><Select id="field-category" value={category} onChange={(event) => onCategory(event.target.value as FieldCategory | "all")}>{FIELD_CATEGORIES.map((value) => <option key={value} value={value}>{value === "all" ? "All categories" : formatFieldLabel(value)}</option>)}</Select></div>
-          <div><Label htmlFor="field-review-filter" className="sr-only">Review filter</Label><Select id="field-review-filter" value={reviewFilter} onChange={(event) => onReviewFilter(event.target.value as "all" | "uncertain" | "pending")}><option value="all">All fields</option><option value="uncertain">Review required</option><option value="pending">Awaiting confirmation</option></Select></div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div role="group" aria-label="Review filter" className="inline-flex rounded-control border border-border p-0.5">
+            {([["all", "All", doc?.fields.length ?? 0], ["uncertain", "Needs review", uncertainCount], ["pending", "Not confirmed", pendingCount]] as const).map(([value, text, count]) => <button key={value} type="button" aria-pressed={reviewFilter === value} onClick={() => onReviewFilter(value)} className={cn("inline-flex h-7 items-center gap-1.5 rounded-small px-2.5 text-xs font-medium transition-colors duration-[var(--motion-fast)] pointer-coarse:h-10 motion-reduce:transition-none", reviewFilter === value ? "bg-primary text-primary-foreground" : "text-foreground-secondary hover:text-foreground", FOCUS_RING_STYLES)}>{text}<span className="font-mono tabular-nums opacity-70">{count}</span></button>)}
+          </div>
+          <div className="ml-auto"><Label htmlFor="field-category" className="sr-only">Field category</Label><Select id="field-category" className="h-8 w-auto py-0 pr-8 text-xs pointer-coarse:h-11" value={category} onChange={(event) => onCategory(event.target.value as FieldCategory | "all")}>{FIELD_CATEGORIES.map((value) => <option key={value} value={value}>{value === "all" ? "All categories" : formatFieldLabel(value)}</option>)}</Select></div>
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-testid="field-scroll">

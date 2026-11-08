@@ -46,6 +46,7 @@ test(`login, create shipment, open its detail page and see it in the queue (${ac
   });
 
   // Sign out ends the session: the API rejects the request afterwards.
+  await page.getByTestId("current-role").click();
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/$/);
   const afterSignOut = await page.request.get("/api/shipments");

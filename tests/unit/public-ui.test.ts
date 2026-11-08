@@ -17,7 +17,7 @@ describe("public UI accessibility", () => {
     expect(workbench).toContain('href="/login"');
     expect(workbench).toContain("min-h-11");
     expect(workbench).toContain("focus-visible:ring-2");
-    expect(links.find(([, , content]) => content.startsWith("View dashboard"))?.[1]).toContain('href="/dashboard"');
+    expect(links.find(([, , content]) => content.startsWith("Go to shipments"))?.[1]).toContain('href="/dashboard"');
     expect(html).toContain("where available");
   });
 

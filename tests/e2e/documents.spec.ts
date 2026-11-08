@@ -29,7 +29,7 @@ async function loginAndCreateShipment(page: Page, reference: string) {
       return Boolean(form && Object.keys(form).some((key) => key.startsWith("__reactProps")));
     });
     await page.getByLabel("Email").fill(account!.email!);
-    await page.getByLabel("Password").fill(account!.password!);
+    await page.getByLabel("Password", { exact: true }).fill(account!.password!);
     await page.getByRole("button", { name: "Sign in" }).click();
     try {
       await expect(page).toHaveURL(/\/dashboard$/, { timeout: 20_000 });
@@ -61,7 +61,7 @@ test("upload, reject, replace and preview a document through private storage", a
   });
   await invoiceSlot.getByRole("button", { name: "Upload Document", exact: true }).click();
   await expect(invoiceSlot.getByText(/genuine PDF or image/)).toBeVisible({ timeout: 30_000 });
-  await expect(invoiceSlot.getByText("Empty slot")).toBeVisible();
+  await expect(invoiceSlot.getByText("Version 1", { exact: true })).toHaveCount(0);
 
   // A real (synthetic) PDF uploads directly to Storage and becomes version 1.
   const completion = page.waitForResponse((r) => r.url().endsWith("/documents/complete") && r.request().method() === "POST");
@@ -74,7 +74,7 @@ test("upload, reject, replace and preview a document through private storage", a
   const completed = await completion;
   expect(completed.status()).toBe(201);
   const documentId = (await completed.json()).document.id as string;
-  await expect(invoiceSlot.getByText("v1 Active")).toBeVisible();
+  await expect(invoiceSlot.getByText("Version 1", { exact: true })).toBeVisible();
   await expect(page.getByText("rev 2").first()).toBeVisible();
 
   // Replacement needs explicit confirmation and produces version 2.
@@ -88,7 +88,7 @@ test("upload, reject, replace and preview a document through private storage", a
   await expect(invoiceSlot.getByText(/check the confirmation box/)).toBeVisible();
   await invoiceSlot.getByLabel("Confirm document replacement").check();
   await invoiceSlot.getByRole("button", { name: "Upload Replacement", exact: true }).click();
-  await expect(invoiceSlot.getByText("v2 Active")).toBeVisible({ timeout: 30_000 });
+  await expect(invoiceSlot.getByText("Version 2", { exact: true })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("rev 3").first()).toBeVisible();
 
   // Preview opens a short-lived signed URL for the current version.
@@ -119,14 +119,14 @@ test("loads a synthetic demo scenario into all three slots", async ({ page }) =>
 
   await page.getByText("Load synthetic sample documents", { exact: true }).click();
   await expect(page.getByText("Synthetic demo", { exact: true }).first()).toBeVisible();
-  await page.getByLabel("Select Synthetic Scenario").selectOption("SHP-24811");
+  await page.getByLabel("Sample scenario").selectOption("SHP-24811");
   await page.getByRole("button", { name: "Load synthetic documents" }).click();
 
-  await expect(page.getByText(/Successfully loaded synthetic demo documents for SHP-24811/)).toBeVisible({
+  await expect(page.getByText(/SHP-24811 sample documents loaded/)).toBeVisible({
     timeout: 60_000,
   });
   for (const slot of ["INVOICE", "PACKING_LIST", "BILL_OF_LADING"]) {
-    await expect(page.getByTestId(`slot-${slot}`).getByText("v1 Active")).toBeVisible();
+    await expect(page.getByTestId(`slot-${slot}`).getByText("Version 1", { exact: true })).toBeVisible();
   }
   await expect(page.getByText("rev 2").first()).toBeVisible();
 

@@ -49,10 +49,37 @@ export function DocumentViewer({ url, mimeType, fileName, page, zoom, rotation, 
   const [imageSize, setImageSize] = useState<{ key: string; width: number; height: number } | null>(null);
   const [readyKey, setReadyKey] = useState<string | null>(null);
   const [errorKey, setErrorKey] = useState<string | null>(null);
+  const [recoveringFor, setRecoveringFor] = useState<string | null>(null);
+  // Signed links last five minutes. One silent refresh per minute runs before an error is shown,
+  // so an expired link recovers on its own while broken storage still surfaces the error.
+  const lastRecovery = useRef(0);
+  const onRequestFreshUrlRef = useRef(onRequestFreshUrl);
   const pdf = loaded?.key === loadKey ? loaded.pdf : null;
-  const state = !activeUrl || errorKey === loadKey || errorKey === renderKey ? "error" : readyKey === (isPdf ? renderKey : loadKey) ? "ready" : "loading";
+  const failed = !activeUrl || errorKey === loadKey || errorKey === renderKey;
+  const state = failed && recoveringFor !== url ? "error" : readyKey === (isPdf ? renderKey : loadKey) ? "ready" : "loading";
 
   useEffect(() => { onPageCountRef.current = onPageCount; }, [onPageCount]);
+  useEffect(() => { onRequestFreshUrlRef.current = onRequestFreshUrl; }, [onRequestFreshUrl]);
+
+  /** Returns true when a fresh link was obtained and a new load attempt has been scheduled. */
+  async function recoverOnce(): Promise<boolean> {
+    const request = onRequestFreshUrlRef.current;
+    const now = Date.now();
+    if (!request || now - lastRecovery.current < 60_000) return false;
+    lastRecovery.current = now;
+    setRecoveringFor(url);
+    try {
+      const next = await request();
+      if (!next) return false;
+      setFresh({ source: url, url: next });
+      setAttempt((value) => value + 1);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setRecoveringFor(null);
+    }
+  }
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -90,11 +117,22 @@ export function DocumentViewer({ url, mimeType, fileName, page, zoom, rotation, 
         setLoaded({ key: loadKey, pdf: documentProxy });
         onPageCountRef.current?.(documentProxy.numPages);
       } catch {
+        if (cancelled) return;
+        if (await recoverOnce()) return;
         if (!cancelled) setErrorKey(loadKey);
       }
     })();
     return () => { cancelled = true; destroyTask(); };
+    // recoverOnce reads refs and the current source URL; it must not restart the load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeUrl, isPdf, loadKey]);
+
+  // A link that could not be created on the server is requested once from the client.
+  useEffect(() => {
+    if (activeUrl) return;
+    void recoverOnce();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeUrl]);
 
   useEffect(() => {
     if (!isPdf || !pdf || !canvasRef.current || width <= 0) return;
@@ -156,7 +194,7 @@ export function DocumentViewer({ url, mimeType, fileName, page, zoom, rotation, 
           {isPdf ? <canvas ref={canvasRef} role="img" aria-label={`${fileName}, page ${page}${pdf ? ` of ${pdf.numPages}` : ""}`} className={`max-w-none border border-border-strong bg-surface${state === "loading" ? " invisible" : ""}`} data-testid="pdf-canvas" /> : (
             <div className="relative" style={{ width: sideways ? imageHeight : imageWidth, height: sideways ? imageWidth : imageHeight }}>
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img key={loadKey} src={activeUrl} alt={fileName} onLoad={(event) => { setImageSize({ key: loadKey, width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight }); setReadyKey(loadKey); onPageCountRef.current?.(1); }} onError={() => setErrorKey(loadKey)} className="absolute left-1/2 top-1/2 max-w-none border border-border-strong bg-surface object-contain" style={{ width: imageWidth, height: size ? imageHeight : "auto", maxWidth: "none", transform: `translate(-50%, -50%) rotate(${rotation}deg)` }} data-testid="image-viewer" />
+              <img key={loadKey} src={activeUrl} alt={fileName} onLoad={(event) => { setImageSize({ key: loadKey, width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight }); setReadyKey(loadKey); onPageCountRef.current?.(1); }} onError={() => { void recoverOnce().then((recovered) => { if (!recovered) setErrorKey(loadKey); }); }} className="absolute left-1/2 top-1/2 max-w-none border border-border-strong bg-surface object-contain" style={{ width: imageWidth, height: size ? imageHeight : "auto", maxWidth: "none", transform: `translate(-50%, -50%) rotate(${rotation}deg)` }} data-testid="image-viewer" />
             </div>
           )}
         </div>

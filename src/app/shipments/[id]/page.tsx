@@ -2,8 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
 
-import { ArrowLeft, ArrowRight, Package } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { ArrowLeft, ArrowRight } from "lucide-react";
+import { AppHeader } from "@/components/app-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Typography } from "@/components/ui/typography";
 import { requirePageAppUser } from "@/lib/auth-page";
@@ -111,25 +111,20 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
   });
 
   return (
-    <main className="min-h-screen bg-background text-foreground">
-      <header className="border-b border-border bg-surface">
-        <nav aria-label="Shipment navigation" className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8">
-          <div className="flex items-center gap-3"><Package aria-hidden="true" className="size-5 text-primary" /><Link href="/dashboard" className="rounded-control font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">CargoVerity</Link><Badge>Synthetic demo</Badge></div>
-          <span className="text-xs text-muted-foreground">{appUser.role === "MANAGER" ? "Manager" : "Executive"}</span>
-        </nav>
-      </header>
-      <div className="mx-auto max-w-[1440px] space-y-4 px-4 py-5 sm:space-y-6 sm:px-6 sm:py-6 lg:px-8">
-        <Link className="inline-flex min-h-11 items-center gap-2 rounded-control text-sm text-foreground-secondary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href="/dashboard"><ArrowLeft aria-hidden="true" className="size-4" />Back to operations queue</Link>
-        <section aria-labelledby="shipment-title" className="space-y-5">
-          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
-            <Typography id="shipment-title" variant="page-title" className="col-span-2 break-words font-mono [overflow-wrap:anywhere] sm:col-span-1">{shipment.reference}</Typography>
-            <div className="col-start-1 row-start-2 flex flex-wrap items-center gap-2"><StatusBadge status={shipment.status} /><span className="font-mono text-xs text-muted-foreground">rev {shipment.currentRevision}</span></div>
-            <Link href={`/review/${shipment.id}`} className="col-start-2 row-start-2 inline-flex min-h-11 items-center gap-2 rounded-control border border-control-border bg-surface px-3 text-sm font-medium hover:bg-surface-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 sm:row-start-1 sm:px-4">Review workspace<ArrowRight aria-hidden="true" className="size-4" /></Link>
+    <div className="min-h-screen bg-background text-foreground">
+      <AppHeader active="shipments" email={appUser.email} role={appUser.role} />
+      <main id="main-content" tabIndex={-1} className="mx-auto max-w-[1440px] space-y-6 px-4 py-5 outline-none sm:px-6 sm:py-6 lg:px-8">
+        <section aria-labelledby="shipment-title" className="space-y-4">
+          <Link className="-ml-1 inline-flex min-h-9 items-center gap-1.5 rounded-control px-1 text-sm text-foreground-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href="/dashboard"><ArrowLeft aria-hidden="true" className="size-4" />Shipments</Link>
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div className="min-w-0">
+              <Typography id="shipment-title" variant="page-title" className="break-words font-mono text-[22px] [overflow-wrap:anywhere]">{shipment.reference}</Typography>
+              <div className="mt-2 flex flex-wrap items-center gap-2"><StatusBadge status={shipment.status} /><span className="font-mono text-xs text-muted-foreground">rev {shipment.currentRevision}</span></div>
+            </div>
+            <Link href={`/review/${shipment.id}`} className="inline-flex min-h-[var(--control-height)] items-center gap-2 rounded-control bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">Open review<ArrowRight aria-hidden="true" className="size-4" /></Link>
           </div>
-          <dl className="grid gap-2 border-y border-border py-3 text-sm sm:grid-cols-3 sm:gap-4 sm:py-4">
-            <div className="grid min-w-0 grid-cols-[72px_minmax(0,1fr)] gap-2 sm:block"><dt className="text-muted-foreground">Supplier</dt><dd className="break-words font-medium sm:mt-1">{shipment.supplier?.name ?? "Not assigned"}</dd></div>
-            <div className="grid min-w-0 grid-cols-[72px_minmax(0,1fr)] gap-2 sm:block"><dt className="text-muted-foreground">Importer</dt><dd className="break-words font-medium sm:mt-1">{shipment.importerName ?? "Not supplied"}</dd></div>
-            <div className="grid min-w-0 grid-cols-[72px_minmax(0,1fr)] gap-2 sm:block"><dt className="text-muted-foreground">Exporter</dt><dd className="break-words font-medium sm:mt-1">{shipment.exporterName ?? "Not supplied"}</dd></div>
+          <dl className="grid gap-x-8 gap-y-2 border-y border-border py-3 text-sm sm:grid-cols-3">
+            {([["Supplier", shipment.supplier?.name ?? "Not assigned"], ["Importer", shipment.importerName ?? "Not supplied"], ["Exporter", shipment.exporterName ?? "Not supplied"]] as const).map(([label, value]) => <div key={label} className="grid min-w-0 grid-cols-[72px_minmax(0,1fr)] gap-2 sm:block"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="break-words font-medium sm:mt-0.5">{value}</dd></div>)}
           </dl>
         </section>
         <ShipmentDocumentSlots
@@ -144,7 +139,7 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
             maxPdfPages: env.MAX_PDF_PAGES,
           }}
         />
-      </div>
-    </main>
+      </main>
+    </div>
   );
 }

@@ -12,10 +12,10 @@ export type ButtonProps = ComponentProps<"button"> & {
 
 const variantStyles = {
   default: "border-transparent bg-primary text-primary-foreground enabled:hover:bg-primary-hover enabled:active:bg-primary-active",
-  outline: "border-control-border bg-surface text-foreground enabled:hover:bg-surface-subtle enabled:active:bg-neutral-surface",
+  outline: "border-border-strong bg-surface text-foreground enabled:hover:border-control-border enabled:hover:bg-surface-subtle enabled:active:bg-neutral-surface",
   ghost: "border-transparent bg-transparent text-foreground-secondary enabled:hover:bg-surface-subtle enabled:active:bg-neutral-surface",
   destructive: "border-transparent bg-danger text-primary-foreground enabled:hover:bg-danger-hover enabled:active:bg-danger-active",
-  link: "border-transparent bg-transparent text-primary underline-offset-4 enabled:hover:underline enabled:active:text-primary-active",
+  link: "border-transparent bg-transparent text-foreground underline decoration-border-strong underline-offset-4 enabled:hover:decoration-foreground enabled:active:text-primary-active",
 } satisfies Record<NonNullable<ButtonProps["variant"]>, string>;
 
 const sizeStyles = {

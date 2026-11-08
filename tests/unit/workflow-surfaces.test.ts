@@ -101,7 +101,8 @@ describe("decision and audit surfaces", () => {
     const html = renderToStaticMarkup(createElement(ChecksInspector, { checks: data.crossChecks, documents: data.documents, mappings: [], run: data.latestCheckRun, revision: 6, stale: false, disabled: true, canResolve: false, canRecheck: false, mappingSelections: {}, mappingReason: "", resolution: null, resolutionError: null, onRecheck: noop, onHistory: noop, onEvidence: noop, onStartResolution: noop, onResolutionChange: noop, onResolutionClose: noop, onResolve: noop, onMappingSelect: noop, onMappingReason: noop, onMap: noop, onRemoveMapping: noop }));
     expect(html).toContain("2 unresolved");
     expect(html).toContain("Show checks");
-    expect(html).toContain("They do not turn mismatches into machine passes");
+    expect(html).toContain('data-status="MISMATCH"');
+    expect(html).not.toContain('data-status="PASS"');
     expect(html).toContain("check-run-6");
   });
   it("searches actual audit metadata and actor without mutating history", () => {

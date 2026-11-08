@@ -78,7 +78,7 @@ export function TabsList({ className, ...props }: Omit<ComponentProps<"div">, "r
       role="tablist"
       aria-orientation={orientation}
       className={cn(
-        "flex gap-1 border-b border-border p-1",
+        "flex gap-1 border-b border-border px-1",
         orientation === "vertical" ? "flex-col items-stretch" : "items-center overflow-x-auto",
         className,
       )}
@@ -148,7 +148,7 @@ export function TabsTrigger({ value, className, disabled, onClick, onKeyDown, ..
         if (!event.defaultPrevented && !disabled) context.select(value);
       }}
       className={cn(
-        "inline-flex h-[var(--control-height)] shrink-0 items-center justify-center rounded-control px-3 text-sm font-medium text-foreground-secondary transition-colors duration-[var(--motion-fast)] enabled:hover:bg-surface-subtle data-[state=active]:bg-selected data-[state=active]:text-primary disabled:cursor-not-allowed disabled:text-disabled-foreground motion-reduce:transition-none",
+        "-mb-px inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-none border-b-2 border-transparent px-3 text-sm font-medium text-foreground-secondary transition-colors duration-[var(--motion-fast)] enabled:hover:text-foreground data-[state=active]:border-foreground data-[state=active]:text-foreground disabled:cursor-not-allowed disabled:text-disabled-foreground motion-reduce:transition-none",
         FOCUS_RING_STYLES,
         className,
       )}

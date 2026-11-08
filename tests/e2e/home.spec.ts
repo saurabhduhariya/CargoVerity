@@ -11,7 +11,7 @@ test("CargoVerity foundation page loads", async ({ page }) => {
 
   await expect(page).toHaveTitle("CargoVerity");
   await expect(
-    page.getByRole("heading", { name: "Every detail. Verified." }),
+    page.getByRole("heading", { name: "Less retyping. Closer review." }),
   ).toBeVisible();
 });
 
@@ -36,15 +36,17 @@ for (const width of [1440, 390]) {
     await expect(preview.getByRole("figure", { name: "Bill of lading synthetic source, page 1" })).toBeVisible();
     await preview.getByRole("button", { name: "Compare with invoice", exact: true }).click();
     await expect(preview.getByRole("tab", { name: "Invoice", exact: true })).toBeFocused();
-    await expect(preview.getByText("Source reads 3,120 kg, not 3,210 kg. Two digits were transposed.")).toBeVisible();
+    await expect(preview.getByText("Source: 3,120 kg. Two digits were transposed.")).toBeVisible();
     await expect(preview.getByText("3,210", { exact: true })).toBeVisible();
 
     await preview.getByRole("button", { name: "Use source value", exact: true }).click();
     await expect(preview.getByText("Corrected by you", { exact: true })).toBeVisible();
-    await expect(preview.getByText("Original extraction: 3,210 kg. Your correction stays in this demo.")).toBeVisible();
+    await expect(preview.getByText("Original: 3,210 kg. The packing list still differs by 45 kg.")).toBeVisible();
+    await expect(preview.getByText("Cross-document difference", { exact: true })).toBeVisible();
+    await expect(preview.getByText("45 kg", { exact: true })).toBeVisible();
     await expect(preview.getByRole("status")).toContainText("No shipment was changed.");
     await preview.getByRole("tab", { name: "Packing list", exact: true }).click();
-    await expect(preview.getByRole("tabpanel").getByText("The sample weight agrees with your corrected invoice. The original extraction is retained for comparison.")).toBeVisible();
+    await expect(preview.getByRole("tabpanel").getByText("This document reads 3,165 kg. The invoice source reads 3,120 kg.")).toBeVisible();
     await preview.getByRole("button", { name: "View corrected invoice", exact: true }).click();
     await expect(preview.getByRole("status")).toContainText("original sample extraction was 3,210 kg");
     await expect(preview.getByText("Corrected by you", { exact: true })).toBeVisible();
@@ -98,9 +100,9 @@ test("review preview keeps enlarged document labels inside their tabs", async ({
 
 test("login page renders its sign-in form", async ({ page }) => {
   await page.goto("/login");
-  await expect(page.getByRole("heading", { name: "Sign in to the workbench" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in", exact: true })).toBeVisible();
   await expect(page.getByLabel("Email")).toBeVisible();
-  await expect(page.getByLabel("Password")).toBeVisible();
+  await expect(page.getByLabel("Password", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
 });
 
@@ -112,7 +114,7 @@ test("login page shows the session-expired and not-provisioned states", async ({
   await expect(page.getByTestId("login-message")).toHaveText(/no CargoVerity role/i);
 
   await page.goto("/login?reason=unknown-value");
-  await expect(page.getByRole("heading", { name: "Sign in to the workbench" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in", exact: true })).toBeVisible();
   await expect(page.getByTestId("login-message")).toHaveCount(0);
 });
 
@@ -135,7 +137,7 @@ test("unauthenticated protected pages redirect to login with a return path", asy
 
   await page.goto("/dashboard");
   await expect(page).toHaveURL(/\/login$/);
-  await expect(page.getByRole("heading", { name: "Sign in to the workbench" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in", exact: true })).toBeVisible();
 
   await page.goto("/reports");
   await expect(page).toHaveURL(/\/login\?next=%2Freports$/);
@@ -149,7 +151,7 @@ test("invalid credentials show a fixed error message", async ({ page }) => {
 
   await waitForLoginForm(page);
   await page.getByLabel("Email").fill("no-such-user@example.test");
-  await page.getByLabel("Password").fill("definitely-wrong-password");
+  await page.getByLabel("Password", { exact: true }).fill("definitely-wrong-password");
   await page.getByRole("button", { name: "Sign in" }).click();
 
   await expect(page.getByTestId("login-message")).toHaveText(

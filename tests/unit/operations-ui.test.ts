@@ -63,7 +63,7 @@ describe("queue presentation uses server-derived actions", () => {
     const html = renderToStaticMarkup(createElement(DashboardShell, { email: "synthetic@example.test", role: "EXECUTIVE" }));
     const group = html.match(/<div role="group" aria-label="Queue views" class="([^"]+)"/);
     expect(group?.[1]).toContain("flex-wrap");
-    expect(group?.[1]).toContain("p-1");
+    expect(group?.[1]).toContain("px-3");
     expect(group?.[1]).not.toContain("overflow-x-auto");
   });
   it("filters without inferring approval from badges or risk scores", () => {

@@ -11,7 +11,7 @@ test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXEC
 test.setTimeout(360_000);
 
 async function queueReady(page: Page) {
-  await expect(page.getByRole("heading", { name: "Operations queue" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Shipments", exact: true })).toBeVisible();
   await expect(page.getByText("Loading shipment queue", { exact: true })).toHaveCount(0);
 }
 
@@ -39,15 +39,32 @@ test("real operations queue, private intake validation, and responsive document 
   const shipmentId = page.url().split("/").pop()!;
   evidence.shipmentId = shipmentId;
   const invoice = page.getByTestId("slot-INVOICE");
-  await expect(invoice.getByText("Empty slot", { exact: true })).toBeVisible();
+  await expect(invoice.getByText("Drop a document here", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Run extraction (3 documents)" })).toBeDisabled();
-  await expect(page.getByLabel("Select Synthetic Scenario")).toBeHidden();
+  await expect(page.getByLabel("Sample scenario")).toBeHidden();
 
   // Unsupported, empty, oversized files stop in the client; no signed authorization is sent.
   let authorizations = 0;
   page.on("request", (request) => { if (request.url().endsWith("/documents/upload-url")) authorizations++; });
   const pick = async (name: string, mimeType: string, buffer: Buffer) => invoice.locator('input[type="file"]').setInputFiles({ name, mimeType, buffer });
   const uploadButton = invoice.getByRole("button", { name: "Upload Document", exact: true });
+  const drop = async (names: string[], target = invoice.locator('input[type="file"]').locator("..")) => {
+    const dataTransfer = await page.evaluateHandle((names) => {
+      const data = new DataTransfer();
+      for (const name of names) data.items.add(new File(["Synthetic drop selection"], name, { type: "application/pdf" }));
+      return data;
+    }, names);
+    await target.dispatchEvent("dragenter", { dataTransfer });
+    await target.dispatchEvent("drop", { dataTransfer });
+    await dataTransfer.dispose();
+  };
+  await drop(["SYNTHETIC-first.pdf", "SYNTHETIC-second.pdf"]);
+  await expect(invoice.getByRole("alert")).toContainText("Choose one document for this slot.");
+  await expect(uploadButton).toBeDisabled();
+  await drop(["SYNTHETIC-drop.pdf"]);
+  await expect(invoice.getByText("SYNTHETIC-drop.pdf", { exact: true })).toBeVisible();
+  await expect(invoice.getByRole("alert")).toHaveCount(0);
+  await expect(uploadButton).toBeEnabled();
   await pick("SYNTHETIC-unsupported.txt", "text/plain", Buffer.from("synthetic QA"));
   await uploadButton.click();
   await expect(invoice.getByRole("alert")).toContainText("Only PDF");
@@ -65,7 +82,7 @@ test("real operations queue, private intake validation, and responsive document 
   await uploadButton.click();
   expect((await invalidCompletion).status()).toBe(415);
   await expect(invoice.getByRole("alert")).toContainText("genuine PDF or image");
-  await expect(invoice.getByText("Empty slot", { exact: true })).toBeVisible();
+  await expect(invoice.getByText("Version 1", { exact: true })).toHaveCount(0);
 
   // Delay, not replace, real requests to inspect each upload stage.
   let releaseAuthorization!: () => void;
@@ -81,6 +98,8 @@ test("real operations queue, private intake validation, and responsive document 
   await uploadButton.click();
   await expect(invoice.getByRole("status")).toContainText("Authorizing");
   await expect(page.getByTestId("slot-PACKING_LIST").locator('input[type="file"]')).toBeDisabled();
+  await drop(["SYNTHETIC-disabled.pdf"], page.getByTestId("slot-PACKING_LIST").locator('input[type="file"]').locator(".."));
+  await expect(page.getByText("SYNTHETIC-disabled.pdf", { exact: true })).toHaveCount(0);
   (evidence.uploadPhases as string[]).push("authorizing");
   releaseAuthorization();
   await expect(invoice.getByRole("status")).toContainText("Uploading to private storage");
@@ -94,11 +113,11 @@ test("real operations queue, private intake validation, and responsive document 
   const validCompletion = page.waitForResponse((response) => response.url().endsWith("/documents/complete"));
   releaseValidation();
   expect((await validCompletion).status()).toBe(201);
-  await expect(invoice.getByText("v1 Active", { exact: true })).toBeVisible();
+  await expect(invoice.getByText("Version 1", { exact: true })).toBeVisible();
   await page.unroute("**/documents/upload-url");
   await page.unroute(/\/storage\/v1\/object\/upload\/sign\//);
   await page.unroute("**/documents/complete");
-  await expect(invoice.getByRole("status")).toContainText("File validated and saved");
+  await expect(invoice.getByRole("status")).toContainText("Version 1 saved. Ready to extract.");
   (evidence.uploadPhases as string[]).push("saved v1 at rev2");
 
   // Replacement guard, retained history, and duplicate rejection use the unchanged APIs.
@@ -108,20 +127,20 @@ test("real operations queue, private intake validation, and responsive document 
   await expect(invoice.getByRole("alert")).toContainText("confirmation box");
   await invoice.getByLabel("Confirm document replacement").check();
   await invoice.getByRole("button", { name: "Upload Replacement", exact: true }).click();
-  await expect(invoice.getByText("v2 Active", { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(invoice.getByText("Version 2", { exact: true })).toBeVisible({ timeout: 30_000 });
   await invoice.getByRole("button", { name: "Replace", exact: true }).click();
   await pick("SYNTHETIC-QA-replacement.pdf", "application/pdf", readFileSync(join(process.cwd(), "public/sample-docs/shp-24812-invoice.pdf")));
   await invoice.getByLabel("Confirm document replacement").check();
   await invoice.getByRole("button", { name: "Upload Replacement", exact: true }).click();
   await expect(invoice.getByRole("alert")).toContainText("already been uploaded");
   await invoice.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(invoice.getByText("v2 Active", { exact: true })).toBeVisible();
+  await expect(invoice.getByText("Version 2", { exact: true })).toBeVisible();
 
   for (const [type, filename] of [["PACKING_LIST", "shp-24812-packing-list.pdf"], ["BILL_OF_LADING", "shp-24812-bill-of-lading.pdf"]]) {
     const slot = page.getByTestId(`slot-${type}`);
     await slot.locator('input[type="file"]').setInputFiles({ name: `SYNTHETIC-QA-${filename}`, mimeType: "application/pdf", buffer: readFileSync(join(process.cwd(), "public/sample-docs", filename)) });
     await slot.getByRole("button", { name: "Upload Document", exact: true }).click();
-    await expect(slot.getByText("v1 Active", { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(slot.getByText("Version 1", { exact: true })).toBeVisible({ timeout: 30_000 });
   }
   await expect(page.getByRole("button", { name: "Run extraction (3 documents)" })).toBeEnabled();
   const statusResponse = await page.request.get(`/api/shipments/${shipmentId}/extract`);
@@ -134,8 +153,8 @@ test("real operations queue, private intake validation, and responsive document 
   const forbidden = await page.request.post(`/api/shipments/${shipmentId}/decision`, { data: {} });
   expect(forbidden.status()).toBe(403);
   const anonymous = await browser.newContext();
-  expect((await anonymous.request.get("http://127.0.0.1:3000/api/shipments")).status()).toBe(401);
-  expect((await anonymous.request.get(`http://127.0.0.1:3000/api/documents/${saved.documents[0].documentId}`)).status()).toBe(401);
+  expect((await anonymous.request.get(new URL("/api/shipments", page.url()).href)).status()).toBe(401);
+  expect((await anonymous.request.get(new URL(`/api/documents/${saved.documents[0].documentId}`, page.url()).href)).status()).toBe(401);
   await anonymous.close();
   evidence.apiGuards = { staleRevision: 409, executiveManagerDecision: 403, anonymousQueue: 401, anonymousPrivateEvidence: 401, savedRevision: saved.shipmentRevision };
 

@@ -8,9 +8,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 
 const documents = [
-  { id: "invoice", label: "Invoice", title: "Commercial invoice", reference: "INV-24811", detail: "Invoice total", detailValue: "USD 24,800" },
-  { id: "packing", label: "Packing list", title: "Packing list", reference: "PKL-24811", detail: "Packages", detailValue: "120 cartons" },
-  { id: "lading", label: "Bill of lading", title: "Bill of lading", reference: "BOL-24811", detail: "Port of discharge", detailValue: "Rotterdam" },
+  { id: "invoice", label: "Invoice", title: "Commercial invoice", reference: "INV-24811", detail: "Invoice total", detailValue: "USD 16,320", weight: "3,120" },
+  { id: "packing", label: "Packing list", title: "Packing list", reference: "PKL-24811", detail: "Quantity", detailValue: "2,400 LED panels", weight: "3,165" },
+  { id: "lading", label: "Bill of lading", title: "Bill of lading", reference: "BOL-24811", detail: "Port of discharge", detailValue: "Nhava Sheva", weight: "3,165" },
 ] as const;
 
 // Authored synthetic excerpts and deliberately wrong extraction; never a shipment.
@@ -42,8 +42,8 @@ export function LandingReviewPreview() {
   return (
     <section aria-label="Interactive review example" className="min-w-0 rounded-dialog border border-border-strong bg-surface">
       <div className="flex flex-wrap items-center justify-between gap-2 px-5 pb-2 pt-5">
-        <h2 className="text-base font-semibold">A closer look.</h2>
-        <span className="text-xs text-foreground-secondary">Interactive demo</span>
+        <h2 className="font-mono text-sm font-medium">SHP-24811</h2>
+        <span className="text-xs text-muted-foreground">Interactive · synthetic</span>
       </div>
 
       <Tabs value={selected} onValueChange={setSelected} className="min-w-0">
@@ -65,7 +65,7 @@ export function LandingReviewPreview() {
           return (
             <TabsContent key={doc.id} value={doc.id} className="pt-0">
               <div className="grid min-w-0 sm:grid-cols-2">
-                <figure aria-label={`${doc.label} synthetic source, page 1`} className="min-w-0 bg-selected p-4 sm:mt-4">
+                <figure aria-label={`${doc.label} synthetic source, page 1`} className="min-w-0 bg-viewer-background p-4 sm:mt-4">
                   <div className="mx-auto max-w-60 bg-surface px-4 py-5">
                     <p className="text-xs font-medium text-foreground-secondary">Synthetic excerpt</p>
                     <h3 className="mt-4 text-lg font-semibold leading-6">{doc.title}</h3>
@@ -77,18 +77,18 @@ export function LandingReviewPreview() {
                       </div>
                       <div id={evidenceId} className={cn("-mx-2 mt-4 rounded-small px-2 py-2 transition-colors duration-[var(--motion-normal)] motion-reduce:transition-none", showEvidence ? "bg-warning-surface ring-1 ring-warning-border" : "bg-background")}>
                         <dt className={cn("text-xs", showEvidence ? "text-warning" : "text-foreground-secondary")}>Gross weight</dt>
-                        <dd className="mt-1 flex flex-wrap items-baseline gap-x-2 font-mono text-2xl font-medium tabular-nums">3,120 <span className="text-sm text-foreground-secondary">kg</span></dd>
+                        <dd className="mt-1 flex flex-wrap items-baseline gap-x-2 font-mono text-2xl font-medium tabular-nums">{doc.weight} <span className="text-sm text-foreground-secondary">kg</span></dd>
                       </div>
                     </dl>
                   </div>
-                  <figcaption className="mt-3 text-center text-xs text-info">Illustrative source · page 1</figcaption>
+                  <figcaption className="mt-3 text-center text-xs text-foreground-secondary">Illustrative source · page 1</figcaption>
                 </figure>
 
                 <div className="flex min-w-0 flex-col justify-center px-4 py-6 sm:py-8">
                   <dl>
                     <dt className="text-sm font-medium text-foreground-secondary">Extracted gross weight</dt>
                     <dd className="mt-3 flex flex-wrap items-baseline gap-x-2 font-mono text-3xl font-medium tabular-nums">
-                      <span>{needsReview ? "3,210" : "3,120"}</span><span className="text-base text-foreground-secondary">kg</span>
+                      <span>{needsReview ? "3,210" : doc.weight}</span><span className="text-base text-foreground-secondary">kg</span>
                     </dd>
                   </dl>
                   <p data-uncertain={needsReview} className={cn("mt-3 flex items-center gap-2 text-sm font-medium", needsReview ? "text-warning" : "text-success")}>
@@ -97,10 +97,9 @@ export function LandingReviewPreview() {
                   </p>
                   <p id={reasonId} className="mt-5 text-sm leading-6 text-foreground-secondary">
                     {needsReview
-                      ? inspected ? "Source reads 3,120 kg, not 3,210 kg. Two digits were transposed." : "Does this match the document? Compare the weight with its source."
-                      : isInvoice ? "Original extraction: 3,210 kg. Your correction stays in this demo."
-                        : corrected ? "The sample weight agrees with your corrected invoice. The original extraction is retained for comparison."
-                          : "The sample weight agrees with the invoice. Switch back to inspect the flagged extraction."}
+                      ? inspected ? "Source: 3,120 kg. Two digits were transposed." : "Check this weight against the invoice."
+                      : isInvoice ? "Original: 3,210 kg. The packing list still differs by 45 kg."
+                        : "This document reads 3,165 kg. The invoice source reads 3,120 kg."}
                   </p>
 
                   {needsReview ? (
@@ -126,8 +125,10 @@ export function LandingReviewPreview() {
         })}
       </Tabs>
 
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-warning-border bg-warning-surface px-5 py-3 text-sm text-warning"><TriangleAlert aria-hidden="true" className="size-4 shrink-0" /><span className="font-medium">Cross-document difference</span><span className="font-mono tabular-nums sm:ml-auto">45 kg</span></div>
+
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-5 py-3">
-        <p className="min-w-0 flex-1 basis-48 text-xs leading-5 text-foreground-secondary">Sample data only. Changes stay in this preview.<br />Not for customs filing.</p>
+        <p className="min-w-0 flex-1 basis-48 text-xs leading-5 text-foreground-secondary">Sample data only. Changes stay in this preview. Not for customs filing.</p>
         <Button type="button" size="sm" variant="ghost" className="h-auto min-h-11 shrink-0 px-2 py-3 text-xs" onClick={reset}><RotateCcw className="size-3.5" aria-hidden="true" />Reset</Button>
       </div>
       <p role="status" aria-atomic="true" className="sr-only">{announcement}</p>

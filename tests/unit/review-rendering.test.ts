@@ -42,13 +42,13 @@ describe("rendered review fields and retained drafts", () => {
     expect(buttonAttributes(html, "Confirm")).not.toContain('disabled=""');
   });
 
-  it("disables confirmation for a reason-only draft, even if the value is unchanged", () => {
+  it("prevents confirmation for a reason-only draft, even if the value is unchanged", () => {
     const props = fieldProps();
     const data = makeReviewData();
     const state = reviewStateReducer(createReviewState(data), { type: "draft", doc: props.doc, field: props.field, patch: { reason: "Still comparing source" } });
     const html = renderToStaticMarkup(createElement(FieldEditor, { ...props, draft: state.drafts[props.field.id] }));
     expect(html).toContain("Unsaved draft");
-    expect(buttonAttributes(html, "Confirm")).toContain('disabled=""');
+    expect(html).not.toMatch(/<button\b[^>]*>(?:(?!<\/button>)[\s\S])*?Confirm<\/button>/);
     expect(buttonAttributes(html, "Save correction")).toContain('disabled=""');
   });
 
@@ -167,7 +167,7 @@ describe("server-rendered workspace shell", () => {
     const data = makeReviewData();
     data.documents[0].extractionStatus = "PROCESSING";
     const html = renderToStaticMarkup(createElement(ReviewWorkspace, { initialData: data }));
-    expect(html).toContain("This document is being extracted.");
+    expect(html).toContain("Extracting this document. Editing is paused.");
     expect(html).not.toContain("Mark page for manual entry");
     expect(html).not.toContain("Add manual field");
   });

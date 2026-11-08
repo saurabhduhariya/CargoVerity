@@ -1,46 +1,48 @@
 @import "tailwindcss";
 
 :root {
-  /* Surfaces and text */
-  --background: #f8fafc;
-  --foreground: #0f172a;
+  /* Surfaces and text: warm paper neutrals and ink. Colour is reserved for state. */
+  --background: #f6f6f3;
+  --foreground: #15171c;
   --surface: #ffffff;
-  --surface-subtle: #f1f5f9;
-  --viewer-background: #e8edf2;
-  --foreground-secondary: #475569;
-  --muted-foreground: #64748b;
-  --border: #e2e8f0;
-  --border-strong: #cbd5e1;
-  --control-border: #7a889c;
+  --surface-subtle: #f1f1ed;
+  --viewer-background: #e7e6e1;
+  --foreground-secondary: #4a4f58;
+  --muted-foreground: #696e77;
+  --border: #e5e4df;
+  --border-strong: #d2d1cb;
+  --control-border: #8a8e96;
 
-  /* Interaction states */
-  --primary: #2563eb;
+  /* Interaction states: ink actions, one blue focus ring. */
+  --primary: #15171c;
   --primary-foreground: #ffffff;
-  --primary-hover: #1d4ed8;
-  --primary-active: #1e40af;
-  --selected: #eff6ff;
-  --ring: var(--primary);
-  --disabled: #f1f5f9;
-  --disabled-foreground: #64748b;
+  --primary-hover: #2c2f37;
+  --primary-active: #000000;
+  --selected: #efeee9;
+  --ring: #3159d4;
+  --disabled: #f1f1ed;
+  --disabled-foreground: #696e77;
 
-  /* Semantic colors describe presentation, never workflow clearance. */
-  --neutral: #334155;
-  --neutral-surface: #f1f5f9;
-  --neutral-border: #cbd5e1;
-  --success: #166534;
-  --success-surface: #f0fdf4;
-  --success-border: #bbf7d0;
-  --warning: #92400e;
-  --warning-surface: #fffbeb;
-  --warning-border: #fde68a;
-  --danger: #991b1b;
-  --danger-hover: #7f1d1d;
-  --danger-active: #450a0a;
-  --danger-surface: #fef2f2;
-  --danger-border: #fecaca;
-  --info: #1e40af;
-  --info-surface: #eff6ff;
-  --info-border: #bfdbfe;
+  /* Semantic colors describe presentation, never workflow clearance.
+     Amber means "a person must look at this" and is the loudest colour on screen. */
+  --neutral: #3d4149;
+  --neutral-surface: #f1f1ed;
+  --neutral-border: #d8d7d1;
+  --success: #1e6a46;
+  --success-surface: #eef6f1;
+  --success-border: #c6e2d1;
+  --warning: #8a4a00;
+  --warning-surface: #fff4dc;
+  --warning-border: #f1cf8b;
+  --warning-strong: #d98a0b;
+  --danger: #a11d1d;
+  --danger-hover: #821616;
+  --danger-active: #4f0b0b;
+  --danger-surface: #fdf0ef;
+  --danger-border: #f1c6c2;
+  --info: #2b4a8b;
+  --info-surface: #eff3fb;
+  --info-border: #cad6ef;
 
   /* Four-pixel spacing scale */
   --space-1: 0.25rem;
@@ -71,7 +73,7 @@
   --shape-radius-control: 0.375rem;
   --shape-radius-panel: 0.5rem;
   --shape-radius-dialog: 0.75rem;
-  --elevation-overlay: 0 12px 40px rgb(15 23 42 / 14%);
+  --elevation-overlay: 0 12px 40px rgb(21 23 28 / 14%);
   --control-height: 2.5rem;
   --control-height-sm: 2.25rem;
   --control-height-lg: 2.75rem;
@@ -111,6 +113,7 @@
   --color-warning: var(--warning);
   --color-warning-surface: var(--warning-surface);
   --color-warning-border: var(--warning-border);
+  --color-warning-strong: var(--warning-strong);
   --color-danger: var(--danger);
   --color-danger-hover: var(--danger-hover);
   --color-danger-active: var(--danger-active);
@@ -149,7 +152,8 @@
 @layer base {
   html {
     color-scheme: light;
-    scrollbar-color: var(--muted-foreground) var(--surface-subtle);
+    scrollbar-color: var(--border-strong) transparent;
+    -webkit-text-size-adjust: 100%;
   }
 
   body {
@@ -158,11 +162,43 @@
     font-family: var(--font-sans);
     font-size: var(--type-body-size);
     line-height: var(--type-body-leading);
+    font-feature-settings: "cv11", "calt";
+    text-rendering: optimizeLegibility;
+  }
+
+  :where(h1, h2, h3) {
+    text-wrap: balance;
+  }
+
+  :where(p) {
+    text-wrap: pretty;
   }
 
   ::selection {
-    background: var(--info-border);
+    background: var(--warning-border);
     color: var(--foreground);
+  }
+
+  :where(a) {
+    text-underline-offset: 0.2em;
+    text-decoration-thickness: 1px;
+  }
+
+  :where(kbd) {
+    display: inline-flex;
+    min-width: 1.25rem;
+    height: 1.25rem;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border-strong);
+    border-bottom-width: 2px;
+    border-radius: var(--shape-radius-small);
+    background: var(--surface);
+    padding: 0 0.25rem;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    line-height: 1;
+    color: var(--foreground-secondary);
   }
 
   :where(button, input, select, textarea) {

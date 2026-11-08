@@ -66,7 +66,7 @@ test("synthetic real-API resolution, manager decisions, audit, guarded export an
     const completion = page.waitForResponse((response) => response.url().endsWith("/documents/complete"));
     await slot.getByRole("button", { name: "Upload Document", exact: true }).click();
     expect((await completion).status()).toBe(201);
-    await expect(slot.getByText("v1 Active", { exact: true })).toBeVisible();
+    await expect(slot.getByText("Version 1", { exact: true })).toBeVisible();
     await expect(page.getByTestId("slot-INVOICE").getByRole("button", { name: "Replace", exact: true })).toBeEnabled();
   }
   // Live-provider validation/quota failures were established in earlier real QA. This opt-in
@@ -104,7 +104,7 @@ test("synthetic real-API resolution, manager decisions, audit, guarded export an
   await page.getByRole("button", { name: "Export preview", exact: true }).click();
   const preview = page.getByTestId("export-preview-dialog");
   await expect(preview.getByRole("heading", { name: "Export is blocked" })).toBeVisible();
-  await expect(preview.getByRole("button", { name: "Download guarded CSV" })).toBeDisabled();
+  await expect(preview.getByRole("button", { name: "Download CSV", exact: true })).toBeDisabled();
   for (const [width, height] of [[1440, 900], [1280, 800], [1024, 768], [390, 844]]) { await page.setViewportSize({ width, height }); await capture(page, `export-blocked-${width}`); }
   await preview.getByRole("button", { name: "Close export preview" }).click();
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -269,7 +269,7 @@ test("synthetic real-API resolution, manager decisions, audit, guarded export an
   if (before("exported")) {
   await manager.getByRole("button", { name: "Export preview", exact: true }).click();
   const exportDialog = manager.getByTestId("export-preview-dialog");
-  await expect(exportDialog.getByRole("heading", { name: "Server preflight allows export" })).toBeVisible();
+  await expect(exportDialog.getByRole("heading", { name: "Ready to export" })).toBeVisible();
   const preflight = await (await manager.request.get(`/api/shipments/${shipment.id}/export?preview=1`)).json();
   evidence.previewChecksum = preflight.checksumSha256;
   for (const [width, height] of [[1440, 900], [1280, 800], [1024, 768], [390, 844]]) { await manager.setViewportSize({ width, height }); await capture(manager, `export-ready-${width}`); }
@@ -279,10 +279,10 @@ test("synthetic real-API resolution, manager decisions, audit, guarded export an
     await route.fulfill({ response, body: bytes });
   });
   let downloads = 0; manager.on("download", () => { downloads++; });
-  await exportDialog.getByRole("button", { name: "Download guarded CSV", exact: true }).click();
+  await exportDialog.getByRole("button", { name: "Download CSV", exact: true }).click();
   await expect(exportDialog.getByText(/No file was downloaded/)).toBeVisible();
   expect(downloads).toBe(0);
-  await expect(exportDialog.getByRole("button", { name: /^(Re-download CSV|Download guarded CSV)$/ })).toBeDisabled();
+  await expect(exportDialog.getByRole("button", { name: /^(Re-download CSV|Download CSV)$/ })).toBeDisabled();
   await expect(exportDialog.getByRole("heading", { name: "Most recent server export" })).toBeVisible();
   await manager.unroute(`**/api/shipments/${shipment.id}/export`);
   await exportDialog.getByRole("button", { name: "Refresh preflight", exact: true }).click();
@@ -319,7 +319,7 @@ test("synthetic real-API resolution, manager decisions, audit, guarded export an
 
   await page.goto("/reports");
   const realReport = await (await page.request.get("/api/reports/accuracy")).json();
-  await expect(page.getByRole("heading", { name: "Extraction & supplier reports", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Accuracy reports", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Measured extraction results" })).toContainText(realReport.summary.accuracy.formattedPercentage);
   for (const [width, height] of [[1440, 900], [1280, 800], [1024, 768], [390, 844]]) { await page.setViewportSize({ width, height }); await capture(page, `reports-${width}`); expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width); }
   await page.getByRole("tab", { name: /^By supplier/ }).click();
