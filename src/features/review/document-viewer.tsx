@@ -57,6 +57,8 @@ export function DocumentViewer({ url, mimeType, fileName, page, zoom, rotation, 
   const pdf = loaded?.key === loadKey ? loaded.pdf : null;
   const failed = !activeUrl || errorKey === loadKey || errorKey === renderKey;
   const state = failed && recoveringFor !== url ? "error" : readyKey === (isPdf ? renderKey : loadKey) ? "ready" : "loading";
+  // Only the pane width changed: keep showing the current page while it is redrawn at the new size.
+  const resizing = state === "loading" && isPdf && readyKey !== null && readyKey.slice(0, readyKey.lastIndexOf("|")) === renderKey.slice(0, renderKey.lastIndexOf("|"));
 
   useEffect(() => { onPageCountRef.current = onPageCount; }, [onPageCount]);
   useEffect(() => { onRequestFreshUrlRef.current = onRequestFreshUrl; }, [onRequestFreshUrl]);
@@ -90,10 +92,15 @@ export function DocumentViewer({ url, mimeType, fileName, page, zoom, rotation, 
       const next = Math.floor(viewport.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight));
       if (next > 0) setWidth((current) => current === next ? current : next);
     }
-    const observer = new ResizeObserver(measure);
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+    const observer = new ResizeObserver(() => {
+      // Re-rendering a PDF page on every frame of a panel resize is expensive; wait for a pause.
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(measure, 120);
+    });
     observer.observe(viewport);
     measure();
-    return () => observer.disconnect();
+    return () => { observer.disconnect(); if (resizeTimer) clearTimeout(resizeTimer); };
   }, []);
 
   useEffect(() => {
@@ -191,7 +198,7 @@ export function DocumentViewer({ url, mimeType, fileName, page, zoom, rotation, 
         <FeedbackState kind="error" title="Private document unavailable" description="The secure link may have expired, storage may be unavailable, or the file could not be read. No substitute document is shown." className="mx-auto max-w-md p-4" action={<Button type="button" variant="outline" loading={retrying} onClick={() => void retry()}>Retry secure document</Button>} />
       ) : (
         <div className="grid min-h-full w-max min-w-full content-start justify-items-center">
-          {isPdf ? <canvas ref={canvasRef} role="img" aria-label={`${fileName}, page ${page}${pdf ? ` of ${pdf.numPages}` : ""}`} className={`max-w-none border border-border-strong bg-surface${state === "loading" ? " invisible" : ""}`} data-testid="pdf-canvas" /> : (
+          {isPdf ? <canvas ref={canvasRef} role="img" aria-label={`${fileName}, page ${page}${pdf ? ` of ${pdf.numPages}` : ""}`} className={`max-w-none border border-border-strong bg-surface${state === "loading" && !resizing ? " invisible" : ""}`} data-testid="pdf-canvas" /> : (
             <div className="relative" style={{ width: sideways ? imageHeight : imageWidth, height: sideways ? imageWidth : imageHeight }}>
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img key={loadKey} src={activeUrl} alt={fileName} onLoad={(event) => { setImageSize({ key: loadKey, width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight }); setReadyKey(loadKey); onPageCountRef.current?.(1); }} onError={() => { void recoverOnce().then((recovered) => { if (!recovered) setErrorKey(loadKey); }); }} className="absolute left-1/2 top-1/2 max-w-none border border-border-strong bg-surface object-contain" style={{ width: imageWidth, height: size ? imageHeight : "auto", maxWidth: "none", transform: `translate(-50%, -50%) rotate(${rotation}deg)` }} data-testid="image-viewer" />
@@ -199,7 +206,7 @@ export function DocumentViewer({ url, mimeType, fileName, page, zoom, rotation, 
           )}
         </div>
       )}
-      {state === "loading" ? <div className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 text-sm text-foreground-secondary" aria-hidden="true"><LoaderCircle className="size-5 motion-safe:animate-spin" /> Loading document…</div> : null}
+      {state === "loading" && !resizing ? <div className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 text-sm text-foreground-secondary" aria-hidden="true"><LoaderCircle className="size-5 motion-safe:animate-spin" /> Loading document…</div> : null}
     </div>
   );
 }

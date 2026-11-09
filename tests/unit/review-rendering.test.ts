@@ -27,7 +27,7 @@ function fieldProps(): ComponentProps<typeof FieldEditor> {
 
 function inspectorProps(): ComponentProps<typeof FieldsInspector> {
   const data = makeReviewData();
-  return { doc: data.documents[0], drafts: {}, category: "all", reviewFilter: "all", focusedId: null, disabled: false, readOnly: false, manualOpen: false, manualDraft: { fieldKey: "", value: "", unit: "", reason: "", page: 2 }, manualError: null, onCategory: noop, onReviewFilter: noop, onNext: noop, onManualOpen: noop, onManualDraft: noop, onManualSave: noop, onManualAcknowledge: noop, onDraft: noop, onSave: noop, onDiscard: noop, onAcknowledge: noop, onEvidence: noop, shipmentLink: createElement("a", { href: "/shipments/qa-shipment" }, "Open shipment") };
+  return { doc: data.documents[0], drafts: {}, category: "all", reviewFilter: "all", focusedId: null, disabled: false, readOnly: false, manualOpen: false, manualDraft: { fieldKey: "", value: "", unit: "", reason: "", page: 2 }, manualError: null, onCategory: noop, onReviewFilter: noop, onNext: noop, onManualOpen: noop, onManualDraft: noop, onManualSave: noop, onManualAcknowledge: noop, onDraft: noop, onSave: noop, onConfirmAll: noop, confirmAllDisabled: false, onDiscard: noop, onAcknowledge: noop, onEvidence: noop, shipmentLink: createElement("a", { href: "/shipments/qa-shipment" }, "Open shipment") };
 }
 
 describe("rendered review fields and retained drafts", () => {

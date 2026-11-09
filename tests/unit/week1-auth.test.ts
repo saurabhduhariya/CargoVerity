@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * login redirect/session-expired states.
  */
 
-const getUser = vi.fn();
+const getClaims = vi.fn();
 const exchangeCodeForSession = vi.fn();
 const cookieNames: string[] = [];
 const prisma = {
@@ -15,7 +15,7 @@ const prisma = {
 };
 
 vi.mock("@/lib/supabase/server", () => ({
-  createSupabaseServerClient: async () => ({ auth: { getUser, exchangeCodeForSession } }),
+  createSupabaseServerClient: async () => ({ auth: { getClaims, exchangeCodeForSession } }),
   createSupabaseAdminClient: () => {
     throw new Error("Admin client must not be used by auth helpers.");
   },
@@ -55,14 +55,14 @@ const MANAGER = {
 };
 
 function signedInAs(user: { id: string; email: string }, metadata: Record<string, unknown> = {}) {
-  getUser.mockResolvedValue({
-    data: { user: { id: user.id, email: user.email, user_metadata: metadata, app_metadata: {} } },
+  getClaims.mockResolvedValue({
+    data: { claims: { sub: user.id, email: user.email, user_metadata: metadata, app_metadata: {} } },
     error: null,
   });
 }
 
 function signedOut() {
-  getUser.mockResolvedValue({ data: { user: null }, error: { message: "Auth session missing!" } });
+  getClaims.mockResolvedValue({ data: null, error: null });
 }
 
 async function redirectTarget(promise: Promise<unknown>) {
@@ -248,7 +248,7 @@ describe("protected pages (requirePageAppUser)", () => {
   });
 
   it("rethrows non-auth failures instead of hiding them behind a login redirect", async () => {
-    getUser.mockRejectedValue(new ConfigurationError("NEXT_PUBLIC_SUPABASE_URL is required"));
+    getClaims.mockRejectedValue(new ConfigurationError("NEXT_PUBLIC_SUPABASE_URL is required"));
     await expect(requirePageAppUser("/dashboard")).rejects.toBeInstanceOf(ConfigurationError);
   });
 

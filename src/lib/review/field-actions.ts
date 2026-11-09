@@ -219,37 +219,9 @@ export async function applyFieldAction(
     return { updatedField, updatedShipment, previousStatus, approvalInvalidated };
   }, TX);
 
-  // Recompute after commit. A failure leaves the edit committed and reports stale checks.
-  let crossChecks: unknown[] | null = null;
-  let crossCheckRunId: string | null = null;
-  let crossChecksStale = false;
-  if (!recompute) {
-    crossChecksStale = true;
-  } else {
-    try {
-      const run = await crossCheckService.createCrossCheckRun({
-        shipmentId: shipment.id,
-        requestedById: actor.id,
-        triggeredBy: auditAction,
-        prismaClient: prisma,
-      });
-      crossCheckRunId = run.run.id;
-      crossChecks = run.results.map((result) => {
-        const clearance = evaluateClearance(result);
-        return {
-          ...result,
-          effectiveStatus: clearance.derivedStatus,
-          derivedStatus: clearance.derivedStatus,
-          activeResolution: null,
-          clearedForSubmission: clearance.clearedForSubmission,
-          clearedForApproval: clearance.clearedForApproval,
-        };
-      });
-    } catch (error) {
-      console.error("[fields.recompute_failed]", safeErrorCode(error));
-      crossChecksStale = true;
-    }
-  }
+  const checks = recompute
+    ? await recomputeAfterCommit(prisma, shipment.id, actor.id, auditAction)
+    : { crossChecks: null, crossCheckRunId: null, crossChecksStale: true };
 
   return {
     field: committed.updatedField,
@@ -257,9 +229,157 @@ export async function applyFieldAction(
     shipmentStatus: committed.updatedShipment.status,
     previousStatus: committed.previousStatus,
     approvalInvalidated: committed.approvalInvalidated,
-    crossChecks,
-    crossCheckRunId,
-    crossChecksStale,
+    ...checks,
+  };
+}
+
+/** Recompute after commit. A failure leaves the edit committed and reports stale checks. */
+async function recomputeAfterCommit(prisma: PrismaClient, shipmentId: string, actorId: string, triggeredBy: string) {
+  try {
+    const run = await crossCheckService.createCrossCheckRun({
+      shipmentId,
+      requestedById: actorId,
+      triggeredBy,
+      prismaClient: prisma,
+    });
+    const crossChecks: unknown[] = run.results.map((result) => {
+      const clearance = evaluateClearance(result);
+      return {
+        ...result,
+        effectiveStatus: clearance.derivedStatus,
+        derivedStatus: clearance.derivedStatus,
+        activeResolution: null,
+        clearedForSubmission: clearance.clearedForSubmission,
+        clearedForApproval: clearance.clearedForApproval,
+      };
+    });
+    return { crossChecks, crossCheckRunId: run.run.id as string | null, crossChecksStale: false };
+  } catch (error) {
+    console.error("[fields.recompute_failed]", safeErrorCode(error));
+    return { crossChecks: null, crossCheckRunId: null, crossChecksStale: true };
+  }
+}
+
+export const confirmFieldsSchema = z.object({
+  fieldIds: z.array(z.string().uuid()).min(1).max(200),
+  expectedRevision: z.number().int().positive(),
+});
+
+const CONFIRMABLE_STATUSES = ["PENDING", "REQUIRES_REVIEW"] as const;
+
+/**
+ * Confirms several fields of one document in a single request ("Confirm all").
+ *
+ * The same rules as a single confirmation apply to every field: access scope, editable shipment
+ * status, required `expectedRevision`, latest completed extraction of a current document and a
+ * non-empty saved value. All fields commit together with ONE revision bump and one audit event
+ * per field, or nothing commits. Cross-checks are recomputed once after commit.
+ */
+export async function confirmFields(
+  prisma: PrismaClient,
+  params: { documentId: string; actor: FieldActor; body: unknown },
+) {
+  const input = confirmFieldsSchema.parse(params.body);
+  const { actor } = params;
+  const fieldIds = [...new Set(input.fieldIds)];
+  const { expectedRevision } = input;
+
+  const document = await prisma.document.findFirst({
+    where: {
+      id: params.documentId,
+      ...(actor.role === "MANAGER" ? {} : { shipment: { createdById: actor.id } }),
+    },
+    include: { shipment: true },
+  });
+  if (!document) throw new ReviewError("Document not found or inaccessible.", "DOCUMENT_NOT_FOUND", 404);
+
+  const shipment = document.shipment;
+  const documentType = document.selectedDocType as DocumentType;
+  if (!EDITABLE_FIELD_STATUSES.includes(shipment.status)) {
+    throw new ReviewError(`Fields cannot be edited while the shipment is ${shipment.status}.`, "SHIPMENT_LOCKED", 409);
+  }
+  if (shipment.currentRevision !== expectedRevision) {
+    throw new ReviewError("The shipment changed since you loaded it. Refresh and try again.", "STALE_REVISION", 409);
+  }
+
+  const fields = await prisma.extractedField.findMany({ where: { id: { in: fieldIds }, documentId: document.id } });
+  if (fields.length !== fieldIds.length) {
+    throw new ReviewError("One or more fields were not found on this document.", "FIELD_NOT_FOUND", 404);
+  }
+  const empty = fields.find((field) => !field.currentValue?.trim());
+  if (empty) {
+    throw new ReviewError(`${empty.fieldKey} has no value to confirm. Enter the value from the document instead.`, "EMPTY_CONFIRM_VALUE", 422);
+  }
+  const reviewed = fields.find((field) => !(CONFIRMABLE_STATUSES as readonly string[]).includes(field.reviewStatus));
+  if (reviewed) {
+    throw new ReviewError(`${reviewed.fieldKey} is already reviewed. Refresh to see the latest values.`, "FIELD_SUPERSEDED", 409);
+  }
+
+  const committed = await prisma.$transaction(async (tx) => {
+    const { previousStatus, shipment: updatedShipment } = await lockShipment(tx, shipment.id, expectedRevision);
+
+    const current = await tx.document.findUnique({ where: { id: document.id }, select: { isCurrent: true } });
+    const latestRun = await tx.extractionRun.findFirst({
+      where: { documentId: document.id, status: "COMPLETED" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: { id: true },
+    });
+    if (!current?.isCurrent || !latestRun || fields.some((field) => field.extractionRunId !== latestRun.id)) {
+      throw new ReviewError(
+        "These values belong to an older extraction or document version. Refresh to review the current values.",
+        "FIELD_SUPERSEDED",
+        409,
+      );
+    }
+
+    // Conditional on the state that was validated, so a concurrent change cannot be overwritten.
+    const updated = await tx.extractedField.updateMany({
+      where: { id: { in: fieldIds }, extractionRunId: latestRun.id, reviewStatus: { in: [...CONFIRMABLE_STATUSES] } },
+      data: { reviewStatus: "CONFIRMED", reviewReason: null },
+    });
+    if (updated.count !== fieldIds.length) {
+      throw new ReviewError("A field changed since you loaded it. Refresh and try again.", "FIELD_SUPERSEDED", 409);
+    }
+
+    const approvalInvalidated = previousStatus === "READY_FOR_APPROVAL";
+    await tx.auditEvent.createMany({
+      data: fields.map((field) => ({
+        shipmentId: shipment.id,
+        actorId: actor.id,
+        action: "FIELD_CONFIRMED" as const,
+        entityType: "ExtractedField",
+        entityId: field.id,
+        metadata: {
+          fieldKey: field.fieldKey,
+          documentType,
+          reason: null,
+          modelValue: field.modelValue,
+          previousValue: field.currentValue,
+          newValue: field.currentValue,
+          isMaterialChange: false,
+          previousStatus,
+          approvalInvalidated,
+          expectedRevision,
+          revision: updatedShipment.currentRevision,
+          route: "confirm-all",
+          batchSize: fields.length,
+        },
+      })),
+    });
+
+    const updatedFields = await tx.extractedField.findMany({ where: { id: { in: fieldIds } } });
+    return { updatedFields, updatedShipment, previousStatus, approvalInvalidated };
+  }, TX);
+
+  const checks = await recomputeAfterCommit(prisma, shipment.id, actor.id, "FIELD_CONFIRMED");
+
+  return {
+    fields: committed.updatedFields,
+    revision: committed.updatedShipment.currentRevision,
+    shipmentStatus: committed.updatedShipment.status,
+    previousStatus: committed.previousStatus,
+    approvalInvalidated: committed.approvalInvalidated,
+    ...checks,
   };
 }
 

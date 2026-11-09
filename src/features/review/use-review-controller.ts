@@ -17,6 +17,7 @@ type ActionResponse = {
   shipmentStatus?: string;
   shipment?: { status: string; currentRevision: number };
   field?: ReviewWorkspaceField & { extractionRunId?: string };
+  fields?: ReviewWorkspaceField[];
   page?: ReviewWorkspacePage;
   crossChecks?: ReviewWorkspaceCrossCheck[] | null;
   crossChecksStale?: boolean;
@@ -269,6 +270,60 @@ export function useReviewController(initialData: ReviewWorkspaceInitialData) {
     });
   }
 
+  /**
+   * "Confirm all": every listed field is shown as confirmed immediately and ONE request confirms
+   * them together (one revision, one check recompute). If the server refuses, all of them go back.
+   */
+  function confirmFields(doc: ReviewWorkspaceDocument, fields: ReviewWorkspaceField[]): Promise<boolean> {
+    const targets = fields.filter((field) => !drafts[field.id] && field.currentValue?.trim() && ["PENDING", "REQUIRES_REVIEW"].includes(field.reviewStatus));
+    if (isReadOnly || doc.extractionStatus === "PROCESSING" || targets.length === 0) return Promise.resolve(false);
+    const previous = new Map(targets.map((field) => [field.id, { reviewStatus: field.reviewStatus, reviewReason: field.reviewReason ?? null }]));
+    for (const field of targets) dispatch({ type: "optimistic-confirm", fieldId: field.id });
+    setFeedback(null);
+    const undo = (message: string, kind: ReviewFeedback["kind"] = "error") => {
+      for (const [fieldId, restore] of previous) dispatch({ type: "optimistic-clear", fieldId, restore });
+      setFeedback({ kind, message });
+      return false;
+    };
+    return enqueue(async () => {
+      if (refreshRequiredRef.current) return undo("Refresh the latest shipment before saving. Your drafts are retained.", "warning");
+      try {
+        const response = await fetch(`/api/documents/${doc.id}/fields/confirm`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, cache: "no-store",
+          body: JSON.stringify({ fieldIds: targets.map((field) => field.id), expectedRevision: revisionRef.current }),
+        });
+        const data = await response.json() as ActionResponse;
+        if (!response.ok) {
+          const stale = response.status === 409 && STALE_CODES.includes(data.code ?? "");
+          if (stale) { refreshRequiredRef.current = true; dispatch({ type: "refresh-required" }); }
+          const message = data.error ?? "Confirming the fields could not be completed.";
+          return undo(stale ? `${message} Your drafts are retained; refresh the latest shipment.` : message, stale ? "warning" : "error");
+        }
+        const saved = new Map((data.fields ?? []).map((field) => [field.id, field]));
+        const revision = data.revision ?? revisionRef.current;
+        revisionRef.current = Math.max(revisionRef.current, revision);
+        const checks = data.crossChecks ?? undefined;
+        dispatch({ type: "patch-snapshot", savedFieldIds: [...previous.keys()], update: (current) => ({
+          ...current,
+          documents: current.documents.map((d) => d.id !== doc.id ? d : { ...d, fields: d.fields.map((f) => saved.has(f.id) ? { ...f, ...saved.get(f.id) } : f) }),
+          shipment: { ...current.shipment, currentRevision: revision, status: data.shipmentStatus ?? current.shipment.status },
+          ...(checks ? { crossChecks: checks, crossChecksStale: false } : { crossChecksStale: true }),
+          ...(data.crossCheckRunId ? { latestCheckRun: { id: data.crossCheckRunId, revision, createdAt: null } } : {}),
+        }) });
+        setSubmitBlockers([]);
+        if (data.crossChecksStale) needsRecomputeRef.current = true;
+        setFeedback({ kind: "success", message: `${targets.length} field${targets.length === 1 ? "" : "s"} confirmed at revision ${revision}.${data.approvalInvalidated ? " The previous submission was withdrawn; review and resubmit." : ""}` });
+        return true;
+      } catch {
+        refreshRequiredRef.current = true;
+        dispatch({ type: "refresh-required" });
+        for (const fieldId of previous.keys()) dispatch({ type: "optimistic-clear", fieldId });
+        setFeedback({ kind: "error", message: "The response was interrupted. Your drafts are retained. Refresh the latest shipment to check whether the fields were saved before retrying." });
+        return false;
+      }
+    });
+  }
+
   async function markPage(doc: ReviewWorkspaceDocument, page: number, reviewNote: string) {
     if (isReadOnly || doc.extractionStatus === "PROCESSING") return false;
     return mutate("Marking page for manual entry", `/api/documents/${doc.id}/pages/manual`, { pageNumber: page, manualEntryRequired: true, reviewNote: reviewNote.trim(), expectedRevision: shipmentRevision }, (data) => {
@@ -354,5 +409,5 @@ export function useReviewController(initialData: ReviewWorkspaceInitialData) {
   /** Saves or the follow-up check recompute are still running in the background. */
   const settling = pendingSaves > 0 || recomputing;
 
-  return { snapshot, drafts, feedback, setFeedback, submitBlockers, setSubmitBlockers, busy, isRefreshing, settling, refreshRequired, isReadOnly, dispatch, refreshLatest, saveField, markPage, saveManualField, resolveCheck, recheck, mapLines, removeMapping, submit, decide };
+  return { snapshot, drafts, feedback, setFeedback, submitBlockers, setSubmitBlockers, busy, isRefreshing, settling, refreshRequired, isReadOnly, dispatch, refreshLatest, saveField, confirmFields, markPage, saveManualField, resolveCheck, recheck, mapLines, removeMapping, submit, decide };
 }

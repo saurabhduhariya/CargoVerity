@@ -10,13 +10,16 @@ export const AUTH_ERRORS = {
   FORBIDDEN: "FORBIDDEN",
 } as const;
 
-export async function getAuthenticatedSupabaseUser() {
+export async function getAuthenticatedSupabaseUser(): Promise<{ id: string; email: string | null } | null> {
   const supabase = await createSupabaseServerClient();
-  // getUser() revalidates the session with Supabase Auth instead of trusting the cookie.
-  const { data, error } = await supabase.auth.getUser();
+  // getClaims() verifies the session JWT signature and expiry against the project's published
+  // signing keys (cached), so a forged or expired cookie is rejected without a Supabase Auth
+  // round trip on every page and API request. The role still comes only from the database.
+  const { data, error } = await supabase.auth.getClaims();
+  const claims = data?.claims;
 
-  if (error || !data.user) return null;
-  return data.user;
+  if (error || !claims?.sub) return null;
+  return { id: claims.sub, email: typeof claims.email === "string" ? claims.email : null };
 }
 
 /**

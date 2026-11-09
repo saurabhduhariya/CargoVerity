@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, FileDown, FileText, Lock, RefreshCw, RotateCw, Send, ShieldCheck, X, ZoomIn, ZoomOut } from "lucide-react";
@@ -42,6 +42,34 @@ function subscribeDesktop(onChange: () => void) {
 }
 function getDesktopSnapshot() { return window.matchMedia(DESKTOP_QUERY).matches; }
 function getDesktopServerSnapshot() { return true; }
+
+// Document/fields split on desktop, as the document pane's share in percent. Kept per browser.
+const SPLIT_STORAGE_KEY = "cargoverity.review.split";
+const SPLIT_DEFAULT = 58;
+const SPLIT_MIN = 25;
+const SPLIT_MAX = 75;
+const SPLIT_MIN_DOCUMENT_PX = 280;
+const SPLIT_MIN_INSPECTOR_PX = 360;
+const splitListeners = new Set<() => void>();
+function clampSplit(value: number) { return Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, value)); }
+function subscribeSplit(onChange: () => void) {
+  splitListeners.add(onChange);
+  window.addEventListener("storage", onChange);
+  return () => { splitListeners.delete(onChange); window.removeEventListener("storage", onChange); };
+}
+function getSplitSnapshot() {
+  try {
+    const stored = Number(window.localStorage.getItem(SPLIT_STORAGE_KEY));
+    return Number.isFinite(stored) && stored > 0 ? clampSplit(stored) : SPLIT_DEFAULT;
+  } catch { return SPLIT_DEFAULT; }
+}
+function getSplitServerSnapshot() { return SPLIT_DEFAULT; }
+function storeSplit(value: number) {
+  try { window.localStorage.setItem(SPLIT_STORAGE_KEY, String(Math.round(clampSplit(value) * 10) / 10)); } catch { /* Private mode: the split lasts for this page only. */ }
+  splitListeners.forEach((listener) => listener());
+}
+/** Success and info messages close on their own; errors and warnings wait to be dismissed. */
+const TOAST_AUTO_CLOSE_MS = 4000;
 function focusReviewElement(id: string, fallbackId?: string) {
   requestAnimationFrame(() => {
     const element = document.getElementById(id) ?? (fallbackId ? document.getElementById(fallbackId) : null);
@@ -66,6 +94,11 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
   const { snapshot, drafts, feedback, setFeedback, busy, isRefreshing, settling, refreshRequired, isReadOnly, dispatch } = controller;
   const { shipment, documents, crossChecks } = snapshot;
   const isDesktop = useSyncExternalStore(subscribeDesktop, getDesktopSnapshot, getDesktopServerSnapshot);
+  const splitPercent = useSyncExternalStore(subscribeSplit, getSplitSnapshot, getSplitServerSnapshot);
+  const [splitDragging, setSplitDragging] = useState(false);
+  const dragValueRef = useRef<number | null>(null);
+  const splitRef = useRef<HTMLDivElement>(null);
+  const [toastHeld, setToastHeld] = useState(false);
   const initialDocType = documents.find((doc) => doc.id === initialData.initialDocumentId)?.docType ?? DOCUMENT_TYPES.find((type) => documents.some((doc) => doc.docType === type)) ?? "INVOICE";
   const [activeDocType, setActiveDocType] = useState<ReviewWorkspaceDocument["docType"]>(initialDocType);
   const [entryDocumentId, setEntryDocumentId] = useState(initialData.initialDocumentId);
@@ -187,6 +220,54 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [activeDoc, goToNextUncertainField, maxPages]);
 
+  useEffect(() => {
+    if (!feedback || toastHeld || feedback.kind === "error" || feedback.kind === "warning") return;
+    const timer = setTimeout(() => setFeedback(null), TOAST_AUTO_CLOSE_MS);
+    return () => clearTimeout(timer);
+  }, [feedback, toastHeld, setFeedback]);
+
+  function splitColumns(percent: number) {
+    return `minmax(${SPLIT_MIN_DOCUMENT_PX}px, ${percent}fr) 16px minmax(${SPLIT_MIN_INSPECTOR_PX}px, ${100 - percent}fr)`;
+  }
+  function splitFromPointer(clientX: number) {
+    const rect = splitRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return null;
+    return clampSplit(((clientX - rect.left) / rect.width) * 100);
+  }
+  // While dragging, the grid is updated directly so the large workspace does not re-render on
+  // every pointer move. The final value is stored (and rendered by React) on release.
+  function startSplitDrag(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragValueRef.current = splitPercent;
+    setSplitDragging(true);
+  }
+  function moveSplitDrag(event: ReactPointerEvent<HTMLDivElement>) {
+    if (dragValueRef.current === null) return;
+    const next = splitFromPointer(event.clientX);
+    if (next === null || !splitRef.current) return;
+    dragValueRef.current = next;
+    splitRef.current.style.gridTemplateColumns = splitColumns(next);
+    event.currentTarget.setAttribute("aria-valuenow", String(Math.round(next)));
+  }
+  function endSplitDrag() {
+    const value = dragValueRef.current;
+    if (value === null) return;
+    dragValueRef.current = null;
+    storeSplit(value);
+    setSplitDragging(false);
+  }
+  function keySplit(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const step = event.shiftKey ? 10 : 2;
+    const next = event.key === "ArrowLeft" ? splitPercent - step : event.key === "ArrowRight" ? splitPercent + step
+      : event.key === "Home" ? SPLIT_MIN : event.key === "End" ? SPLIT_MAX : event.key === "Enter" ? SPLIT_DEFAULT : null;
+    if (next === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    storeSplit(next);
+  }
+
   const reportPageCount = useCallback((documentId: string, count: number) => setPdfPageCounts((previous) => previous[documentId] === count ? previous : { ...previous, [documentId]: count }), []);
 
   function actionBase(): ReviewActionBase {
@@ -258,6 +339,25 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
   }
 
   function closePendingAction() { pendingActionRef.current = null; setPendingAction(null); }
+
+  function requestConfirmAll(doc: ReviewWorkspaceDocument, fields: ReviewWorkspaceDocument["fields"]) {
+    if (disabled || documentReadOnly || fields.length === 0) return;
+    const flagged = fields.filter(isFieldUncertain).length;
+    const signedOff = crossChecks.some((check) => check.resolutions?.length || check.activeResolution) || dirtyResolutions.length > 0;
+    const action: PendingAction = {
+      ...actionBase(),
+      title: `Confirm ${fields.length} field${fields.length === 1 ? "" : "s"}?`,
+      description: [
+        `Each listed ${DOCUMENT_LABELS[doc.docType].toLowerCase()} value will be confirmed as it is saved now. Fields with drafts or no value are left out.`,
+        flagged ? `${flagged} of them ${flagged === 1 ? "is" : "are"} flagged as needing review. Check ${flagged === 1 ? "it" : "them"} against the source first.` : "",
+        signedOff ? "Checks will be recomputed, so existing exceptions and sign-offs must be reviewed again." : "Checks are recomputed once afterwards.",
+      ].filter(Boolean).join(" "),
+      confirmLabel: `Confirm ${fields.length}`,
+      execute: () => controller.confirmFields(doc, fields),
+    };
+    pendingActionRef.current = action;
+    setPendingAction(action);
+  }
   function confirmPendingAction() {
     if (busy || isRefreshing) return;
     const action = pendingActionRef.current;
@@ -407,7 +507,7 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
   const shipmentLink = <Link href={`/shipments/${shipment.id}`} onClick={guardLink} className={cn("inline-flex min-h-[var(--control-height)] items-center gap-2 text-sm font-medium text-primary", FOCUS_RING_STYLES)}>Open shipment<FileText className="size-4" aria-hidden="true" /></Link>;
 
   const documentPane = (
-    <section aria-label="Document evidence viewer" className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-panel border border-border bg-surface" data-testid="document-pane">
+    <section id="review-document-pane" aria-label="Document evidence viewer" className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-panel border border-border bg-surface" data-testid="document-pane">
       <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border py-1.5 pl-4 pr-2">
         <h2 id="document-pane-heading" tabIndex={-1} className={cn("min-w-0 flex-1 basis-40 truncate text-sm font-medium", FOCUS_RING_STYLES)} title={activeDoc?.originalFileName}>{activeDoc?.originalFileName ?? `${DOCUMENT_LABELS[activeDocType]} not supplied`}</h2>
         <div role="group" className="flex flex-wrap items-center gap-0.5" aria-label="Document controls">
@@ -440,7 +540,7 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
   );
 
   const inspector = (
-    <section aria-label="Document review inspector" className="h-full min-h-0 min-w-0 overflow-hidden rounded-panel border border-border bg-surface" data-testid="review-inspector">
+    <section id="review-inspector-pane" aria-label="Document review inspector" className="h-full min-h-0 min-w-0 overflow-hidden rounded-panel border border-border bg-surface" data-testid="review-inspector">
       <Tabs value={inspectorTab} onValueChange={(value) => setInspectorTab(value as InspectorTab)} className="flex h-full min-h-0 flex-col">
         <TabsList aria-label="Review inspector" className="shrink-0 px-2">
           <TabsTrigger value="fields">Fields{activeDoc ? ` (${activeDoc.fields.length})` : ""}{activeDoc?.fields.some(isFieldUncertain) ? <span aria-hidden="true" className="size-1.5 rounded-full bg-warning-strong" /> : null}</TabsTrigger>
@@ -456,6 +556,7 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
             onManualSave={saveManualDraft} onManualAcknowledge={acknowledgeManualDraft}
             onDraft={(doc, field, patch) => dispatch({ type: "draft", doc, field, patch })}
             onSave={(doc, field, action) => requestRunChange(() => controller.saveField(doc, field, action), "Save and recompute checks?", { fieldSave: true })}
+            onConfirmAll={requestConfirmAll} confirmAllDisabled={disabled}
             onDiscard={(fieldId) => dispatch({ type: "discard", fieldId })} onAcknowledge={(fieldId) => dispatch({ type: "acknowledge", fieldId })}
             onEvidence={inspectEvidence} shipmentLink={shipmentLink}
           />
@@ -505,6 +606,30 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
               {uncertainTotal ? <span className="inline-flex items-center gap-1.5 text-xs font-medium text-warning"><span aria-hidden="true" className="size-2 rounded-full bg-warning-strong" />{uncertainTotal} to review</span> : null}
               {unresolvedChecks ? <span className="text-xs font-medium text-danger">{unresolvedChecks} check{unresolvedChecks === 1 ? "" : "s"} failing</span> : null}
             </div> : null}
+            {hasDrafts ? <details data-testid="review-drafts-menu" className="group relative" onKeyDown={(event) => { if (event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); } }}>
+              <summary title="Save or discard drafts before submitting, approving or downloading" className={cn("inline-flex h-8 cursor-pointer list-none items-center gap-1.5 rounded-control border border-warning-border bg-warning-surface px-2.5 text-xs font-medium text-warning [&::-webkit-details-marker]:hidden", FOCUS_RING_STYLES)}><span aria-hidden="true" className="size-1.5 rounded-full bg-warning-strong" />{draftCount} unsaved draft{draftCount === 1 ? "" : "s"}</summary>
+              <div className="absolute right-0 top-full z-40 mt-2 max-h-80 w-[min(420px,calc(100vw-1.5rem))] space-y-3 overflow-y-auto rounded-panel border border-border bg-surface p-3 text-sm text-foreground shadow-overlay"><p className="text-xs text-muted-foreground">Save or discard these before submitting, approving or downloading.</p>
+                {Object.entries(drafts).map(([id, draft]) => <div key={id} className="flex flex-wrap items-start justify-between gap-2"><p className="min-w-0 flex-1 break-words">{DOCUMENT_LABELS[draft.docType]} · {formatFieldLabel(draft.fieldKey)}: <span className="font-mono">{draft.value || "Empty"}</span>{draft.conflict ? " · conflict requires review" : ""}</p><Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => dispatch({ type: "discard", fieldId: id })}>Discard field draft</Button></div>)}
+                {dirtyManualEntries.map(([id, entry]) => {
+                  const doc = documents.find((item) => item.id === id);
+                  return <div key={id} className="space-y-1">
+                    <p className="break-words">{doc ? DOCUMENT_LABELS[doc.docType] : "Replaced document"} · Manual field {formatFieldLabel(entry.draft.fieldKey)}: <span className="font-mono">{entry.draft.value}</span>{manualDraftConflict(entry, doc) ? " · conflict requires review" : ""}</p>
+                    <p className="break-words">Reason: {entry.draft.reason || "Not supplied"}</p>
+                    <div className="flex flex-wrap gap-2">{doc ? <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => resumeManualDraft(id)}>Resume manual draft</Button> : null}<Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => setManualEntries((entries) => ({ ...entries, [id]: { open: false, draft: blankManualDraft(entry.draft.page), base: null } }))}>Discard manual draft</Button></div>
+                  </div>;
+                })}
+                {dirtyResolutions.map(([id, entry]) => {
+                  const current = crossChecks.some((check) => check.id === id);
+                  return <div key={id} className="space-y-1">
+                    <p className="font-medium">{checkLabel(entry.check)} · {current ? "Current resolution draft" : "Retained draft from an earlier run"}</p>
+                    <p className="break-words">Reason: {entry.draft.reason || "Not supplied"}</p>
+                    {entry.draft.evidence ? <p className="break-words">Evidence: {entry.draft.evidence}</p> : null}
+                    <div className="flex flex-wrap gap-2">{current || entry.type !== "ACCEPTED_EXCEPTION" ? <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => { setResolvingId(id); setInspectorTab(current ? "checks" : "history"); setMobilePane("review"); focusReviewElement(current ? `check-card-${id}` : `history-check-${id}`); }}>Resume resolution draft</Button> : null}<Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => { setResolutionEntries((entries) => { const next = { ...entries }; delete next[id]; return next; }); if (resolvingId === id) setResolvingId(null); }}>Discard resolution draft</Button></div>
+                  </div>;
+                })}
+                {hasMappingDraft ? <div className="space-y-1"><p>Unsaved line selection or mapping reason</p>{mappingReason ? <p className="break-words">Reason: {mappingReason}</p> : null}<Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => { setMappingReason(""); setMappingSelections({}); }}>Discard mapping draft</Button></div> : null}
+              </div>
+            </details> : null}
             <span role="status" aria-live="polite" className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">{settling ? <><span aria-hidden="true" className="size-1.5 rounded-full bg-foreground-secondary motion-safe:animate-pulse" />Saving…</> : null}</span>
             <Button type="button" size="icon" variant="ghost" disabled={Boolean(busy || isRefreshing)} loading={isRefreshing} onClick={controller.refreshLatest} aria-label="Refresh latest shipment" title="Refresh">{isRefreshing ? null : <RefreshCw className="size-4" aria-hidden="true" />}</Button>
             <Button type="button" size="sm" variant="outline" disabled={Boolean(busy)} onClick={() => setExportOpen(true)}><FileDown className="size-4" aria-hidden="true" />Export preview</Button>
@@ -526,42 +651,33 @@ export function ReviewWorkspace({ initialData }: { initialData: ReviewWorkspaceI
           {isReadOnly ? <p className="flex items-center gap-1.5 text-sm text-foreground-secondary"><Lock className="size-3.5 shrink-0" aria-hidden="true" />{shipment.status === "EXTRACTING" ? "Extraction in progress. Editing is paused." : `Read-only · ${shipment.status === "EXPORTED" ? "exported" : "approved"} revision`}</p> : shipment.status === "READY_FOR_APPROVAL" ? <p className="text-sm text-foreground-secondary">Awaiting approval. Saving a change withdraws the submission.</p> : activeDoc?.extractionStatus === "PROCESSING" ? <p className="text-sm text-foreground-secondary">Extracting this document. Editing is paused.</p> : null}
         </div>
 
-        {hasDrafts ? <details className="shrink-0 rounded-control border border-warning-border bg-warning-surface px-3 py-2 text-sm text-warning">
-          <summary className={cn("cursor-pointer font-medium", FOCUS_RING_STYLES)}>{draftCount} unsaved draft{draftCount === 1 ? "" : "s"} · save or discard before submitting, approving or downloading</summary>
-          <div className="max-h-52 space-y-3 overflow-y-auto pt-3">
-            {Object.entries(drafts).map(([id, draft]) => <div key={id} className="flex flex-wrap items-start justify-between gap-2"><p className="min-w-0 flex-1 break-words">{DOCUMENT_LABELS[draft.docType]} · {formatFieldLabel(draft.fieldKey)}: <span className="font-mono">{draft.value || "Empty"}</span>{draft.conflict ? " · conflict requires review" : ""}</p><Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => dispatch({ type: "discard", fieldId: id })}>Discard field draft</Button></div>)}
-            {dirtyManualEntries.map(([id, entry]) => {
-              const doc = documents.find((item) => item.id === id);
-              return <div key={id} className="space-y-1">
-                <p className="break-words">{doc ? DOCUMENT_LABELS[doc.docType] : "Replaced document"} · Manual field {formatFieldLabel(entry.draft.fieldKey)}: <span className="font-mono">{entry.draft.value}</span>{manualDraftConflict(entry, doc) ? " · conflict requires review" : ""}</p>
-                <p className="break-words">Reason: {entry.draft.reason || "Not supplied"}</p>
-                <div className="flex flex-wrap gap-2">{doc ? <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => resumeManualDraft(id)}>Resume manual draft</Button> : null}<Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => setManualEntries((entries) => ({ ...entries, [id]: { open: false, draft: blankManualDraft(entry.draft.page), base: null } }))}>Discard manual draft</Button></div>
-              </div>;
-            })}
-            {dirtyResolutions.map(([id, entry]) => {
-              const current = crossChecks.some((check) => check.id === id);
-              return <div key={id} className="space-y-1">
-                <p className="font-medium">{checkLabel(entry.check)} · {current ? "Current resolution draft" : "Retained draft from an earlier run"}</p>
-                <p className="break-words">Reason: {entry.draft.reason || "Not supplied"}</p>
-                {entry.draft.evidence ? <p className="break-words">Evidence: {entry.draft.evidence}</p> : null}
-                <div className="flex flex-wrap gap-2">{current || entry.type !== "ACCEPTED_EXCEPTION" ? <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => { setResolvingId(id); setInspectorTab(current ? "checks" : "history"); setMobilePane("review"); focusReviewElement(current ? `check-card-${id}` : `history-check-${id}`); }}>Resume resolution draft</Button> : null}<Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => { setResolutionEntries((entries) => { const next = { ...entries }; delete next[id]; return next; }); if (resolvingId === id) setResolvingId(null); }}>Discard resolution draft</Button></div>
-              </div>;
-            })}
-            {hasMappingDraft ? <div className="space-y-1"><p>Unsaved line selection or mapping reason</p>{mappingReason ? <p className="break-words">Reason: {mappingReason}</p> : null}<Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => { setMappingReason(""); setMappingSelections({}); }}>Discard mapping draft</Button></div> : null}
+        {isDesktop ? <div ref={splitRef} className={cn("grid min-h-0 flex-1", splitDragging && "cursor-col-resize select-none")} style={{ gridTemplateColumns: splitColumns(splitPercent) }}>
+          {documentPane}
+          <div
+            role="separator" aria-orientation="vertical" aria-label="Resize document and fields panels" aria-controls="review-document-pane review-inspector-pane"
+            aria-valuemin={SPLIT_MIN} aria-valuemax={SPLIT_MAX} aria-valuenow={Math.round(splitPercent)} aria-valuetext={`Document ${Math.round(splitPercent)}%, fields ${100 - Math.round(splitPercent)}%`}
+            tabIndex={0} title="Drag to resize · double-click to reset" data-testid="review-split-handle" data-dragging={splitDragging ? "true" : undefined}
+            onPointerDown={startSplitDrag} onPointerMove={moveSplitDrag} onPointerUp={endSplitDrag} onPointerCancel={endSplitDrag} onLostPointerCapture={endSplitDrag}
+            onDoubleClick={() => storeSplit(SPLIT_DEFAULT)} onKeyDown={keySplit}
+            className={cn("group flex cursor-col-resize touch-none select-none items-stretch justify-center rounded-small", FOCUS_RING_STYLES)}
+          >
+            <span aria-hidden="true" className="my-6 w-px bg-border transition-colors duration-[var(--motion-fast)] group-hover:w-0.5 group-hover:bg-foreground-secondary group-focus-visible:bg-ring group-data-[dragging=true]:w-0.5 group-data-[dragging=true]:bg-foreground motion-reduce:transition-none" />
           </div>
-        </details> : null}
-
-        {feedback || busy || isRefreshing || refreshRequired ? <div role={feedback?.kind === "error" || feedback?.kind === "warning" || refreshRequired ? "alert" : "status"} data-feedback={feedback?.kind ?? "loading"} className={cn("flex shrink-0 items-start justify-between gap-3 rounded-control border px-3 py-2 text-sm", feedback?.kind === "error" ? "border-danger-border bg-danger-surface text-danger" : feedback?.kind === "warning" || refreshRequired ? "border-warning-border bg-warning-surface text-warning" : feedback?.kind === "success" ? "border-success-border bg-success-surface text-success" : "border-info-border bg-info-surface text-info")}>
-          <div className="min-w-0"><p className="break-words">{busy ? `${busy}…` : isRefreshing ? "Refreshing saved values and audit history. Drafts are retained…" : feedback?.message ?? "Refresh the latest shipment before saving. Drafts are retained."}</p>{refreshRequired ? <Button type="button" variant="link" size="sm" disabled={Boolean(busy || isRefreshing)} className="px-0" onClick={controller.refreshLatest}>Refresh latest; keep drafts</Button> : null}</div>
-          {!busy && !isRefreshing && !refreshRequired ? <Button type="button" size="icon" variant="ghost" aria-label="Dismiss review feedback" onClick={() => setFeedback(null)}><X className="size-4" aria-hidden="true" /></Button> : null}
-        </div> : null}
-
-        {isDesktop ? <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(390px,0.7fr)] gap-4">{documentPane}{inspector}</div> : <Tabs value={mobilePane} onValueChange={setMobilePane} className="flex min-h-0 flex-1 flex-col">
+          {inspector}
+        </div> : <Tabs value={mobilePane} onValueChange={setMobilePane} className="flex min-h-0 flex-1 flex-col">
           <TabsList aria-label="Workspace pane" className="mb-2 shrink-0 rounded-panel border border-border bg-surface px-1"><TabsTrigger value="document" className="flex-1">Document</TabsTrigger><TabsTrigger value="review" className="flex-1">Review{uncertainTotal ? ` (${uncertainTotal})` : ""}</TabsTrigger></TabsList>
           <TabsContent value="document" className="min-h-0 flex-1 pt-0" tabIndex={-1}>{documentPane}</TabsContent>
           <TabsContent value="review" className="min-h-0 flex-1 pt-0" tabIndex={-1}>{inspector}</TabsContent>
         </Tabs>}
       </main>
+
+      {/* Floating so messages never push the panels around. Success and info fade on their own. */}
+      <div className="pointer-events-none fixed inset-x-3 bottom-3 z-40 flex justify-center sm:inset-x-auto sm:bottom-5 sm:right-5 sm:justify-end">
+        {feedback || busy || isRefreshing || refreshRequired ? <div role={feedback?.kind === "error" || feedback?.kind === "warning" || refreshRequired ? "alert" : "status"} data-feedback={feedback?.kind ?? "loading"} data-testid="review-toast" onPointerEnter={() => setToastHeld(true)} onPointerLeave={() => setToastHeld(false)} onFocus={() => setToastHeld(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setToastHeld(false); }} className={cn("pointer-events-auto flex w-full max-w-[420px] items-start justify-between gap-3 rounded-panel border px-3.5 py-2.5 text-sm shadow-overlay motion-safe:animate-[review-toast-in_var(--motion-normal)_ease-out]", feedback?.kind === "error" ? "border-danger-border bg-danger-surface text-danger" : feedback?.kind === "warning" || refreshRequired ? "border-warning-border bg-warning-surface text-warning" : feedback?.kind === "success" ? "border-success-border bg-success-surface text-success" : "border-info-border bg-info-surface text-info")}>
+          <div className="min-w-0"><p className="break-words">{busy ? `${busy}…` : isRefreshing ? "Refreshing saved values and audit history. Drafts are retained…" : feedback?.message ?? "Refresh the latest shipment before saving. Drafts are retained."}</p>{refreshRequired ? <Button type="button" variant="link" size="sm" disabled={Boolean(busy || isRefreshing)} className="px-0" onClick={controller.refreshLatest}>Refresh latest; keep drafts</Button> : null}</div>
+          {!busy && !isRefreshing && !refreshRequired ? <Button type="button" size="icon" variant="ghost" className="-mr-1.5 -mt-1 size-8 shrink-0" aria-label="Dismiss review feedback" onClick={() => setFeedback(null)}><X className="size-4" aria-hidden="true" /></Button> : null}
+        </div> : null}
+      </div>
 
       <ConfirmDialog open={Boolean(pendingAction)} onClose={closePendingAction} onConfirm={confirmPendingAction} title={pendingAction?.title ?? "Start a new check run?"} description={pendingAction?.description} confirmLabel={pendingAction?.confirmLabel} busy={Boolean(busy || isRefreshing)} />
       <ConfirmDialog open={Boolean(manualPageTarget)} onClose={() => setManualPageTarget(null)} onConfirm={markManualPage} title={`Enable manual entry for page ${manualPageTarget?.page ?? page}?`} description="Creates a new revision and withdraws any pending submission. Re-run checks after entering the values. The original readability result stays in history." confirmLabel="Mark for manual entry" busy={Boolean(busy || isRefreshing)}>

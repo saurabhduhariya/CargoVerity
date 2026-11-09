@@ -85,21 +85,21 @@ export default async function ReviewPage({
     notFound();
   }
 
-  // 3. Load latest cross-check run
-  const latestRun = await getLatestCrossCheckRun({
-    shipmentId: shipment.id,
-    revision: shipment.currentRevision,
-    prismaClient: prisma,
-  });
-  const lastStoredRun = latestRun ?? await prisma.crossCheckRun.findFirst({
-    where: { shipmentId: shipment.id },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    select: { id: true, revision: true },
-  });
-
-  // 4. Resolve signed URLs and format documents
-  const documents = await Promise.all(
-    shipment.documents.map(async (doc) => {
+  // 3. Everything below depends only on the shipment, so load it in parallel rather than one
+  //    database round trip after another.
+  const [latestRun, lastStoredRunFallback, documents, lineMappings, auditEvents] = await Promise.all([
+    getLatestCrossCheckRun({
+      shipmentId: shipment.id,
+      revision: shipment.currentRevision,
+      prismaClient: prisma,
+    }),
+    prisma.crossCheckRun.findFirst({
+      where: { shipmentId: shipment.id },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: { id: true, revision: true },
+    }),
+    // 4. Resolve signed URLs and format documents
+    Promise.all(shipment.documents.map(async (doc) => {
       let signedUrl = "";
       try {
         const authUrlResult = await getAuthorizedDocumentDownloadUrl(prisma, {
@@ -159,19 +159,18 @@ export default async function ReviewPage({
           pageNumber: item.pageNumber,
         })),
       };
+    })),
+    // Active Executive line mappings (Week 4 Step 4)
+    listActiveLineMappings(prisma, shipment.id),
+    // 5. Load audit trail for manager review and compliance (Rule 5)
+    prisma.auditEvent.findMany({
+      where: { shipmentId: shipment.id },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: 200,
+      include: { actor: { select: { email: true, role: true } } },
     }),
-  );
-
-  // Active Executive line mappings (Week 4 Step 4)
-  const lineMappings = await listActiveLineMappings(prisma, shipment.id);
-
-  // 5. Load audit trail for manager review and compliance (Rule 5)
-  const auditEvents = await prisma.auditEvent.findMany({
-    where: { shipmentId: shipment.id },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: 200,
-    include: { actor: { select: { email: true, role: true } } },
-  });
+  ]);
+  const lastStoredRun = latestRun ?? lastStoredRunFallback;
 
   const initialData: ReviewWorkspaceInitialData = {
     shipment: {

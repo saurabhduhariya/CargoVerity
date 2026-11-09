@@ -19,7 +19,7 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
   const { appUser } = await requirePageAppUser(`/shipments/${encodeURIComponent(id)}`);
   const prisma = getPrisma();
   const env = getEnv();
-  const shipment = await prisma.shipment.findFirst({
+  const shipmentQuery = prisma.shipment.findFirst({
     where: { id, ...(appUser.role === "MANAGER" ? {} : { createdById: appUser.id }) },
     include: {
       supplier: true,
@@ -53,14 +53,22 @@ export default async function ShipmentPage({ params }: { params: Promise<{ id: s
     },
   });
 
+  // Field counts come from each document's latest COMPLETED run, not from every run in history.
+  // Loaded alongside the shipment under the same access scope; unused if the shipment is not found.
+  const [shipment, completedRuns] = await Promise.all([
+    shipmentQuery,
+    prisma.extractionRun.findMany({
+      where: {
+        status: "COMPLETED",
+        document: { isCurrent: true, shipment: { id, ...(appUser.role === "MANAGER" ? {} : { createdById: appUser.id }) } },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { documentId: true, fields: { select: { reviewStatus: true, reviewReason: true } } },
+    }),
+  ]);
+
   if (!shipment) notFound();
 
-  // Field counts come from each document's latest COMPLETED run, not from every run in history.
-  const completedRuns = await prisma.extractionRun.findMany({
-    where: { documentId: { in: shipment.documents.map((d) => d.id) }, status: "COMPLETED" },
-    orderBy: { createdAt: "desc" },
-    select: { documentId: true, fields: { select: { reviewStatus: true, reviewReason: true } } },
-  });
   const fieldsByDocument = new Map<string, Array<{ reviewStatus: string; reviewReason: string | null }>>();
   for (const run of completedRuns) {
     if (!fieldsByDocument.has(run.documentId)) fieldsByDocument.set(run.documentId, run.fields);

@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Eye, Plus, Save, X } from "lucide-react";
+import { Check, CheckCheck, Eye, Plus, Save, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FOCUS_RING_STYLES } from "@/components/ui/control-styles";
@@ -120,6 +120,9 @@ type FieldsInspectorProps = {
   onManualAcknowledge: () => void;
   onDraft: (doc: ReviewWorkspaceDocument, field: ReviewWorkspaceField, patch: Partial<Pick<FieldDraft, "value" | "reason">>) => void;
   onSave: (doc: ReviewWorkspaceDocument, field: ReviewWorkspaceField, action: FieldAction) => void;
+  onConfirmAll: (doc: ReviewWorkspaceDocument, fields: ReviewWorkspaceField[]) => void;
+  /** Also true while earlier saves settle, so the batch is sent at the latest revision. */
+  confirmAllDisabled: boolean;
   onDiscard: (id: string) => void;
   onAcknowledge: (id: string) => void;
   onEvidence: (target: EvidenceTarget, returnId: string) => void;
@@ -127,7 +130,7 @@ type FieldsInspectorProps = {
 };
 
 export function FieldsInspector(props: FieldsInspectorProps) {
-  const { doc, drafts, category, reviewFilter, focusedId, disabled, readOnly, manualOpen, manualDraft, manualError, manualConflict, onCategory, onReviewFilter, onNext, onManualOpen, onManualDraft, onManualSave, onManualAcknowledge, onDraft, onSave, onDiscard, onAcknowledge, onEvidence, shipmentLink } = props;
+  const { doc, drafts, category, reviewFilter, focusedId, disabled, readOnly, manualOpen, manualDraft, manualError, manualConflict, onCategory, onReviewFilter, onNext, onManualOpen, onManualDraft, onManualSave, onManualAcknowledge, onDraft, onSave, onConfirmAll, confirmAllDisabled, onDiscard, onAcknowledge, onEvidence, shipmentLink } = props;
   const fields = (doc?.fields ?? []).filter((f) => (category === "all" || categorizeFieldKey(f.fieldKey) === category) && (reviewFilter === "all" || (reviewFilter === "uncertain" ? isFieldUncertain(f) : f.reviewStatus === "PENDING")));
   const uncertainCount = doc?.fields.filter(isFieldUncertain).length ?? 0;
   const pendingCount = doc?.fields.filter((f) => f.reviewStatus === "PENDING").length ?? 0;
@@ -136,13 +139,18 @@ export function FieldsInspector(props: FieldsInspectorProps) {
   const selectedOption = options.find((option) => option.fieldKey === manualDraft.fieldKey);
   const manualUnlocked = doc && selectedOption && canEnterManualField(doc, selectedOption.fieldKey, manualDraft.page);
   const manualSavedField = doc?.fields.find((field) => field.fieldKey === manualDraft.fieldKey);
+  // "Confirm all" applies to the fields currently listed, so filters decide what it covers.
+  const confirmable = readOnly ? [] : fields.filter((field) => !drafts[field.id] && Boolean(field.currentValue?.trim()) && ["PENDING", "REQUIRES_REVIEW"].includes(field.reviewStatus));
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div id="review-fields-heading" tabIndex={-1} className={cn("shrink-0 space-y-2.5 border-b border-border px-4 py-2.5", FOCUS_RING_STYLES)}>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-sm text-foreground-secondary">{uncertainCount ? <span className="font-medium text-warning">{uncertainCount} require review</span> : <span className="font-medium text-foreground">0 require review</span>}<span className="text-muted-foreground"> · {pendingCount} pending</span></p>
-          <Button type="button" size="sm" variant={uncertainCount ? "default" : "outline"} title="Next uncertain field (N)" aria-keyshortcuts="N" disabled={!doc || uncertainCount === 0} onClick={onNext}>Next uncertain<kbd aria-hidden="true" className="ml-0.5 border-transparent bg-transparent text-current opacity-70">N</kbd></Button>
+          <div className="flex flex-wrap items-center gap-2">
+            {!readOnly && doc ? <Button type="button" size="sm" variant="outline" title={confirmable.length ? `Confirm the ${confirmable.length} listed field${confirmable.length === 1 ? "" : "s"} that have a value` : "No listed fields are waiting for confirmation"} disabled={confirmAllDisabled || confirmable.length === 0} onClick={() => onConfirmAll(doc, confirmable)}><CheckCheck className="size-4" aria-hidden="true" />Confirm all<span className="font-mono tabular-nums opacity-70">{confirmable.length}</span></Button> : null}
+            <Button type="button" size="sm" variant={uncertainCount ? "default" : "outline"} title="Next uncertain field (N)" aria-keyshortcuts="N" disabled={!doc || uncertainCount === 0} onClick={onNext}>Next uncertain<kbd aria-hidden="true" className="ml-0.5 border-transparent bg-transparent text-current opacity-70">N</kbd></Button>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <div role="group" aria-label="Review filter" className="inline-flex rounded-control border border-border p-0.5">

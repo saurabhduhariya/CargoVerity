@@ -113,6 +113,7 @@ export class ExtractionError extends Error {
 export type ReviewErrorCode =
   | "SHIPMENT_NOT_FOUND"
   | "FIELD_NOT_FOUND"
+  | "DOCUMENT_NOT_FOUND"
   | "FIELD_SUPERSEDED"
   | "EMPTY_CONFIRM_VALUE"
   | "NO_CHANGE"

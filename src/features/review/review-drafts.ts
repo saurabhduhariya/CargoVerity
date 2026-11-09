@@ -85,7 +85,7 @@ type ReviewStateAction =
   | { type: "incoming"; data: ReviewWorkspaceInitialData }
   | { type: "snapshot"; data: ReviewWorkspaceInitialData; savedFieldId?: string }
   /** Applies a change to the CURRENT snapshot, so overlapping saves cannot overwrite each other. */
-  | { type: "patch-snapshot"; update: (current: ReviewWorkspaceInitialData) => ReviewWorkspaceInitialData; savedFieldId?: string }
+  | { type: "patch-snapshot"; update: (current: ReviewWorkspaceInitialData) => ReviewWorkspaceInitialData; savedFieldId?: string; savedFieldIds?: string[] }
   | { type: "optimistic-confirm"; fieldId: string }
   | { type: "optimistic-clear"; fieldId: string; restore?: OptimisticFieldStatus }
   | { type: "draft"; doc: ReviewWorkspaceDocument; field: ReviewWorkspaceField; patch: Partial<Pick<FieldDraft, "value" | "reason" | "error">> }
@@ -124,7 +124,7 @@ export function reviewStateReducer(state: ReviewState, action: ReviewStateAction
     if (next.shipment.id !== state.snapshot.shipment.id || next.shipment.currentRevision < state.snapshot.shipment.currentRevision) return state;
     const drafts = { ...state.drafts };
     const optimistic = { ...state.optimistic };
-    if (action.savedFieldId) { delete drafts[action.savedFieldId]; delete optimistic[action.savedFieldId]; }
+    for (const id of [...(action.savedFieldId ? [action.savedFieldId] : []), ...(action.savedFieldIds ?? [])]) { delete drafts[id]; delete optimistic[id]; }
     const snapshot = applyOptimistic(next, optimistic);
     return { ...state, snapshot, drafts: reconcileFieldDrafts(drafts, snapshot.documents), optimistic };
   }
