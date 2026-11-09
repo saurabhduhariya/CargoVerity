@@ -1,7 +1,7 @@
 # CargoVerity Test Results
 
 **Run date:** 2026-11-09  
-**Commit:** [FILL: output of `git rev-parse --short HEAD`]  
+**Commit:** af13f39
 **Node.js:** 24.22.2
 
 ## 1. Summary
@@ -39,7 +39,7 @@
 | `pyramid-flows.test.ts` | 14 database and transaction flows, including audit rows, approval invalidation after an edit, export event, and cascade deletion | 14 |
 | `shipments.test.ts` | Shipment creation and listing | included in the 80 |
 
-**Earlier failure.** One integration test was reported as failing in an earlier run by the project owner. [FILL: name of the failing test and the error message, and what fixed it. If it did not repeat, write "It did not repeat in two consecutive full runs on 2026-11-09 and is treated as an intermittent failure."]
+**Earlier failure.** One integration test was reported as failing in an earlier run by the project owner. It did not repeat in two consecutive full runs on 2026-11-09 (80 of 80 passed each time) and the failing test was not identified, so it is treated as an intermittent failure.
 
 ## 4. End-to-end tests
 
@@ -65,7 +65,7 @@ A separate script, `npm run test:smoke`, calls the real Groq model on synthetic 
 
 ## 6. Deployed application check
 
-Done by the project owner on https://cargo-verity-32o7.vercel.app. [FILL: date and the result of each row of the smoke test in `docs/deployment.md` section 10.]
+Done by the project owner on https://cargo-verity-32o7.vercel.app. Completed on 2026-11-09 and recorded as passed in `docs/deployment.md` section 13, including the 3-page document extraction and the log review. Results per row were not written down individually.
 
 ## 7. What the tests do not cover
 

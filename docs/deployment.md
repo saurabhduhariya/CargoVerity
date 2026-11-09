@@ -190,7 +190,7 @@ Fill in after the final deployment. Do not record secret values.
 | Item | Value |
 |---|---|
 | Vercel URL | https://cargo-verity-32o7.vercel.app |
-| Deployed commit | eeddb40ed5f7c608377cf0c9b52dfb860bf93fd3 |
+| Deployed commit | af13f39 |
 | Supabase region | `ap-southeast-1` (Singapore) |
 | AI provider and model | Groq, `qwen/qwen3.8-27b` |
 | Migrations applied up to | `20261109000000_extraction_usage_metrics` |

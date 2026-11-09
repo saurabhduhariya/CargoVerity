@@ -245,7 +245,7 @@ Backups: Supabase Free has no scheduled backups. The manual `pg_dump` and restor
 | End-to-end tests | `tests/e2e` (Playwright, 27 tests): 26 passed and 1 opt-in test skipped on 2026-11-09, after fixing 4 outdated tests and one real mobile layout overflow on the landing page. Details in `appendix/test-results.md` |
 | CI | `.github/workflows/ci.yml` runs install, lint, typecheck, `db:validate`, unit tests and build without secrets |
 | Real AI | Live Groq calls on synthetic documents: 32 of 32 expected fields matched on five documents. This shows the pipeline works. It is not an accuracy estimate |
-| Deployed app | The owner signed in and ran extraction on https://cargo-verity-32o7.vercel.app. [FILL: date and result of the full smoke test in `docs/deployment.md` section 10] |
+| Deployed app | The owner signed in and ran extraction on https://cargo-verity-32o7.vercel.app. The owner completed the smoke test in `deployment.md` section 10 on 2026-11-09 and recorded it as passed, including the 3-page document extraction and the log review (see the recorded configuration table in `deployment.md`). Results per row were not written down individually. |
 | Container | Built and run locally on 2026-11-09: healthy, non-root user, listens on 0.0.0.0:8080 |
 
 ## 12. Success targets: measured, unmeasured, deferred
