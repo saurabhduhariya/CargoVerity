@@ -28,7 +28,7 @@ async function ensureShipmentWithDocuments(page: Page) {
   await expect(page).toHaveURL(/\/shipments\/[0-9a-f-]+$/, { timeout: 30_000 });
   shipmentId = page.url().split("/").pop()!;
 
-  await page.getByText("Load sample documents", { exact: true }).click();
+  await page.locator("summary", { hasText: "Load sample documents" }).click();
   await page.getByLabel("Sample scenario").selectOption("SHP-24811");
   await page.getByRole("button", { name: "Load sample documents" }).click();
   await expect(page.getByText(/SHP-24811 sample documents loaded/)).toBeVisible({ timeout: 60_000 });

@@ -82,17 +82,17 @@ export default function Home() {
               <p className="mt-5 max-w-sm text-base leading-7 text-foreground-secondary">Company A&rsquo;s own figures for its 14-person documentation team at Nhava Sheva, at ₹350 per staff hour.</p>
             </div>
             <div className="min-w-0">
-              <table className="w-full text-left text-sm">
+              <table className="w-full text-left text-sm [overflow-wrap:anywhere]">
                 <caption className="sr-only">Annual cost of manual document entry</caption>
                 <thead><tr className="border-b border-foreground text-xs text-muted-foreground"><th scope="col" className="pb-3 font-medium">Cost</th><th scope="col" className="hidden pb-3 font-medium sm:table-cell">Working</th><th scope="col" className="pb-3 text-right font-medium">Per year</th></tr></thead>
                 <tbody>
                   {ledger.map((row) => <tr key={row.label} className="border-b border-border align-baseline">
                     <th scope="row" className="py-4 pr-4 font-medium">{row.label}<span className="mt-1 block font-mono text-xs font-normal text-muted-foreground sm:hidden">{row.working}</span></th>
                     <td className="hidden py-4 pr-4 font-mono text-xs text-foreground-secondary sm:table-cell">{row.working} <span className="text-muted-foreground">= {row.result}</span></td>
-                    <td className="whitespace-nowrap py-4 text-right font-mono tabular-nums">{row.amount}</td>
+                    <td className="sm:whitespace-nowrap py-4 text-right font-mono tabular-nums">{row.amount}</td>
                   </tr>)}
                 </tbody>
-                <tfoot><tr><th scope="row" className="pt-5 text-base font-semibold">Total</th><td className="hidden sm:table-cell" /><td className="whitespace-nowrap pt-5 text-right font-mono text-2xl font-semibold tabular-nums">₹70.29 lakh</td></tr></tfoot>
+                <tfoot><tr><th scope="row" className="pt-5 text-base font-semibold">Total</th><td className="hidden sm:table-cell" /><td className="sm:whitespace-nowrap pt-5 text-right font-mono text-2xl font-semibold tabular-nums">₹70.29 lakh</td></tr></tfoot>
               </table>
               <dl className="mt-12 grid gap-6 sm:grid-cols-3">
                 {[["Entry time per shipment", "45 → under 15 min"], ["Field accuracy, 200 past shipments", "95%"], ["Amended Bills of Entry", "Halved in 3 months"]].map(([label, value]) => <div key={label} className="border-l border-border-strong pl-4"><dt className="text-xs text-muted-foreground">Target · {label}</dt><dd className="mt-2 text-base font-semibold">{value}</dd></div>)}

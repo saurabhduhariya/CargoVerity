@@ -65,3 +65,6 @@ next-env.d.ts
 
 # Prisma client generated from the schema
 /src/generated/
+
+# Generated submission bundle
+submission/*.zip

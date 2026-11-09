@@ -117,7 +117,7 @@ test("upload, reject, replace and preview a document through private storage", a
 test("loads a sample scenario into all three slots", async ({ page }) => {
   await loginAndCreateShipment(page, `E2E-SAMPLE-${Date.now()}`);
 
-  await page.getByText("Load sample documents", { exact: true }).click();
+  await page.locator("summary", { hasText: "Load sample documents" }).click();
   await page.getByLabel("Sample scenario").selectOption("SHP-24811");
   await page.getByRole("button", { name: "Load sample documents" }).click();
 

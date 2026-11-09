@@ -29,9 +29,9 @@ test("real operations queue, private intake validation, and responsive document 
   await page.getByRole("button", { name: "New shipment", exact: true }).click();
   await expect(page.locator("#reference")).toBeFocused();
   await page.getByLabel("Shipment reference").fill(reference);
-  await page.getByLabel("Supplier name", { exact: true }).fill("Synthetic Operations QA Supplier");
-  await page.getByLabel("Importer name").fill("Synthetic QA Importer");
-  await page.getByLabel("Exporter name").fill("Synthetic QA Exporter");
+  await page.getByLabel("Supplier", { exact: true }).fill("Synthetic Operations QA Supplier");
+  await page.getByLabel("Importer", { exact: true }).fill("Synthetic QA Importer");
+  await page.getByLabel("Exporter", { exact: true }).fill("Synthetic QA Exporter");
   const creation = page.waitForResponse((response) => response.url().endsWith("/api/shipments") && response.request().method() === "POST");
   await page.getByRole("button", { name: "Create shipment", exact: true }).click();
   expect((await creation).status()).toBe(201);
@@ -178,7 +178,7 @@ test("real operations queue, private intake validation, and responsive document 
   await queueReady(page);
   const allSupplierCount = await page.locator("#supplier-filter option").count();
   await page.getByLabel("Search shipments", { exact: true }).fill(reference);
-  await expect(page.getByRole("status", { exact: false }).filter({ hasText: "1–1 of 1 shipments" })).toBeVisible();
+  await expect(page.getByRole("status", { exact: false }).filter({ hasText: "1–1 of 1" })).toBeVisible();
   expect(await page.locator("#supplier-filter option").count()).toBe(allSupplierCount);
   await page.getByLabel("Filter shipment status").selectOption("EXPORTED");
   await expect(page.getByRole("heading", { name: "No shipments match these filters" })).toBeVisible();

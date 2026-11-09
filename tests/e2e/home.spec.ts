@@ -11,7 +11,7 @@ test("CargoVerity foundation page loads", async ({ page }) => {
 
   await expect(page).toHaveTitle("CargoVerity");
   await expect(
-    page.getByRole("heading", { name: "Less retyping. Closer review." }),
+    page.getByRole("heading", { name: "Stop retyping what the PDF already says." }),
   ).toBeVisible();
 });
 
