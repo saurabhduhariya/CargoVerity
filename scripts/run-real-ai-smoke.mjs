@@ -107,11 +107,12 @@ const GROUND_TRUTH = {
   },
 };
 
-// Pricing approximation (Groq published API rates for Qwen 27B / free tier):
-// Input tokens: $0.20 per million | Output tokens: $0.20 per million
+// Pricing used for planning (same as docs/ai-feasibility.md): $0.80 per million input tokens and
+// $4.00 per million output tokens. Third-party listings, not read from Groq's own page; verify
+// before relying on it. Override with AI_INPUT_PRICE_PER_MTOK_USD / AI_OUTPUT_PRICE_PER_MTOK_USD.
 function estimateCostUsd(promptTokens = 0, completionTokens = 0) {
-  const inputCost = (promptTokens / 1_000_000) * 0.2;
-  const outputCost = (completionTokens / 1_000_000) * 0.2;
+  const inputCost = (promptTokens / 1_000_000) * Number(process.env.AI_INPUT_PRICE_PER_MTOK_USD || 0.8);
+  const outputCost = (completionTokens / 1_000_000) * Number(process.env.AI_OUTPUT_PRICE_PER_MTOK_USD || 4);
   return Number((inputCost + outputCost).toFixed(6));
 }
 
@@ -518,6 +519,7 @@ ${runs.map((r) => `| \`${r.runId}\` | **${r.scenario}** | ${r.docType} | \`${r.m
 - **Average Latency:** ${(totalLatencyMs / runs.length).toFixed(0)} ms
 - **Total Estimated Cost:** $${estimateCostUsd(totalPromptTokens, totalCompletionTokens)}
 - **Provider Outages / 5xx Errors:** 0
+- **Caveat:** every run reports exactly 800 completion tokens, which equals the script's \`max_completion_tokens: 800\` cap. The replies were therefore probably stopped at the cap. They still parsed as valid JSON and matched the expected fields, but this was not checked per response. The application uses \`AI_MAX_COMPLETION_TOKENS=1000\` and treats a reply cut off at the cap as a safe failure.
 
 ---
 
@@ -566,7 +568,7 @@ ${runs
 ---
 
 ## 7. Conclusions & Client Handoff Note
-1. Groq (\`qwen/qwen3.8-27b\`) is fast (< 1.5s per page) and cost-effective (< $0.001 per document).
+1. Groq (\`qwen/qwen3.8-27b\`) averaged ${(totalLatencyMs / runs.length / 1000).toFixed(1)} s per one-page document (range ${(Math.min(...runs.map((r) => r.latencyMs)) / 1000).toFixed(1)} to ${(Math.max(...runs.map((r) => r.latencyMs)) / 1000).toFixed(1)} s), so plan for tens of seconds per page. Estimated cost was about $${(estimateCostUsd(totalPromptTokens, totalCompletionTokens) / runs.length).toFixed(4)} per page at the planning prices above (not verified against Groq's own pricing page).
 2. The model strictly adheres to JSON schema constraints and extraction instructions.
 3. The real-AI smoke test successfully validates Gate B and Week 6 Step 2 readiness.
 `;

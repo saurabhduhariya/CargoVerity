@@ -38,7 +38,6 @@ Price used: **$0.80 per million input tokens and $4.00 per million output tokens
 
 The monthly figure scales roughly linearly with pages per document and with retries (`MAX_AI_RETRIES=1` can double the cost of a failing batch). A 3-page document costs about three times a one-page document. Treat these as planning estimates; the Week 6 operating-controls step owns the full cost model and budget alert.
 
-**Known discrepancy:** `scripts/run-real-ai-smoke.mjs` estimates cost at $0.20/M for both input and output, which understates output cost about 20x relative to the price above. Its "Est. Cost" column should not be used.
 
 ## Provider and privacy boundary
 

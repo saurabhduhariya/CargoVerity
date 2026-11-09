@@ -44,7 +44,7 @@ Vercel, Logs. Search for and confirm none of these appear: `eyJ`, `sb_secret`, `
 
 ## 5. Region and provider checks (verify separately)
 
-- Supabase project region: Dashboard, Project Settings, General. Record it below. The target is Mumbai `ap-south-1`; the project used so far connects through an `ap-southeast-1` (Singapore) pooler, so the region may not be Mumbai.
+- Supabase project region: confirmed as `ap-southeast-1` (Singapore) in Project Settings, General. The plan preferred Mumbai `ap-south-1`; Singapore is not an India-only location. See `docs/assumptions.md`.
 - AI provider and model availability: run `npm run test:smoke` against the production keys. Groq does not process only in India.
 
 ## Recorded configuration (fill in; no secrets)

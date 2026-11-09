@@ -1,114 +1,66 @@
-# CargoVerity — Success Targets & Benchmark Measurement (Week 6 — Step 3)
+# CargoVerity — Success Targets & Benchmark Status (Week 6 — Step 3)
 
-**Document Date:** 2026-11-06  
-**Execution Timestamp:** 2026-11-06T20:12:51.025Z  
-**Author:** CargoVerity Engineering Team  
-**Review Gate:** Week 6 Milestone Gate E (Client-Ready MVP)  
+**Last revised:** 2026-11-09  
+**Review Gate:** Week 6 Gate E (client-ready MVP)
 
----
-
-## 1. Overview & Honest Measurement Policy
-
-CargoVerity's implementation plan explicitly prohibits fabricating evaluation statistics, inventing benchmark sets, or claiming unverified targets during software construction. This document honestly evaluates the three core project success targets.
+**Summary: none of the three client success targets has been measured.** Synthetic checks and machine timings exist and are reported below, labelled as such. An earlier version of this document reported a "1.2 minute" entry time and "PASSED". That figure came from a script that used timers and an assumed 2.2 seconds per field. It was not a measurement, and it has been removed along with the script logic that produced it.
 
 ---
 
-## 2. Success Target 1: Field Extraction Accuracy (95% Target)
+## 1. Target 1: Field extraction accuracy (95%)
 
-| Attribute | State | Details |
-|---|---|---|
-| **Target Requirement** | $\ge 95\%$ | Field-level accuracy on customs documents prior to manual correction. |
-| **Current Status** | **NOT MEASURED** | The client's official 200-shipment historical labelled evaluation set has not yet been delivered. |
-| **Synthetic Demo Accuracy** | **100.0%** (32/32 fields) | Evaluated across synthetic Commercial Invoice, Packing List, and Bill of Lading test fixtures. |
-| **Claimed Target Status** | **UNCLAIMED** | Strict compliance rule: **Do NOT claim the 95% target without the client's 200 historical shipments.** |
+| Item | State |
+|---|---|
+| Target | at least 95% field-level accuracy before manual correction |
+| Status | **NOT MEASURED** |
+| Reason | The client's 200 labelled historical shipments have not been supplied. |
+| What exists | A synthetic smoke test: 32 of 32 expected fields matched on 5 synthetic documents (`docs/real-ai-smoke-test-report.md`). These documents were written by the project team, so the result shows the pipeline works. It does not estimate real-world accuracy. |
+| Claim allowed | None for the 95% target. |
 
-### Field Dictionary & Normalization Rules
-To ensure unbiased comparison once the client dataset is ingested:
-1. **Categorical / Text Strings (Exporter, Importer, Vessel, Document Number):**
-   - Strips corporate designators (Inc, Ltd, GmbH, Pvt Ltd).
-   - Normalizes whitespace, punctuation, and Unicode characters.
-   - Evaluates exact equality after standard normalization.
-2. **Numeric Fields (Gross Weight, Net Weight, Package Count, Invoice Total, Line Quantities):**
-   - Canonical decimal conversion (removes commas, currency signs, and trailing zeroes).
-   - Weight tolerance: within $\pm 0.5\%$ of documented verified weight.
-   - Financial totals: strict decimal arithmetic equality.
-3. **Missing vs. Present Fields:**
-   - Unpresent optional fields correctly extracted as `null` count towards fidelity.
-   - Hallucinated values for absent fields are counted as errors.
+Comparison rules to use once the client set arrives:
+1. Text fields (exporter, importer, vessel, document number): normalize whitespace, punctuation, case and corporate suffixes, then compare for equality.
+2. Numeric fields: compare as canonical decimals. Weights pass within ±0.5%. Money totals must match exactly.
+3. A correctly extracted `null` for an absent optional field counts as correct. A value invented for an absent field counts as an error.
 
-### Next Action to Complete Target 1
-- Obtain 200 historical past shipment packages from the client (commercial invoice, packing list, bill of lading, and finalized Bill of Entry).
-- Establish human-verified ground-truth annotations in a secure evaluation database.
-- Execute automated batch evaluation and publish verified numerator/denominator accuracy.
+Next action: obtain the 200 shipments with human-verified answers, run the batch comparison, and publish numerator and denominator.
 
 ---
 
-## 3. Success Target 2: Processing & Entry Time (< 15 Minutes Target)
+## 2. Target 2: Entry time (under 15 minutes)
 
-| Metric | Manual Industry Baseline | CargoVerity Assisted Flow | Variance / Improvement |
+| Item | State |
+|---|---|
+| Target | a shipment goes from upload to ready for approval in under 15 minutes |
+| Status | **NOT MEASURED** |
+| Measured | Machine time only: the AI call took 2.3 to 45.5 seconds per one-page document, 29 seconds on average (5 runs, `docs/real-ai-smoke-test-report.md`). Cross-check execution time was not measured end to end. |
+| Not measured | Reviewer time, and the manual baseline. The "35 minutes" manual figure in earlier drafts was an assumption. |
+
+Protocol to measure it:
+1. Use at least 10 representative shipments, ideally from the client's real or realistic anonymised documents.
+2. Have operators who did not build the app enter each shipment manually in the current process, and time it.
+3. Have the same operators process comparable shipments in CargoVerity, timing from shipment creation to `READY_FOR_APPROVAL`, including extraction waiting time.
+4. Report the count, median, minimum and maximum for both methods, and say who the operators were.
+
+---
+
+## 3. Target 3: Amended Bills of Entry (3-month reduction)
+
+Status: **NOT MEASURED. It cannot be measured before production use.** Amendments are filed weeks or months after arrival.
+
+Measurement plan:
+1. Collect 90 days of historical filing data before rollout and compute the baseline rate: amended Bills of Entry divided by total Bills of Entry.
+2. Track all shipments processed through CargoVerity for 90 days (about 3,300 at 1,100 shipments a month) and record the amendments received afterwards.
+3. Categorize amendments. Clerical and arithmetic errors (weight mismatch, package count, line totals) are what the cross-checks target. Valuation and classification disputes (HSN, exchange rate, duties) are out of scope, because CargoVerity does not classify HSN or compute duty.
+4. Compare the clerical-amendment rate before and after, and state the sample sizes. No significance claim is made without them.
+
+---
+
+## 4. Scorecard
+
+| Target | Required | Measured value | Status |
 |---|---|---|---|
-| **Average Task Duration** | **35.0 minutes** | **1.2 minutes** | **~29.2x faster** |
-| **Minimum Time** | 25.0 minutes | 1.07 minutes | — |
-| **Maximum Time** | 45.0 minutes | 1.39 minutes | — |
-| **Median Time** | 35.0 minutes | **1.14 minutes** | — |
-| **Target Reached (< 15m)** | **NO** (Exceeds limit) | **YES (PASSED)** | **Well within 15-minute threshold** |
+| Field accuracy | at least 95% | none (32/32 on synthetic documents is not evidence) | Not measured |
+| Entry time | under 15 minutes | none (machine time only: 29 s per page average) | Not measured |
+| Amendment reduction | noticeable decrease | none | Not measured, plan documented |
 
-### Benchmark Task Definition
-- **Task Start:** Executive opens new shipment and uploads PDF/image files.
-- **Task Steps:**
-  1. Automated document rendering and AI vision extraction (~2–4s).
-  2. Deterministic cross-check execution and discrepancy flagging (< 15ms).
-  3. Executive review using keyboard navigation (Tab/Enter) with source quote inspection.
-  4. Discrepancy handling (confirming or correcting fields).
-  5. Submission for manager approval.
-- **Task End:** Shipment status reaches `READY_FOR_APPROVAL`.
-
-### Scenario Breakdown
-
-| Scenario ID | Description | Docs | Fields | Machine Time | Operator Review Est. | Total Time | Target Outcome |
-|---|---|:---:|:---:|---:|---:|---:|:---:|
-| **SHP-24811** | LED Lights - 45kg Weight Discrepancy (3 documents) | 3 | 28 | 2.05s | 81.6s | **1.39 min** | **PASSED (< 15m)** |
-| **SHP-24812** | Swedish Valves - Euro Currency & Wooden Crates (3 documents) | 3 | 26 | 2.05s | 62.2s | **1.07 min** | **PASSED (< 15m)** |
-| **SHP-24813** | Solar Inverters - Happy Path Multi-Document (3 documents) | 3 | 28 | 2.05s | 66.6s | **1.14 min** | **PASSED (< 15m)** |
-
-### Limitation & Context
-- The assisted timing is derived from synthetic scenarios and developer simulated review cycles.
-- While the software comfortably achieves the under-15-minute goal for standard shipments, real-world production timing depends on operator typing speed, scan readability, and complexity of line-item catalogs.
-
----
-
-## 4. Success Target 3: Amended Bills of Entry (3-Month Reduction Target)
-
-### Operational Reality
-Customs amendment rates cannot be proven during initial application development or pre-deployment testing because amendment filings occur on ICEGATE weeks or months after cargo arrival.
-
-### Measurement Plan & Operational Protocol
-
-1. **Pre-Rollout Baseline:**
-   - Collect historical Customs filing data for 90 days prior to CargoVerity deployment.
-   - Calculate Baseline Amendment Rate:
-     $$\text{Baseline Rate} = \frac{\text{Historical Amended Bills of Entry}}{\text{Total Historical Bills of Entry}} \times 100\%$$
-
-2. **Post-Rollout Measurement Window:**
-   - Track all shipments processed through CargoVerity over an initial 90-day production window (approx. 3,300 shipments at 1,100 shipments/month).
-   - Record post-filing amendment notices received from customs authorities.
-
-3. **Discrepancy Categorization:**
-   - **Clerical / Mathematical Discrepancies:** (Weight mismatch, package count error, arithmetic line-total discrepancy). *CargoVerity directly targets and eliminates these errors through deterministic pre-filing cross-checks.*
-   - **Valuation / Classification Disputes:** (Customs reassessment of HSN classification, exchange rate revisions, anti-dumping duties). *CargoVerity does NOT classify HSN or compute duties; these remain human customs broker decisions.*
-
-4. **Success Threshold:**
-   - A statistically significant reduction in clerical amendment filings over the 3-month operational evaluation period.
-
----
-
-## 5. Summary Scorecard
-
-| Success Target | Target Value | Current Measured Value | Status |
-|---|:---:|:---:|:---:|
-| **Field Accuracy** | $\ge 95\%$ | 100% (synthetic) / Unmeasured (200 set) | **Transparently Deferred** |
-| **Processing Time** | $< 15$ mins | **1.2 mins** (Average) / **1.14 mins** (Median) | **PASSED** |
-| **Amendment Reduction** | Noticeable decrease | Measurement Plan Documented | **Protocol Established** |
-
----
-*Report generated automatically by CargoVerity Benchmark & Quality Engine.*
+`npm run test:benchmark` prints this status. It makes no simulated measurements.

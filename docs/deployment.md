@@ -4,7 +4,7 @@ This document describes a personal synthetic-data demo. It does not claim commer
 
 ## Supabase Free setup
 
-1. Create a Supabase project. Select Mumbai `ap-south-1` if it is available in the account.
+1. Create a Supabase project. Mumbai `ap-south-1` is preferred for India residency; the current demo project is in `ap-southeast-1` (Singapore).
 2. Enable email/password Auth.
 3. Create a private Storage bucket named `shipment-documents`.
 4. Copy the project URL and publishable key to Vercel environment variables as `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.

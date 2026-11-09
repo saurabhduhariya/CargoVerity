@@ -119,14 +119,14 @@ CargoVerity is designed with a defense-in-depth security model to process custom
 - Document content payloads and cryptographic keys are never stored in audit metadata.
 
 ### 13. Regional Compliance & Privacy Boundaries
-- **Hosting Boundary:** The demo database and storage are hosted on Supabase (Frankfurt / Mumbai target region).
+- **Hosting Boundary:** The demo database and storage are hosted on Supabase in `ap-southeast-1` (Singapore), confirmed in the Supabase dashboard. This is not the preferred Mumbai (`ap-south-1`) region and not an India-only location. Moving to Mumbai requires a new project and a data migration before any real data is used.
 - **AI Processing Boundary:** Groq (`qwen/qwen3.8-27b`) and OpenRouter process inference requests globally across their distributed cloud infrastructure (US Multi-Region).
 - **Honest Compliance Statement:** CargoVerity makes **no blanket claims** of exclusive India-only data localization or DPDP compliance for third-party AI processing. All documentation clearly states that real customs documents and personal data must remain out of scope until dedicated regional enterprise agreements are established.
 
 ---
 
 ## 3. Security Hardening Verification Summary
-
-- **Unit Test Suite:** [`tests/unit/security-hardening.test.ts`](file:///home/saurabh/Documents/CargoVerity/tests/unit/security-hardening.test.ts) — **18 / 18 tests passing**.
-- **Integration Test Suite:** [`tests/integration/pyramid-flows.test.ts`](file:///home/saurabh/Documents/CargoVerity/tests/integration/pyramid-flows.test.ts) (Flow 14 cascade deletion) — **15 / 15 tests passing**.
+- **Unit Test Suite:** [`tests/unit/security-hardening.test.ts`](../tests/unit/security-hardening.test.ts) — 18 tests, all passing when last run (2026-11-09).
+- **Integration Test Suite:** [`tests/integration/pyramid-flows.test.ts`](../tests/integration/pyramid-flows.test.ts) (Flow 14 cascade deletion) — requires a database (`npm run test:integration`); not re-run for this document, so no pass count is claimed.
+- **Secrets Scanning:** A pattern scan of git-tracked files (Groq, OpenRouter and Supabase key formats, PostgreSQL URLs with passwords) found no matches on 2026-11-09. This is a heuristic scan, not a full history audit.
 - **Secrets Scanning:** Verified clean with zero tracked credentials or secret leaks.

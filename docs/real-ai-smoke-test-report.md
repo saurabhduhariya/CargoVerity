@@ -24,18 +24,19 @@ In accordance with **Week 6 — Step 2: Run the real-AI smoke test** from `plan/
 
 | Run ID | Scenario | Doc Type | Model | Latency (ms) | Tokens (P/C/Total) | Est. Cost (USD) | Retries |
 |---|---|---|---|---:|---:|---:|:---:|
-| `chatcmpl-9076dfb1-0f6f-4586-bc65-243e80970b8c` | **SHP-24811** | INVOICE | `qwen/qwen3.8-27b` | 2287 ms | 2186 / 800 / 2986 | $0.000597 | 0 |
-| `chatcmpl-9cd82fa3-8ae6-4e12-ac8f-89738a5b2d08` | **SHP-24811** | PACKING_LIST | `qwen/qwen3.8-27b` | 10754 ms | 2188 / 800 / 2988 | $0.000598 | 0 |
-| `chatcmpl-c42ed8fe-b6ae-4178-97b3-806078461a54` | **SHP-24811** | BILL_OF_LADING | `qwen/qwen3.8-27b` | 45517 ms | 2191 / 800 / 2991 | $0.000598 | 0 |
-| `chatcmpl-9fda94a0-b08f-4927-8b02-ee7fa1afff73` | **SHP-24812** | INVOICE | `qwen/qwen3.8-27b` | 43539 ms | 2186 / 800 / 2986 | $0.000597 | 0 |
-| `chatcmpl-c26df820-6ebf-4f3e-b273-7033fb460858` | **SHP-24815** | INVOICE | `qwen/qwen3.8-27b` | 42973 ms | 2186 / 800 / 2986 | $0.000597 | 0 |
+| `chatcmpl-9076dfb1-0f6f-4586-bc65-243e80970b8c` | **SHP-24811** | INVOICE | `qwen/qwen3.8-27b` | 2287 ms | 2186 / 800 / 2986 | $0.004949 | 0 |
+| `chatcmpl-9cd82fa3-8ae6-4e12-ac8f-89738a5b2d08` | **SHP-24811** | PACKING_LIST | `qwen/qwen3.8-27b` | 10754 ms | 2188 / 800 / 2988 | $0.004950 | 0 |
+| `chatcmpl-c42ed8fe-b6ae-4178-97b3-806078461a54` | **SHP-24811** | BILL_OF_LADING | `qwen/qwen3.8-27b` | 45517 ms | 2191 / 800 / 2991 | $0.004953 | 0 |
+| `chatcmpl-9fda94a0-b08f-4927-8b02-ee7fa1afff73` | **SHP-24812** | INVOICE | `qwen/qwen3.8-27b` | 43539 ms | 2186 / 800 / 2986 | $0.004949 | 0 |
+| `chatcmpl-c26df820-6ebf-4f3e-b273-7033fb460858` | **SHP-24815** | INVOICE | `qwen/qwen3.8-27b` | 42973 ms | 2186 / 800 / 2986 | $0.004949 | 0 |
 
 **Aggregate Metrics:**
 - **Total Requests:** 5
 - **Total Tokens:** 14937 (10937 prompt, 4000 completion)
 - **Average Latency:** 29014 ms
-- **Total Estimated Cost:** $0.002987
+- **Total Estimated Cost:** $0.024750 (at $0.80 / $4.00 per million input / output tokens; unverified planning prices)
 - **Provider Outages / 5xx Errors:** 0
+- **Caveat:** every run reports exactly 800 completion tokens, which equals the script's `max_completion_tokens: 800` cap. The replies were therefore probably stopped at the cap. They still parsed as valid JSON and matched all 32 expected fields, but this was not checked per response. The application uses `AI_MAX_COMPLETION_TOKENS=1000` and treats a reply cut off at the cap as a safe failure.
 
 ---
 
@@ -107,6 +108,6 @@ In accordance with **Week 6 — Step 2: Run the real-AI smoke test** from `plan/
 ---
 
 ## 7. Conclusions & Client Handoff Note
-1. Groq (`qwen/qwen3.8-27b`) is fast (< 1.5s per page) and cost-effective (< $0.001 per document).
+1. Groq (`qwen/qwen3.8-27b`) averaged 29.0 s per one-page document (range 2.3 to 45.5 s), so plan for tens of seconds per page. Estimated cost was about $0.0050 per page at the planning prices above (not verified against Groq's own pricing page).
 2. The model strictly adheres to JSON schema constraints and extraction instructions.
 3. The real-AI smoke test successfully validates Gate B and Week 6 Step 2 readiness.
