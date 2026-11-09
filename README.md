@@ -1,114 +1,249 @@
 # CargoVerity
 
-CargoVerity is an AI-assisted customs-document workbench for invoices, packing lists and bills of lading. It keeps source evidence, validates extracted values, runs deterministic cross-checks and blocks CSV export until the current revision is manager-approved.
+**An AI document reader and cross-checker for customs brokers handling import shipments.**
 
-## Current implementation
+Live demo: https://cargo-verity-32o7.vercel.app  
+Repository: https://github.com/saurabhduhariya/CargoVerity
 
-The repository now contains a working zero-cost development/demo slice:
+CargoVerity reads a shipment's commercial invoice, packing list and bill of lading, pulls out the fields with the exact source quote and page for each one, compares the three documents with fixed rules, and lets a Manager approve the exact reviewed version before a CSV is exported for the filing software.
 
-- Next.js 16 App Router, React, TypeScript and Tailwind CSS 4.
-- Local shadcn/ui-style components and Lucide icons.
-- Supabase SSR authentication, PostgreSQL and private Storage adapters.
-- Prisma 7 with `prisma.config.ts`, generated client output and PostgreSQL driver adapter.
-- Server-only Groq provider using `qwen/qwen3.8-27b` vision/JSON mode.
-- Server-only OpenRouter provider using the official `openrouter/free` dynamic free-model router.
-- Zod document-specific extraction validation and confidence review policy.
-- PDF.js browser rendering with bounded three-page AI batches.
-- Immutable extraction runs, field corrections, audit events and deterministic cross-check utilities.
-- Manager approval and `demo-v1` guarded CSV export endpoints.
+> **Demo only.** The app runs on synthetic data. Do not upload real client documents. It does not file anything on the customs portal, does not classify HSN codes and does not calculate duty. People stay responsible for those decisions.
 
-The internal blueprint remains in the locally ignored `plan/` directory. It is not included in GitHub.
+## The problem
 
-## Important demo limitation
+A customs documentation team retypes data from three PDFs per shipment into filing software. Typos and mismatches between documents (for example, a gross weight of 3,120 kg on the invoice and 3,165 kg on the packing list) lead to amended Bills of Entry later. CargoVerity removes the retyping and catches those mismatches before anything is filed.
 
-This architecture is for synthetic-data development and a personal demo. Groq and OpenRouter free/developer quotas can change, and Groq's model catalog lists paid token pricing even though free developer access may be available. The application never adds a paid fallback: when the selected provider is unavailable or rate-limited, it reports the error and preserves manual review.
+## How it works
 
-Do not send real confidential customs documents or personal data to free-tier providers. Vercel Hobby also has personal/non-commercial use restrictions. This is not a production compliance or India-residency guarantee.
+```text
+Upload 3 documents  ->  AI extraction  ->  Human review  ->  Cross-checks
+                                                                   |
+                         CSV export  <-  Manager approval  <-  Submit
+```
 
-## Requirements
+1. An **Executive** creates a shipment and uploads the invoice, packing list and bill of lading (PDF, PNG or JPEG).
+2. The server validates each file (size, real file type, checksum, page count) and stores it in a private bucket.
+3. The browser renders PDF pages and sends them to a vision AI model in small batches. The model returns fields with a source quote, page number and confidence.
+4. The Executive reviews every flagged value: confirm it, correct it with a reason, or enter it manually.
+5. Fixed rules compare the documents. Any failed check must be resolved and stays in the history.
+6. The Executive submits the shipment. A **Manager** approves or rejects the exact revision they reviewed.
+7. Only an approved revision can be exported as CSV. Any later edit invalidates the approval.
 
-- Node.js `24.22.2` (`.nvmrc` and `.node-version`)
-- npm `11.19.1`
-- A Supabase project for authentication, PostgreSQL and private Storage
-- A Groq API key or OpenRouter API key for live extraction
+## Features
 
-Docker is optional and is not required for local development or Vercel deployment.
+- **Source evidence on every value.** Each extracted field keeps its source quote and page number, so a reviewer can verify it against the document.
+- **Human in the loop.** Low-confidence, missing or unsupported values must be confirmed, corrected or entered manually before submission. The model's confidence is shown as an estimate, not a probability.
+- **Six cross-check rules.** Invoice line arithmetic, gross weight, package count, invoice against packing list quantities, gross against net weight, and exporter name consistency. Calculations use exact decimals, never floating point.
+- **Revision control.** Every edit, upload or re-extraction creates a new revision. Checks and approvals belong to one revision, so a stale approval cannot be used.
+- **Two roles enforced on the server.** Executives see only their own shipments and cannot approve. Managers see all shipments, approve or reject, and export.
+- **Guarded export.** A 21-column CSV (`demo-v1` profile) with an export record and checksum. Export is blocked, with the exact reason, if anything required is missing or ambiguous.
+- **Audit trail.** Corrections, resolutions, decisions and exports are recorded with who, what and when.
+- **Manual fallback.** If the AI fails, hits a quota, or cannot read a page, the reviewer enters values by hand. There is no automatic paid fallback.
+- **Operating controls.** Upload limits, a monthly AI budget with an alert, idempotent extraction, safe error IDs and logs that never contain document content.
+- **Accuracy report.** Per-field and per-supplier correction rates with sample sizes, clearly labelled as synthetic data.
 
-## Local setup
+## Try the demo
 
-A fresh checkout installs, tests and builds without any secrets:
+Open https://cargo-verity-32o7.vercel.app. The home page has an interactive example that works without signing in.
+
+To use the full app you need an account. Accounts get their role from the database, so sign-up alone gives no access. **Demo logins for the Executive and Manager roles are given privately in the submission, not in this repository.** To run your own copy, see [Run it locally](#run-it-locally).
+
+Suggested walkthrough:
+
+1. Sign in as the **Executive**, choose **New shipment**, and create one.
+2. In the shipment, open **Load sample documents**, choose `SHP-24811` and load it. The three PDFs come from `public/sample-docs/`.
+3. Run extraction, then review the flagged fields.
+4. Run the checks. You should see the **45 kg gross weight difference** between the invoice (3,120 kg) and the packing list (3,165 kg). The app reports it and never explains it away.
+5. Resolve the failed check, then submit the shipment.
+6. Sign in as the **Manager**, approve, and export the CSV.
+
+Every sample page carries a "SYNTHETIC" banner. The sample set (`SHP-24811` to `SHP-24815`) includes a euro invoice with wooden crates and a degraded scan.
+
+## Tech stack
+
+| Area | Technology |
+|---|---|
+| Framework | Next.js 16 (App Router), React 19, TypeScript 5.9 |
+| Styling | Tailwind CSS 4 |
+| Auth | Supabase Auth (`@supabase/ssr`) |
+| Database | PostgreSQL on Supabase, Prisma ORM 7 with `@prisma/adapter-pg` |
+| File storage | Supabase Storage, private bucket, signed URLs |
+| AI | Groq `qwen/qwen3.8-27b` (vision, JSON mode). OpenRouter is an alternative |
+| PDF rendering | PDF.js in the browser |
+| Validation | Zod 4 |
+| Arithmetic | decimal.js |
+| Tests | Vitest and Playwright |
+| Hosting | Vercel Hobby (demo), optional Docker image |
+| Runtime | Node.js 24.22.2 |
+
+## Architecture
+
+```text
+Browser (React, PDF.js)
+   |  HTTPS + Supabase session cookie
+   v
+Next.js on Vercel  (proxy.ts, Route Handlers)
+   |-- Prisma ------------> Supabase PostgreSQL
+   |-- service client ----> Supabase Storage (private bucket)
+   |-- AIProvider --------> Groq or OpenRouter
+```
+
+It is a Next.js modular monolith. Route Handlers do all authenticated work. The cross-check engine is plain TypeScript with no AI call, so its results are repeatable. Details are in [`docs/architecture.md`](docs/architecture.md) and the Technical Design Document.
+
+## Run it locally
+
+You need Node.js 24.22.2 (see `.nvmrc`) and npm. A Supabase project and a Groq API key are needed only for the full app; the first block works with nothing configured.
+
+**1. Check that the code builds and tests (no secrets needed)**
 
 ```bash
-npm ci            # runs `prisma generate`; no DIRECT_URL needed
-npm test
+git clone https://github.com/saurabhduhariya/CargoVerity.git
+cd CargoVerity
+npm ci          # also generates the Prisma client
+npm test        # unit tests
 npm run build
 ```
 
-To run the app against Supabase:
+**2. Run the full app**
 
 ```bash
-cp .env.example .env
-# Fill the Supabase, database and AI provider values in .env.
-npm run db:migrate      # requires DIRECT_URL
-npm run storage:setup   # private bucket, 10 MB object limit, PDF/PNG/JPEG only (needs SUPABASE_SECRET_KEY)
-npm run dev
+cp .env.example .env     # then fill in the values (see below)
+npm run db:migrate       # applies the database migrations (needs DIRECT_URL)
+npm run storage:setup    # creates the private bucket
+npm run db:seed          # grants the Executive and Manager roles
+npm run dev              # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000). Configure the Supabase and provider variables in `.env` before using `/login` or the dashboard.
+**3. Create the two users**
 
-The Prisma CLI (migrations) uses `DIRECT_URL`. The app runtime also prefers `DIRECT_URL` when it is set, because interactive transactions need a session connection; otherwise it uses `DATABASE_URL`.
+Roles are granted only by the seed script, never by sign-up:
 
-### Accounts and roles
+1. In the Supabase dashboard, go to Authentication, Users, and create an Executive and a Manager.
+2. Put their user IDs and emails in the `SEED_*` variables in `.env`.
+3. Run `npm run db:seed`.
 
-Application roles (`EXECUTIVE`, `MANAGER`) are stored in the database and granted only by the controlled seed. Signing up in Supabase Auth does not give access: a signed-in account without a role sees "no CargoVerity role yet" and every API call returns `403 ACCOUNT_NOT_PROVISIONED`.
+An account without a role is rejected with `ACCOUNT_NOT_PROVISIONED`.
 
-1. Create the synthetic users in the Supabase dashboard (Authentication → Users).
-2. Put their Auth user IDs and emails in the `SEED_*` variables in `.env`.
-3. Run `npm run db:seed`. When `SUPABASE_SECRET_KEY` is set, the seed first checks that each ID exists in Supabase Auth with the same email.
+**Optional: Docker**
+
+```bash
+docker build \
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co \
+  --build-arg NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_xxx \
+  -t cargoverity .
+docker run -d -p 8080:8080 --env-file .env.production cargoverity
+```
+
+Write values in the env file without quotes. The full guide is [`docs/deployment.md`](docs/deployment.md).
 
 ## Environment variables
 
-See [`.env.example`](.env.example), which lists every variable the app reads, including operating limits, the role seed and Playwright credentials. The most important values are:
+[`.env.example`](.env.example) lists every setting. The important ones:
 
-```env
-NEXT_PUBLIC_SUPABASE_URL=
-NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
-SUPABASE_SECRET_KEY=
-SUPABASE_STORAGE_BUCKET=shipment-documents
-DATABASE_URL=
-DIRECT_URL=
-AI_PROVIDER=groq
-GROQ_API_KEY=
-GROQ_MODEL=qwen/qwen3.8-27b
-OPENROUTER_API_KEY=
-OPENROUTER_MODEL=openrouter/free
-```
+| Variable | Visible to browser | Purpose |
+|---|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | Yes | Supabase project URL |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Yes | Supabase publishable key |
+| `SUPABASE_SECRET_KEY` | No | Private storage operations |
+| `DATABASE_URL`, `DIRECT_URL` | No | Pooled and direct PostgreSQL connections |
+| `AI_PROVIDER` | No | `groq` or `openrouter` |
+| `GROQ_API_KEY`, `GROQ_MODEL` | No | Groq key and model |
+| `AI_MONTHLY_BUDGET_USD`, `AI_BUDGET_ALERT_PERCENT` | No | Monthly AI budget and alert |
+| `MAX_PDF_BYTES`, `MAX_IMAGE_BYTES`, `MAX_PDF_PAGES` | No | Upload limits |
 
-Never use `NEXT_PUBLIC_` for `SUPABASE_SECRET_KEY`, database URLs or AI keys. `.env` is ignored by Git.
+Never give a secret a `NEXT_PUBLIC_` name. `.env` and every `.env.*` file except `.env.example` are ignored by Git.
 
-## Checks
+## Testing
+
+| Suite | Command | Needs |
+|---|---|---|
+| Lint | `npm run lint` | nothing |
+| Types | `npm run typecheck` | nothing |
+| Unit tests (927) | `npm test` | nothing |
+| Integration tests (80) | `npm run test:integration` | a database and storage |
+| End-to-end tests (27) | `npm run test:e2e` | a browser and test accounts |
+| Real AI smoke test | `npm run test:smoke` | an AI key; makes live calls |
+
+Last results (2026-11-09): 927 unit tests passed, 80 integration tests passed, 26 end-to-end tests passed and 1 opt-in test was skipped. Full detail is in [`docs/test-results.md`](docs/test-results.md). The GitHub Actions workflow runs install, lint, typecheck, schema validation, unit tests and build with no secrets.
+
+The integration and end-to-end tests create shipments in the configured database. Remove them with:
 
 ```bash
-npm run lint
-npm run typecheck
-npm test
-npm run build
-npm run test:integration   # needs DIRECT_URL or DATABASE_URL; creates and removes synthetic rows
+node --env-file=.env scripts/cleanup-test-shipments.mjs          # dry run
+node --env-file=.env scripts/cleanup-test-shipments.mjs --apply  # delete
 ```
 
-The Playwright tests require a browser installation. Unauthenticated checks run with only the Supabase public variables; the login and role flows need the `PLAYWRIGHT_*` synthetic accounts in `.env`:
+## Deployment
 
-```bash
-npx playwright install chromium
-npm run test:e2e
+The demo runs on Vercel Hobby with a Supabase project in `ap-southeast-1` (Singapore). After the first deploy, set the Supabase Site URL and add `<your-url>/auth/callback` under Redirect URLs, otherwise login fails. Step-by-step instructions, the smoke-test table and troubleshooting are in [`docs/deployment.md`](docs/deployment.md).
+
+## Security and privacy
+
+- Every API route checks the session and the role on the server. Browser role claims are ignored.
+- Shipment lookups are scoped to the user: an Executive cannot read another Executive's shipment.
+- Files sit in a private bucket under random keys. Downloads use signed links that expire after 5 minutes.
+- Uploads are checked on the server for file signature, size, SHA-256 and PDF page count.
+- Unexpected errors return a generic message and a short error ID. Logs hold no document text, prompts, images or personal data.
+- Secret keys and database URLs are server-only.
+
+Details and the checklist are in [`docs/security-and-privacy.md`](docs/security-and-privacy.md). The AI provider processes pages outside India and the database is in Singapore, so no residency or compliance claim is made. See the same document.
+
+## Status: what is proven and what is not
+
+| Item | State |
+|---|---|
+| Full workflow: upload, extract, review, check, submit, approve, export | Built and tested |
+| Live AI on synthetic documents | 32 of 32 expected fields matched on 5 documents. This shows the pipeline works. It is **not** an accuracy estimate |
+| 95 percent field accuracy | **Not measured.** Needs the client's 200 labelled shipments |
+| Entry time under 15 minutes | **Not measured.** Only machine time (about 29 seconds per page) was measured |
+| Fewer amended Bills of Entry | **Not measured.** Needs 90 days of production use |
+| Export columns | **Assumptions.** No filing-software template was supplied, so `demo-v1` is a stand-in |
+
+Details: [`docs/benchmark-and-success-targets.md`](docs/benchmark-and-success-targets.md).
+
+## Known limitations
+
+- The AI is slow for this use (2 to 45 seconds per page) and its free-tier availability can change. There is no automatic failover.
+- Extraction runs from the browser in batches of up to 3 pages, so a long document needs the tab to stay open. A background worker would remove this limit.
+- Handwriting, other languages, other document types and very degraded scans are untested.
+- No data retention policy has been agreed. Backup and restore are documented but not rehearsed.
+- There is no user administration screen. Roles are set by the seed script.
+
+The full list and next steps are in section 13 of the Technical Design Document.
+
+## Project layout
+
+```text
+src/app/            Pages and API Route Handlers (21 endpoints)
+src/features/       Dashboard, review workspace and document UI
+src/lib/ai/         Providers, prompts, validation, extraction workflow, budget
+src/lib/crosschecks/  Rule engine and line matching
+src/lib/documents/  Upload validation, storage, sample loader
+src/lib/export/     Export profile and CSV builder
+src/lib/manager/    Approval decisions
+prisma/             Schema and migrations
+public/sample-docs/ Synthetic sample documents
+scripts/            Seed, storage setup, smoke test, cleanup
+tests/              Unit, integration and end-to-end tests
+docs/               Design, security, operations and test records
 ```
 
 ## Documentation
 
-- [`docs/assumptions.md`](docs/assumptions.md): decision log (export template, field policy, tolerances, roles, regions, retention, benchmark).
-- [`docs/ai-feasibility.md`](docs/ai-feasibility.md): Week 1 provider spike, limits, latency and cost estimate.
-- [`docs/architecture.md`](docs/architecture.md): implemented application and provider architecture.
-- [`docs/ai-extraction.md`](docs/ai-extraction.md): provider limits, schemas and failure handling.
-- [`docs/deployment.md`](docs/deployment.md): Supabase, Vercel Hobby and free-provider setup.
+| Document | Content |
+|---|---|
+| [`docs/deployment.md`](docs/deployment.md) | Local setup, Supabase, Vercel, Docker, smoke test |
+| [`docs/architecture.md`](docs/architecture.md) | Stack and request flow |
+| [`docs/ai-extraction.md`](docs/ai-extraction.md) | Provider contract, runs, retries |
+| [`docs/ai-feasibility.md`](docs/ai-feasibility.md) | Model choice, limits and cost |
+| [`docs/real-ai-smoke-test-report.md`](docs/real-ai-smoke-test-report.md) | Live AI test record |
+| [`docs/assumptions.md`](docs/assumptions.md) | Decision log, field policy, export mapping |
+| [`docs/sample-data-manifest.md`](docs/sample-data-manifest.md) | Sample documents and expected values |
+| [`docs/security-and-privacy.md`](docs/security-and-privacy.md) | Security checklist |
+| [`docs/operations.md`](docs/operations.md) | Limits, AI budget, backup, cost model |
+| [`docs/benchmark-and-success-targets.md`](docs/benchmark-and-success-targets.md) | Success target status |
+| [`docs/test-results.md`](docs/test-results.md) | Test run results |
 
-No secrets, real client documents or generated build output belong in this repository.
+## License
+
+MIT. See [`LICENSE`](LICENSE).
